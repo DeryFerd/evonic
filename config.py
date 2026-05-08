@@ -68,7 +68,16 @@ DB_PATH = os.path.join(_shared_db_dir, "evonic.db")
 TEST_DB_PATH = os.path.join(BASE_DIR, "seed", "test_db.sqlite")
 
 # Flask
-SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
+_secret_key = os.getenv("SECRET_KEY", "")
+if _secret_key:
+    SECRET_KEY = _secret_key
+else:
+    import secrets as _secrets
+    SECRET_KEY = _secrets.token_hex(32)
+    _logger.warning(
+        "SECRET_KEY not set — generated a random key. "
+        "Set the SECRET_KEY env var for persistent sessions across restarts."
+    )
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = _get_env_int("PORT", 8080, min_val=1, max_val=65535)
 DEBUG = os.getenv("DEBUG", "1") == "1"

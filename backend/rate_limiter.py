@@ -11,7 +11,6 @@ from collections import defaultdict
 from threading import Lock
 from functools import wraps
 from flask import request, render_template
-import config
 
 
 class RateLimiter:
@@ -148,10 +147,16 @@ def rate_limit(max_requests=5, window_seconds=300, identifier_func=None):
                 else:
                     # For HTML forms, render the same template with error
                     # This is specifically for login page
-                    if hasattr(config, 'TURNSTILE_SITE_KEY'):
+                    try:
+                        import config
+                        turnstile_site_key = getattr(config, 'TURNSTILE_SITE_KEY', None)
+                    except Exception:
+                        turnstile_site_key = None
+                    
+                    if turnstile_site_key is not None:
                         return render_template(
                             'login.html',
-                            turnstile_site_key=config.TURNSTILE_SITE_KEY,
+                            turnstile_site_key=turnstile_site_key,
                             error=f'Too many login attempts. Please try again in {window_seconds // 60} minutes.'
                         ), 429
                     else:

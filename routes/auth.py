@@ -5,6 +5,7 @@ Authentication Blueprint — admin login with Cloudflare Turnstile captcha.
 import requests
 from flask import Blueprint, render_template, request, session, redirect, url_for, jsonify
 import config
+from backend.rate_limiter import rate_limit
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -41,6 +42,7 @@ def login_page():
 
 
 @auth_bp.route('/login', methods=['POST'])
+@rate_limit(max_requests=5, window_seconds=300)
 def login_submit():
     password = request.form.get('password', '')
     turnstile_token = request.form.get('cf-turnstile-response', '')

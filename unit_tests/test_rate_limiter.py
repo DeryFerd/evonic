@@ -151,11 +151,12 @@ class TestRateLimiter:
 class TestRateLimitDecorator:
     """Test the rate_limit decorator."""
     
+    def setup_method(self, method):
+        """Clear rate limiter before each test method."""
+        get_rate_limiter().clear_all()
+    
     def test_decorator_allows_within_limit(self):
         """Test that decorator allows requests within limit."""
-        # Clear rate limiter before test
-        get_rate_limiter().clear_all()
-        
         app = Flask(__name__)
         app.config['TESTING'] = True
         
@@ -177,7 +178,6 @@ class TestRateLimitDecorator:
         # by checking the RateLimiter directly since Flask template rendering
         # in tests can be complex
         limiter = get_rate_limiter()
-        limiter.clear_all()
         
         identifier = "test_client"
         
@@ -192,9 +192,6 @@ class TestRateLimitDecorator:
         """Test that decorator returns JSON for JSON requests."""
         app = Flask(__name__)
         app.config['TESTING'] = True
-        
-        # Clear rate limiter before test
-        get_rate_limiter().clear_all()
         
         @app.route('/api/test', methods=['POST'])
         @rate_limit(max_requests=1, window_seconds=60)
@@ -218,9 +215,6 @@ class TestRateLimitDecorator:
         """Test decorator with custom identifier function."""
         app = Flask(__name__)
         app.config['TESTING'] = True
-        
-        # Clear rate limiter before test
-        get_rate_limiter().clear_all()
         
         def get_user_id(req):
             return req.headers.get('X-User-ID', 'anonymous')

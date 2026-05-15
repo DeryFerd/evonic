@@ -153,7 +153,7 @@ def rate_limit(max_requests=5, window_seconds=300, identifier_func=None):
                     except Exception:
                         turnstile_site_key = None
                     
-                    if turnstile_site_key is not None:
+                    if turnstile_site_key:
                         return render_template(
                             'login.html',
                             turnstile_site_key=turnstile_site_key,

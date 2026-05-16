@@ -541,7 +541,7 @@ function renderSessionList() {
         return;
     }
     list.innerHTML = allSessions.map(s => {
-        const active = s.id === currentSessionId ? 'bg-indigo-50 border-l-2 border-l-indigo-500' : 'border-l-2 border-l-transparent hover:bg-gray-600';
+        const active = s.id === currentSessionId ? 'bg-indigo-50 border-l-2 border-l-indigo-500' : 'border-l-2 border-l-transparent hover:bg-gray-50';
         const preview = s.last_message ? truncate(s.last_message, 50) : 'No messages';
         const prefixIcon = s.last_message_role === 'assistant' ? '<span class="text-indigo-400 mr-1">Bot:</span>' : '';
         const chBadge = channelBadge(s.channel_type);

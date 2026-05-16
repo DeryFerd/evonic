@@ -35,7 +35,7 @@ def pytest_sessionfinish(session, exitstatus):
     import sys
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(int(exitstatus))
+    # os._exit(int(exitstatus))  # disabled for debugging
 
 
 @pytest.fixture(autouse=True)

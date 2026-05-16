@@ -2,7 +2,7 @@
   "id": "github",
   "name": "GitHub",
   "version": "1.0.0",
-  "description": "Teaches the agent how to use the GitHub CLI (gh) fluently. Requires user to provide a token first.",
+  "description": "Makes your agent fluent in GitHub operations: creating and reviewing pull requests, managing issues, commenting on PRs, and interacting with repositories via the GitHub CLI (`gh`). Requires `gh` CLI to be installed and a valid GitHub personal access token.",
   "brief": "You can use the GitHub CLI (`gh`) to manage PRs, issues, and repos. Load this skill with `use_skill('github')`.",
   "author": "Evonic",
   "lazy_tools": true,

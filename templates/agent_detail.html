@@ -9,8 +9,8 @@ footer { display: none; }
 main { align-items: flex-start !important; }
 /* Dark mode: chat area */
 html.dark #agent-state-card { background: #1f2937; border-color: #374151; }
-html.dark #state-busy-dot { background: #451a03 !important; color: #fcd34d !important; }
-html.dark #mobile-state-busy-dot { background: #451a03 !important; color: #fcd34d !important; }
+html.dark #state-busy-dot { background: #1e1b4b !important; color: #a5b4fc !important; }
+html.dark #mobile-state-busy-dot { background: #1e1b4b !important; color: #a5b4fc !important; }
 html.dark #agent-state-card .bg-green-100 { background: #052e16 !important; color: #86efac !important; }
 html.dark #agent-state-card .bg-amber-100 { background: #451a03 !important; color: #fcd34d !important; }
 html.dark #agent-state-card .bg-blue-100 { background: #172554 !important; color: #93c5fd !important; }
@@ -552,7 +552,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                     <div class="flex justify-between items-center px-4 pt-4 pb-2 flex-shrink-0">
                         <div class="flex items-center gap-2">
                             <h3 class="font-semibold text-gray-800 dark:text-gray-100">Agent State</h3>
-                            <span id="state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
+                            <span id="state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>Busy</span>
                         </div>
                         <button onclick="refreshAgentState()" class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1" title="Refresh">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
@@ -605,7 +605,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <div class="flex justify-between items-center px-4 py-2 border-b border-gray-100">
                     <div class="flex items-center gap-2">
                         <h5 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Agent State</h5>
-                        <span id="mobile-state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
+                        <span id="mobile-state-busy-dot" class="hidden inline-flex items-center gap-1.5 text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse"></span>Busy</span>
                     </div>
                     <button onclick="refreshAgentState()" class="text-xs text-gray-400 hover:text-gray-600" title="Refresh">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>

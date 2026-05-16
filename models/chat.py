@@ -23,7 +23,6 @@ class AgentChatDB:
     def __init__(self, agent_id: str):
         self.agent_id = agent_id
         agent_dir = os.path.join(AGENTS_DIR, agent_id)
-        os.makedirs(agent_dir, exist_ok=True)
         self.db_path = os.path.join(agent_dir, 'chat.db')
         self._init_tables()
 

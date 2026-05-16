@@ -75,7 +75,6 @@ class ChatLog:
         self.agent_id = agent_id
         self.session_id = session_id
         sessions_dir = os.path.join(_AGENTS_DIR, agent_id, 'sessions')
-        os.makedirs(sessions_dir, exist_ok=True)
         # session_id is "{agent_id}-{hash}" — strip the prefix for the filename
         filename = session_id
         if filename.startswith(f'{agent_id}-'):

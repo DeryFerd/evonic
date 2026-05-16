@@ -288,15 +288,6 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
             </div>
             <div class="mb-4">
                 <label class="flex items-center gap-3 cursor-pointer select-none">
-                    {{ toggle_widget(id='agent-artifacts', checked=agent.artifacts_enabled) }}
-                    <div>
-                        <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Artifacts (Saved Files)</span>
-                        <p class="text-xs text-gray-400 mt-0.5">Allow agent to save files (reports, analysis, images, etc.) to its artifacts directory. When enabled, the agent's SYSTEM.md is updated with instructions to use the <code>save_artifact</code> tool. Files appear in the Artifacts tab.</p>
-                    </div>
-                </label>
-            </div>
-            <div class="mb-4">
-                <label class="flex items-center gap-3 cursor-pointer select-none">
                     {{ toggle_widget(id='agent-inject-id', checked=agent.inject_agent_id) }}
                     <div>
                         <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Inject Agent ID</span>
@@ -382,6 +373,16 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Agent Messaging</span>
                                 <p class="text-xs text-gray-400 mt-0.5">Allow this agent to send messages to other agents. Enables <code>send_agent_message</code>, <code>escalate_to_user</code>, and <code>resolve_agent_approval</code> tools automatically.</p>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-artifacts', checked=agent.artifacts_enabled) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Artifacts (Saved Files)</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Allow agent to save files (reports, analysis, images, etc.) to its artifacts directory. When enabled, the agent's SYSTEM.md is updated with instructions to use the <code>save_artifact</code> tool. Files appear in the Artifacts tab.</p>
                             </div>
                         </label>
                     </div>
@@ -1469,7 +1470,6 @@ async function saveGeneral() {
             safety_checker_enabled: document.getElementById('agent-safety-checker').checked ? 1 : 0,
             inject_agent_id: document.getElementById('agent-inject-id').checked ? 1 : 0,
             inject_datetime: document.getElementById('agent-inject-datetime').checked ? 1 : 0,
-            artifacts_enabled: document.getElementById('agent-artifacts').checked ? 1 : 0,
         })
     });
     const data = await res.json();
@@ -1509,6 +1509,7 @@ async function saveAdvanced() {
             disable_parallel_tool_execution: document.getElementById('agent-parallel-exec').checked ? 1 : 0,
             disable_turn_prefetch: document.getElementById('agent-prefetch').checked ? 1 : 0,
             agent_messaging_enabled: document.getElementById('agent-messaging-enabled').checked ? 1 : 0,
+            artifacts_enabled: document.getElementById('agent-artifacts').checked ? 1 : 0,
         })
     });
     const data = await res.json();

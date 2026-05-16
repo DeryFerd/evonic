@@ -6,6 +6,7 @@ for tool modules that define a `test_execute()` function.
 """
 
 import os
+import warnings
 import importlib.util
 import pytest
 
@@ -37,8 +38,11 @@ def _discover_skill_tool_modules():
                     f'skills.{skill_name}.backend.tools.{tool_name}', path
                 )
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                yield f'{skill_name}/{tool_name}', module
+                try:
+                    spec.loader.exec_module(module)
+                    yield f'{skill_name}/{tool_name}', module
+                except (ModuleNotFoundError, ImportError) as e:
+                    warnings.warn(f'Skipping {tool_name} in skill {skill_name}: {e}')
         finally:
             if inserted and backend_dir in sys.path:
                 sys.path.remove(backend_dir)

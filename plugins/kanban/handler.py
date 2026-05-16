@@ -1720,7 +1720,7 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
 #                f"and state('kanban:activate', {{'task_id': '{task_id}'}}) NOW."
             )
             if not any(m.get('role') == 'user' and m.get('content') == _plan_nudge
-                       for m in messages[-6:]):
+                       for m in messages):
                 return {'inject': _plan_nudge}
 
         _approved_reminder = (
@@ -1728,12 +1728,11 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
 #            f"Call state('kanban:activate', {{'task_id': '{task_id}'}}) NOW. "
 #            f"Do NOT respond with text first — make the tool call immediately."
         )
-        # Dedup: skip if the same reminder was already injected in the last 6 messages.
-        # This prevents double-injection when both the post-tool and pre-final interceptor
-        # paths fire in the same LLM turn.
-        _tail = messages[-6:]
+        # Dedup: skip if the same reminder was already injected anywhere in messages.
+        # Using only messages[-6:] caused infinite loops when each iteration added
+        # messages that pushed the original injection out of the window.
         if any(m.get('role') == 'user' and m.get('content') == _approved_reminder
-               for m in _tail):
+               for m in messages):
             return None
         return {'inject': _approved_reminder}
 
@@ -1767,7 +1766,7 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             f"Your task is #{task_id} — work on it now."
         )
         if not any(m.get('role') == 'user' and m.get('content') == _active_plan_nudge
-                   for m in messages[-6:]):
+                   for m in messages):
             return {'inject': _active_plan_nudge}
 
     # ── progress reminder: agent used a real tool, time to log progress ─────

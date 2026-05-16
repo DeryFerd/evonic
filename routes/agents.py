@@ -566,12 +566,14 @@ def api_list_artifacts(agent_id):
         ext = os.path.splitext(fname)[1].lower()
         if ext in ('.md', '.pdf'):
             return 'document'
-        if ext in ('.txt', '.csv', '.json'):
+        if ext in ('.txt', '.csv', '.json', '.yaml', '.yml', '.xml', '.log'):
             return 'text'
-        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'):
+        if ext in ('.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.bmp', '.ico'):
             return 'image'
-        if ext in ('.mp3', '.wav', '.ogg', '.flac'):
+        if ext in ('.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a', '.wma'):
             return 'sound'
+        if ext in ('.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v'):
+            return 'video'
         return 'data'
     
     files = []

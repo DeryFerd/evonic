@@ -102,6 +102,19 @@ html.dark #tab-artifacts .text-gray-600 { color: #d1d5db !important; }
 html.dark #tab-artifacts .text-red-500 { color: #f87171 !important; }
 html.dark #tab-artifacts .hover\:text-red-700:hover { color: #fca5a5 !important; }
 html.dark #tab-artifacts .bg-red-50 { background: #451a1a !important; }
+/* Dark mode: Artifact viewer modal */
+html.dark #artifact-viewer-modal > div { background: #1f2937; }
+html.dark #artifact-viewer-modal .border-gray-200 { border-color: #374151; }
+html.dark #artifact-viewer-modal .border-gray-100 { border-color: #374151; }
+html.dark #artifact-viewer-modal .text-gray-800 { color: #f3f4f6; }
+html.dark #artifact-viewer-modal .text-gray-700 { color: #e5e7eb; }
+html.dark #artifact-viewer-modal .text-gray-600 { color: #d1d5db; }
+html.dark #artifact-viewer-modal .text-gray-500 { color: #9ca3af; }
+html.dark #artifact-viewer-modal .text-gray-400 { color: #6b7280; }
+html.dark #artifact-viewer-modal .bg-gray-50 { background: #374151; }
+html.dark #artifact-viewer-modal .bg-gray-100 { background: #4b5563; }
+html.dark #artifact-viewer-modal .bg-white { background: #1f2937; }
+html.dark #artifact-viewer-modal .hover\\:bg-gray-100:hover { background: #4b5563; }
 /* Dark mode: Channel detail modal */
 html.dark #channel-detail-modal .bg-gray-50 { background: #374151 !important; }
 html.dark #channel-detail-modal .border-gray-100 { border-color: #4b5563 !important; }
@@ -537,6 +550,7 @@ html.dark #channel-detail-modal .hover\:bg-indigo-100:hover { background: #312e8
                 <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="text" onclick="setArtifactFilter('text')">Text</button>
                 <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="image" onclick="setArtifactFilter('image')">Image</button>
                 <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="sound" onclick="setArtifactFilter('sound')">Sound</button>
+                <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="video" onclick="setArtifactFilter('video')">Video</button>
                 <button class="artifacts-filter-chip px-3 py-1.5 text-xs font-medium rounded-full border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700" data-type="data" onclick="setArtifactFilter('data')">Data / Other</button>
             </div>
 
@@ -3593,7 +3607,7 @@ function renderArtifacts() {
         const ext = f.filename.split('.').pop();
         
         return `
-            <div class="bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg p-4 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors cursor-pointer flex flex-col" onclick="downloadArtifact('${f.filename}')">
+            <div class="bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg p-4 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors cursor-pointer flex flex-col" onclick="openArtifact('${f.filename}', '${f.category}')">
                 <div class="flex items-center justify-center w-12 h-12 rounded-lg ${icon.bg} mb-3">
                     <svg class="w-6 h-6 ${icon.color}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         ${icon.path}
@@ -3624,6 +3638,8 @@ function getArtifactIcon(category) {
             return { bg: 'bg-green-50 dark:bg-green-900/20', color: 'text-green-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>' };
         case 'sound':
             return { bg: 'bg-purple-50 dark:bg-purple-900/20', color: 'text-purple-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path>' };
+        case 'video':
+            return { bg: 'bg-rose-50 dark:bg-rose-900/20', color: 'text-rose-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>' };
         case 'text':
             return { bg: 'bg-amber-50 dark:bg-amber-900/20', color: 'text-amber-500', path: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>' };
         default:
@@ -3651,6 +3667,131 @@ function setArtifactFilter(type) {
 
 function downloadArtifact(filename) {
     window.open(`/api/agents/${AGENT_ID}/artifacts/${filename}`, '_blank');
+}
+
+function openArtifact(filename, category) {
+    const existing = document.getElementById('artifact-viewer-modal');
+    if (existing) existing.remove();
+
+    const fileUrl = `/api/agents/${AGENT_ID}/artifacts/${filename}`;
+    const ext = filename.split('.').pop().toLowerCase();
+
+    const html = `
+    <div id="artifact-viewer-modal" class="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4" onclick="if(event.target===this)closeArtifactViewer()">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-4xl mx-4 max-h-[90vh] flex flex-col overflow-hidden" id="artifact-viewer-box">
+            <div class="flex items-center justify-between px-6 py-4 border-b border-gray-200 dark:border-gray-600 flex-shrink-0">
+                <div class="flex items-center gap-3 min-w-0">
+                    <span class="flex items-center justify-center w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-900/20 text-indigo-500 flex-shrink-0">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    </span>
+                    <div class="min-w-0">
+                        <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 truncate">${filename}</h3>
+                        <p class="text-xs text-gray-400">${category.charAt(0).toUpperCase() + category.slice(1)}</p>
+                    </div>
+                </div>
+                <div class="flex items-center gap-2 flex-shrink-0">
+                    <a href="${fileUrl}" download class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Download">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download
+                    </a>
+                    <button onclick="closeArtifactViewer()" class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="flex-1 overflow-y-auto p-6" id="artifact-viewer-body">
+                <div class="flex items-center justify-center py-16">
+                    <svg class="animate-spin w-8 h-8 text-indigo-500" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    document.body.insertAdjacentHTML('beforeend', html);
+    document.addEventListener('keydown', _artifactViewerEscHandler);
+
+    renderArtifactContent(filename, category, fileUrl, ext);
+}
+
+function closeArtifactViewer() {
+    const modal = document.getElementById('artifact-viewer-modal');
+    if (modal) modal.remove();
+    document.removeEventListener('keydown', _artifactViewerEscHandler);
+}
+
+function _artifactViewerEscHandler(e) {
+    if (e.key === 'Escape') closeArtifactViewer();
+}
+
+async function renderArtifactContent(filename, category, fileUrl, ext) {
+    const body = document.getElementById('artifact-viewer-body');
+    if (!body) return;
+
+    try {
+        if (ext === 'md') {
+            // Fetch and render markdown
+            const res = await fetch(fileUrl);
+            const text = await res.text();
+            body.innerHTML = '<div class="recap-prose max-w-none">' + marked.parse(text) + '</div>';
+        } else if (ext === 'pdf') {
+            // Embed PDF viewer
+            body.innerHTML = `<iframe src="${fileUrl}" class="w-full rounded-md border border-gray-200 dark:border-gray-600" style="min-height: 70vh;"></iframe>`;
+        } else if (['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v'].includes(ext)) {
+            // Video player
+            body.innerHTML = `
+                <div class="flex justify-center">
+                    <video controls class="max-w-full max-h-[70vh] rounded-md shadow-lg">
+                        <source src="${fileUrl}" type="video/${ext === 'mov' ? 'quicktime' : ext === 'mkv' ? 'x-matroska' : ext === 'm4v' ? 'mp4' : ext}">
+                        Your browser does not support the video tag.
+                    </video>
+                </div>`;
+        } else if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a', 'wma'].includes(ext)) {
+            // Audio player
+            body.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-8">
+                    <div class="flex items-center justify-center w-20 h-20 rounded-full bg-purple-50 dark:bg-purple-900/20 text-purple-500">
+                        <svg class="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"></path></svg>
+                    </div>
+                    <div class="text-center mb-2">
+                        <p class="text-sm font-medium text-gray-700 dark:text-gray-300">${filename}</p>
+                    </div>
+                    <audio controls class="w-full max-w-lg">
+                        <source src="${fileUrl}" type="audio/${ext === 'm4a' ? 'mp4' : ext === 'wma' ? 'x-ms-wma' : ext}">
+                        Your browser does not support the audio tag.
+                    </audio>
+                </div>`;
+        } else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'bmp', 'ico'].includes(ext)) {
+            // Image viewer
+            body.innerHTML = `
+                <div class="flex justify-center">
+                    <img src="${fileUrl}" alt="${filename}" class="max-w-full max-h-[70vh] rounded-md shadow-lg object-contain">
+                </div>`;
+        } else if (['txt', 'csv', 'json', 'yaml', 'yml', 'xml', 'log'].includes(ext)) {
+            // Plain text viewer
+            const res = await fetch(fileUrl);
+            const text = await res.text();
+            const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            body.innerHTML = `<pre class="bg-gray-50 dark:bg-gray-900 rounded-md p-4 text-sm text-gray-800 dark:text-gray-200 overflow-x-auto max-h-[70vh] whitespace-pre-wrap font-mono">${escaped}</pre>`;
+        } else {
+            // Unknown type - show file info + download prompt
+            body.innerHTML = `
+                <div class="flex flex-col items-center gap-4 py-12 text-gray-400">
+                    <svg class="w-16 h-16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    <p class="text-sm">Preview not available for this file type.</p>
+                    <a href="${fileUrl}" download class="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-md text-sm font-medium transition-colors">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download File
+                    </a>
+                </div>`;
+        }
+    } catch(e) {
+        body.innerHTML = `
+            <div class="flex flex-col items-center gap-3 py-12 text-red-400">
+                <svg class="w-12 h-12" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86l-8.6 14.86A1 1 0 002.56 20h18.88a1 1 0 00.87-1.5l-8.6-14.86a1 1 0 00-1.74 0z"></path></svg>
+                <p class="text-sm">Failed to load file content.</p>
+            </div>`;
+        console.error('Failed to render artifact:', e);
+    }
 }
 
 async function deleteArtifact(filename) {

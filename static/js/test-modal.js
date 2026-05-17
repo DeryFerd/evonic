@@ -176,7 +176,7 @@ function renderTestDetail(test, domain) {
     html += `
         <div class="test-detail-section">
             <div class="section-header">📥 PROMPT</div>
-            <div class="section-content prompt-box">${escapeHtml(test.prompt || '')}</div>
+            <div class="section-content prompt-box"><pre style="white-space: pre-wrap; word-wrap: break-word; margin: 0; font-size: 0.9rem; line-height: 1.5;">${escapeHtml(test.prompt || '')}</pre></div>
         </div>
     `;
 

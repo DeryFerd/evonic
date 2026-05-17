@@ -45,6 +45,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     telnet \
+    dnsutils \
     iputils-ping \
     openssh-server \
     openssl \

@@ -27,20 +27,20 @@
     "type": "function",
     "function": {
       "name": "pinchtab_new_tab",
-      "description": "Open a new browser tab in a PinchTab instance. Optionally navigate to a URL immediately. Returns the new tab's ID which you'll need for all subsequent tab operations (navigate, snapshot, click, etc.).",
+      "description": "Open a new browser tab in a PinchTab instance. Optionally navigate to a URL immediately. Returns the new tab's ID which you'll need for all subsequent tab operations (navigate, snapshot, click, etc.). The instance_id is optional — when omitted, the server auto-routes to the appropriate instance.",
       "parameters": {
         "type": "object",
         "properties": {
           "instance_id": {
             "type": "string",
-            "description": "ID of the browser instance to create the tab in. Use pinchtab_list_instances to find available instances."
+            "description": "Optional ID of the browser instance to create the tab in. Use pinchtab_list_instances to find available instances. When omitted, the server auto-routes."
           },
           "url": {
             "type": "string",
             "description": "Optional URL to navigate the new tab to immediately after creation."
           }
         },
-        "required": ["instance_id"]
+        "required": []
       }
     }
   },

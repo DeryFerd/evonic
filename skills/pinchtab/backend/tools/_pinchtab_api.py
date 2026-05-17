@@ -1,27 +1,31 @@
 """
-Shared PinchTab HTTP API wrapper.
+Shared PinchTab HTTP API wrapper for REST API v0.12.0.
 
-Handles all communication with the PinchTab server. Uses environment
-variables PINCHTAB_HOST and PINCHTAB_PORT (with sensible defaults) so
-configuration can be injected at deployment time without code changes.
+Communicates with PinchTab server directly via HTTP REST API.
+Uses environment variables:
+  PINCHTAB_HOST  (default: localhost)
+  PINCHTAB_PORT  (default: 9867)
+  PINCHTAB_TOKEN (optional, for authenticated endpoints)
 """
 
 import json
 import os
+import urllib.parse
 import urllib.request
 import urllib.error
 
 PINCHTAB_HOST = os.environ.get("PINCHTAB_HOST", "localhost")
 PINCHTAB_PORT = os.environ.get("PINCHTAB_PORT", "9867")
 PINCHTAB_BASE_URL = f"http://{PINCHTAB_HOST}:{PINCHTAB_PORT}"
+PINCHTAB_TOKEN = os.environ.get("PINCHTAB_TOKEN", "")
 
 
 def _api(method: str, path: str, body: dict = None, timeout: int = 30) -> dict:
-    """Call PinchTab HTTP API and return the parsed JSON response.
+    """Call PinchTab REST API and return the parsed JSON response.
 
     Args:
         method: HTTP method (GET, POST, DELETE, etc.)
-        path: API path starting with / (e.g. /api/health)
+        path: API path starting with / (e.g. /health)
         body: Optional JSON-serializable dict for the request body
         timeout: Request timeout in seconds (default 30)
 
@@ -35,6 +39,10 @@ def _api(method: str, path: str, body: dict = None, timeout: int = 30) -> dict:
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
 
+    # Inject Bearer auth token if configured
+    if PINCHTAB_TOKEN:
+        req.add_header("Authorization", f"Bearer {PINCHTAB_TOKEN}")
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
@@ -42,7 +50,6 @@ def _api(method: str, path: str, body: dict = None, timeout: int = 30) -> dict:
                 return {}
             return json.loads(raw)
     except urllib.error.HTTPError as e:
-        # Try to parse the error body for a better message
         try:
             err_body = json.loads(e.read())
         except Exception:
@@ -67,3 +74,42 @@ def _api(method: str, path: str, body: dict = None, timeout: int = 30) -> dict:
         return {"error": f"PinchTab returned non-JSON response from {method} {path}"}
     except Exception as e:
         return {"error": f"PinchTab request failed: {type(e).__name__}: {e}"}
+
+
+def _raw_get(path: str, params: dict = None, timeout: int = 30) -> bytes:
+    """Call PinchTab REST API GET and return raw bytes.
+
+    Used for endpoints that return non-JSON data (e.g. screenshots).
+    """
+    url = f"{PINCHTAB_BASE_URL}{path}"
+    if params:
+        qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items() if v is not None)
+        if qs:
+            url += "?" + qs
+
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "application/json")
+    if PINCHTAB_TOKEN:
+        req.add_header("Authorization", f"Bearer {PINCHTAB_TOKEN}")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read())
+        except Exception:
+            err_body = None
+        detail = ""
+        if isinstance(err_body, dict):
+            detail = err_body.get("error", err_body.get("message", ""))
+        elif isinstance(err_body, str):
+            detail = err_body
+        raise RuntimeError(
+            f"PinchTab HTTP {e.code} on GET {path}"
+            + (f": {detail}" if detail else "")
+        )
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"PinchTab unreachable at {PINCHTAB_BASE_URL}: {e.reason}"
+        )

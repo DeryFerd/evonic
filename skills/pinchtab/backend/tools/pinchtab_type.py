@@ -6,6 +6,10 @@ from ._pinchtab_api import _api
 def execute(agent: dict, args: dict) -> dict:
     """Type text into an element in a browser tab.
 
+    Uses the unified /action endpoint with kind=type.
+    The selector supports CSS selectors, accessibility node refs,
+    XPath, or semantic queries.
+
     Args:
         tab_id: ID of the tab.
         selector: CSS selector or accessibility node ID of the input element.
@@ -25,7 +29,9 @@ def execute(agent: dict, args: dict) -> dict:
     if not text:
         return {"error": "text is required."}
 
-    result = _api("POST", f"/api/tabs/{tab_id}/type", {
+    result = _api("POST", "/action", {
+        "tabId": tab_id,
+        "kind": "type",
         "selector": selector,
         "text": text,
     })

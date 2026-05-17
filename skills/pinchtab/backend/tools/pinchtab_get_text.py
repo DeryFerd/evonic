@@ -16,7 +16,7 @@ def execute(agent: dict, args: dict) -> dict:
     if not tab_id:
         return {"error": "tab_id is required."}
 
-    result = _api("GET", f"/api/tabs/{tab_id}/text")
+    result = _api("GET", f"/text?tabId={tab_id}")
     if "error" in result:
         return result
 

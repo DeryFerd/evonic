@@ -8,7 +8,7 @@ def execute(agent: dict, args: dict) -> dict:
 
     Returns server info if healthy, or an error dict if unreachable.
     """
-    result = _api("GET", "/api/health")
+    result = _api("GET", "/health")
     if "error" in result:
         return result
     return {

@@ -314,10 +314,7 @@ def run_tool_loop(agent: Dict[str, Any],
 
     _iteration = 0
     _injection_count = 0  # total injections in this loop run (capped to prevent infinite loops)
-    # Track whether we've already done a thinking-enabled LLM call with tool calls.
-    # Some APIs (e.g. DeepSeek-R1) require that thinking is ONLY enabled on the
-    # first call; subsequent calls (after tool results) must NOT re-enable thinking,
-    # otherwise the API rejects with "reasoning_content must be passed back".
+    # Track whether we've already done a tool-call iteration (kept for future use).
     _had_tool_call_iteration = False
 
     def _get_last_user_message(msgs: list) -> Optional[dict]:
@@ -450,10 +447,13 @@ def run_tool_loop(agent: Dict[str, Any],
                             )
 
         # LOCK ORDERING: Main path — llm_lock only. No other locks held here.
-        # Disable thinking after the first tool-call iteration so the API doesn't
-        # see "thinking enabled" while tool_calls + reasoning_content are already
-        # in the history (causes DeepSeek-R1 "reasoning_content must be passed back").
-        _enable_thinking_this_call = not _had_tool_call_iteration
+        # Always keep thinking enabled if the model supports it. Previously this
+        # was disabled after the first tool-call iteration to work around a
+        # DeepSeek-R1 bug, but newer DeepSeek models (v4+) reject requests that
+        # contain reasoning_content in messages without the thinking parameter.
+        # Since reasoning_content is now persisted to DB and passed back correctly,
+        # keeping thinking enabled works for both old and new models.
+        _enable_thinking_this_call = True
         _logger.info("[LOCK] _llm_lock - WAITING (session=%s, main LLM call)", session_id)
         with llm_lock:
             _logger.info("[LOCK] _llm_lock - ACQUIRED (session=%s, main LLM call)", session_id)

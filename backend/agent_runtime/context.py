@@ -522,4 +522,9 @@ def build_message_entry(msg: dict, agent: dict) -> dict:
         entry['tool_calls'] = msg['tool_calls']
     if msg.get('tool_call_id'):
         entry['tool_call_id'] = msg['tool_call_id']
+    # Restore reasoning_content so it is passed back to APIs that require it
+    if msg.get('role') == 'assistant' and msg.get('metadata') and isinstance(msg['metadata'], dict):
+        rc = msg['metadata'].get('reasoning_content')
+        if rc:
+            entry['reasoning_content'] = rc
     return entry

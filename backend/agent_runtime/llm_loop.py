@@ -820,7 +820,8 @@ def run_tool_loop(agent: Dict[str, Any],
                 _continuation_nudge_count += 1
                 _logger.debug("Continuation phrase detected — nudging LLM (%d/%d)",
                               _continuation_nudge_count, MAX_CONTINUATION_NUDGES)
-                db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id)
+                _nudge_meta = {"reasoning_content": reasoning_text} if reasoning_text else None
+                db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id, metadata=_nudge_meta)
                 chatlog.append({'type': 'intermediate', 'session_id': session_id, 'content': content})
                 _asst_nudge_msg: Dict[str, Any] = {"role": "assistant", "content": content}
                 if reasoning_text:
@@ -846,7 +847,8 @@ def run_tool_loop(agent: Dict[str, Any],
             if pre_final_injections:
                 # Save this response as an intermediate assistant message so the
                 # LLM sees it as context, then append the injected instructions.
-                db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id)
+                _inj_meta = {"reasoning_content": reasoning_text} if reasoning_text else None
+                db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id, metadata=_inj_meta)
                 chatlog.append({'type': 'intermediate', 'session_id': session_id, 'content': content})
                 _asst_inj_msg: Dict[str, Any] = {"role": "assistant", "content": content}
                 if reasoning_text:
@@ -862,6 +864,9 @@ def run_tool_loop(agent: Dict[str, Any],
                 meta['thinking_duration'] = round(time.time() - _loop_start_time, 1)
             if meta and agent.get('send_intermediate_responses'):
                 meta['send_intermediate_responses'] = True
+            if reasoning_text:
+                meta = meta or {}
+                meta['reasoning_content'] = reasoning_text
             _final_dur = round(time.time() - _loop_start_time, 1)
             if content:
                 db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id, metadata=meta)
@@ -902,6 +907,8 @@ def run_tool_loop(agent: Dict[str, Any],
                     _logger.error("LLM still looping after force-stop injection — terminating loop")
                     _dup_dur = round(time.time() - _loop_start_time, 1)
                     meta = {"timeline": timeline, "thinking_duration": _dup_dur}
+                    if reasoning_text:
+                        meta['reasoning_content'] = reasoning_text
                     db.add_chat_message(session_id, 'assistant', content, agent_id=db_agent_id, metadata=meta)
                     chatlog.append({'type': 'error', 'session_id': session_id,
                                     'content': content or '(No response)',
@@ -947,7 +954,8 @@ def run_tool_loop(agent: Dict[str, Any],
             sanitized_tool_calls.append(_tc_copy)
 
         # Save the assistant message with tool calls
-        db.add_chat_message(session_id, 'assistant', content, tool_calls=tool_calls, agent_id=db_agent_id)
+        _tc_meta = {"reasoning_content": reasoning_text} if reasoning_text else None
+        db.add_chat_message(session_id, 'assistant', content, tool_calls=tool_calls, agent_id=db_agent_id, metadata=_tc_meta)
         # Write intermediate content + individual tool_call entries to chatlog
         if content:
             chatlog.append({'type': 'intermediate', 'session_id': session_id, 'content': content})

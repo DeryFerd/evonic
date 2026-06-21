@@ -192,6 +192,23 @@ CONNECTOR_PING_INTERVAL = _get_env_int("CONNECTOR_PING_INTERVAL", 30, min_val=5,
 CONNECTOR_PING_TIMEOUT = _get_env_int("CONNECTOR_PING_TIMEOUT", 10, min_val=1, max_val=60)
 CONNECTOR_PAIRING_CODE_TTL = _get_env_int("CONNECTOR_PAIRING_CODE_TTL", 300, min_val=60, max_val=3600)  # seconds
 
+# Evonet binary download protocol detection
+# Controls which protocol (http/https) is embedded in downloaded Evonet binaries.
+# Options:
+#   - 'auto' (default): detect from request headers (X-Forwarded-Proto, request.scheme)
+#   - 'https': always use https (recommended for production)
+#   - 'http': always use http (only for local development without TLS)
+# When 'auto' fails to detect protocol confidently, defaults to 'https' with a warning log.
+_EVONIC_PUBLIC_PROTOCOL_RAW = os.getenv("EVONIC_PUBLIC_PROTOCOL", "auto").lower().strip()
+if _EVONIC_PUBLIC_PROTOCOL_RAW not in ("http", "https", "auto"):
+    _logger.warning(
+        "Invalid EVONIC_PUBLIC_PROTOCOL=%r. Must be 'http', 'https', or 'auto'. Defaulting to 'auto'.",
+        _EVONIC_PUBLIC_PROTOCOL_RAW
+    )
+    EVONIC_PUBLIC_PROTOCOL = "auto"
+else:
+    EVONIC_PUBLIC_PROTOCOL = _EVONIC_PUBLIC_PROTOCOL_RAW
+
 AGENT_MAX_TOOL_ITERATIONS = _get_env_int("AGENT_MAX_TOOL_ITERATIONS", 100, min_val=1, max_val=1000)
 EVAL_MAX_TOOL_ITERATIONS = _get_env_int("EVAL_MAX_TOOL_ITERATIONS", 30, min_val=1, max_val=500)
 AGENT_MAX_TOOL_RESULT_CHARS = _get_env_int("AGENT_MAX_TOOL_RESULT_CHARS", 8000, min_val=1, max_val=1_048_576)

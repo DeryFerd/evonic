@@ -446,29 +446,69 @@ def _build_binary(workplace_id, platform):
             workplace_cfg = {}
 
     ws_port = getattr(_cfg, 'CONNECTOR_WS_PORT', 8081)
-    # Detect real protocol robustly: ProxyFix already corrects request.scheme, but also
-    # check Cloudflare-specific and common proxy headers as additional fallbacks.
-    proto = request.scheme  # corrected by ProxyFix when behind a proxy
-    if proto not in ('http', 'https'):
-        proto = 'https'
-    # Explicit header overrides (in priority order)
-    for hdr in ('X-Forwarded-Proto', 'X-Real-Proto', 'CF-Visitor'):
-        val = request.headers.get(hdr, '')
-        if not val:
-            continue
-        # CF-Visitor is JSON: {"scheme":"https"}
-        if hdr == 'CF-Visitor':
-            try:
-                import json as _j
-                cf = _j.loads(val)
-                val = cf.get('scheme', '')
-            except Exception:
-                val = ''
-        # X-Forwarded-Proto may be comma-separated when there are multiple proxies
-        val = val.split(',')[0].strip().lower()
-        if val in ('http', 'https'):
-            proto = val
-            break
+    
+    # Protocol detection for embedded server URL
+    # Priority: EVONIC_PUBLIC_PROTOCOL config > request headers > default to https
+    import logging as _log
+    _logger = _log.getLogger(__name__)
+    
+    evonic_protocol = getattr(_cfg, 'EVONIC_PUBLIC_PROTOCOL', 'auto')
+    
+    if evonic_protocol in ('http', 'https'):
+        # Explicit config override — use configured protocol
+        proto = evonic_protocol
+        _logger.debug(
+            "Evonet binary protocol set by EVONIC_PUBLIC_PROTOCOL config: %s",
+            proto
+        )
+    else:
+        # Auto-detect from request headers
+        # ProxyFix already corrects request.scheme, but also check Cloudflare-specific
+        # and common proxy headers as additional fallbacks.
+        proto = request.scheme  # corrected by ProxyFix when behind a proxy
+        detected_from = 'request.scheme'
+        
+        if proto not in ('http', 'https'):
+            proto = None  # Mark as uncertain
+        
+        # Explicit header overrides (in priority order)
+        for hdr in ('X-Forwarded-Proto', 'X-Real-Proto', 'CF-Visitor'):
+            val = request.headers.get(hdr, '')
+            if not val:
+                continue
+            # CF-Visitor is JSON: {"scheme":"https"}
+            if hdr == 'CF-Visitor':
+                try:
+                    import json as _j
+                    cf = _j.loads(val)
+                    val = cf.get('scheme', '')
+                except Exception:
+                    val = ''
+            # X-Forwarded-Proto may be comma-separated when there are multiple proxies
+            val = val.split(',')[0].strip().lower()
+            if val in ('http', 'https'):
+                proto = val
+                detected_from = hdr
+                break
+        
+        # Fallback to https if detection failed
+        if proto not in ('http', 'https'):
+            _logger.warning(
+                "Unable to reliably detect protocol from request headers "
+                "(scheme=%r, X-Forwarded-Proto=%r). Defaulting to 'https'. "
+                "To override, set EVONIC_PUBLIC_PROTOCOL environment variable to 'http' or 'https'.",
+                request.scheme,
+                request.headers.get('X-Forwarded-Proto', '(not set)')
+            )
+            proto = 'https'
+            detected_from = 'fallback-default'
+        else:
+            _logger.debug(
+                "Evonet binary protocol auto-detected from %s: %s",
+                detected_from,
+                proto
+            )
+    
     server_url = f"{proto}://{request.host}"
     embedded_cfg = {
         'server_url': server_url,

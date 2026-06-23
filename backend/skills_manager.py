@@ -65,9 +65,26 @@ class SkillsManager:
         return copy.deepcopy(cached[1])
 
     def is_skill_enabled(self, skill_id: str) -> bool:
-        """Check if a skill is enabled. DB is authoritative; absent = disabled."""
+        """Check if a skill is enabled.
+
+        The DB setting is authoritative once a skill has been explicitly toggled.
+        When no setting exists, fall back to the skill manifest's
+        ``default_enabled`` flag (absent/false => disabled), so a skill can ship
+        enabled by default while still honoring an explicit user disable.
+        """
         from models.db import db
-        return db.get_setting(f'skill_enabled:{skill_id}') == '1'
+        val = db.get_setting(f'skill_enabled:{skill_id}')
+        if val is not None:
+            return val == '1'
+        return self._default_enabled(skill_id)
+
+    def _default_enabled(self, skill_id: str) -> bool:
+        """Read the manifest's default_enabled flag (used when no DB setting)."""
+        manifest_path = os.path.join(SKILLS_DIR, skill_id, 'skill.json')
+        if not os.path.isfile(manifest_path):
+            return False
+        manifest = self._read_json_cached(manifest_path)
+        return bool(isinstance(manifest, dict) and manifest.get('default_enabled', False))
 
     def list_skills(self) -> List[Dict[str, Any]]:
         """List all installed skills with metadata."""

@@ -2040,7 +2040,8 @@ class AgentRuntime:
 
         try:
             from backend.llm_usage_events import usage_context
-            with usage_context('agent_turn', agent_id, agent.get('name'), ctx.session_id):
+            _usage_source = 'explorer' if agent.get('is_explorer') else 'agent_turn'
+            with usage_context(_usage_source, agent_id, agent.get('name'), ctx.session_id):
                 response_raw, tool_trace, timeline = _loop.run_tool_loop(
                     agent=agent,
                     agent_context=agent_context,

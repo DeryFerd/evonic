@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "Explore",
-      "description": "Spawn a read-only explorer sub-agent to investigate a directory or codebase — including paths outside your own workspace. The explorer searches and reads the target path using its own tools, then reports its findings back to you via agent messaging. Returns immediately with the explorer's ID; the explorer runs independently and replies when done. Call multiple times to explore several paths in parallel.",
+      "description": "Spawn a read-only explorer sub-agent to investigate a directory or codebase — including paths outside your own workspace. The explorer searches and reads the target path using its own tools, then reports its findings back to you. Call multiple times to explore several paths in parallel. Pass a question via the 'query' parameter for a focused investigation.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -11,12 +11,16 @@
             "type": "string",
             "description": "Directory for the explorer to investigate. Accepts an absolute host path (e.g. /home/www/web-a, including paths outside your own workspace), the '/workspace' alias for your own workspace, or a path relative to your workspace. This becomes the explorer's root — its file tools are confined to this directory."
           },
+          "query": {
+            "type": "string",
+            "description": "The question or focus for the exploration. Injected into the explorer's system prompt via the {{query}} placeholder."
+          },
           "context_vars": {
             "type": "object",
-            "description": "Optional flat key→value pairs injected into the explorer's system prompt via {{key}} placeholders. Use this to pass the specific question or focus for the exploration, e.g. {\"query\": \"where is auth handled?\"}."
+            "description": "Optional additional flat key→value pairs injected into the explorer's system prompt via {{key}} placeholders."
           }
         },
-        "required": ["path"]
+        "required": ["path", "query"]
       }
     }
   }

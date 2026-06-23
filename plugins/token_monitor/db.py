@@ -119,29 +119,38 @@ class UsageDB:
         # render them distinctly.
         for r in rows:
             r['is_explorer'] = bool(_EXPLORER_RE.search(r.get('agent_id') or ''))
-        if not rollup_subagents:
-            return rows
-        # Re-aggregate sub-agents under a parent key. Regular sub-agents
-        # ("parent_sub_1") roll into the parent; explorers ("parent_explorer_1")
-        # collapse into a single per-parent explorer entry kept separate from
-        # the parent so they stay visually distinct.
+        # Explorers are always grouped by delegator agent ID.
+        # Regular sub-agents only roll up when rollup_subagents=True.
         merged: Dict[str, Dict[str, Any]] = {}
+        standalone: List[Dict[str, Any]] = []
         for r in rows:
             aid = r.get('agent_id') or ''
             if _EXPLORER_RE.search(aid):
-                key = _EXPLORER_RE.sub('_explorer', aid)  # parent_explorer_1 -> parent_explorer
-                is_explorer = True
+                # Group by delegator agent ID: siwa_explorer_1 -> siwa
+                delegator = _EXPLORER_RE.sub('', aid)
+                acc = merged.setdefault(delegator, {
+                    'agent_id': delegator,
+                    'agent_name': r.get('agent_name'),
+                    'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
+                    'total_tokens': 0, 'is_explorer': True,
+                })
+                for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    acc[f] += r.get(f, 0)
+            elif rollup_subagents and _SUBAGENT_RE.search(aid):
+                # Roll regular sub-agent into parent: angga_sub_1 -> angga
+                parent = _SUBAGENT_RE.sub('', aid) or aid
+                acc = merged.setdefault(parent, {
+                    'agent_id': parent,
+                    'agent_name': r.get('agent_name'),
+                    'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
+                    'total_tokens': 0, 'is_explorer': False,
+                })
+                for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    acc[f] += r.get(f, 0)
             else:
-                key = _SUBAGENT_RE.sub('', aid) or aid
-                is_explorer = False
-            acc = merged.setdefault(key, {
-                'agent_id': key, 'agent_name': r.get('agent_name'),
-                'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0,
-                'is_explorer': is_explorer,
-            })
-            for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
-                acc[f] += r.get(f, 0)
-        return sorted(merged.values(), key=lambda x: x['total_tokens'], reverse=True)
+                standalone.append(r)
+        result = list(merged.values()) + standalone
+        return sorted(result, key=lambda x: x['total_tokens'], reverse=True)
 
     def _group_by(self, column: str, since: Optional[str]) -> List[Dict[str, Any]]:
         where, params = self._since_clause(since)

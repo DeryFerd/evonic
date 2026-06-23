@@ -13,6 +13,7 @@ from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
 from backend.tools import tool_registry
+from backend.tools.super_agent_tools import _sync_skill_tools
 from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
 agents_bp = Blueprint('agents', __name__)
@@ -462,8 +463,13 @@ def api_get_agent_skills(agent_id):
 def api_set_agent_skills(agent_id):
     data = request.get_json()
     skill_ids = data.get('skills', [])
-    db.set_agent_skills(agent_id, skill_ids)
-    return jsonify({'success': True, 'skills': skill_ids})
+    result = _sync_skill_tools(agent_id, skill_ids)
+    return jsonify({
+        'success': True,
+        'skills': skill_ids,
+        'tools_added': result['tools_added'],
+        'tools_removed': result['tools_removed'],
+    })
 
 
 # ==================== Agent Variables API ====================

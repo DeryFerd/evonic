@@ -7,6 +7,11 @@ that — UNLIKE a normal sub-agent — does NOT inherit the parent's system prom
 tools, model, or KB. Its configuration comes entirely from the `explorer` skill
 settings.
 
+Separation of concerns: the `explorer` skill is the DELEGATOR's tool (it provides
+``Explore``), while the explorer sub-agent that does the actual work is granted the
+`direxplorer` skill's read-only worker tools (Grep/Read/Glob). DirExplorer is
+therefore a required dependency — ``Explore`` errors clearly if it is disabled.
+
 All explorer-specific behavior lives here. The core hot paths (context.py,
 runtime.py, prefetch.py, llm_loop.py) contain only one-line guards keyed on
 ``agent.get('is_explorer')`` that delegate here. ``is_explorer`` is set ONLY by
@@ -19,12 +24,21 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SKILL_ID = 'explorer'
 
-# The explorer skill's own cloned read-only tools. Always granted, non-removable.
+# The worker skill whose read-only tools every explorer runs with.
+WORKER_SKILL_ID = 'direxplorer'
+
+# DirExplorer's read-only tools. Always granted to explorers, non-removable.
 MANDATORY_TOOL_IDS: List[str] = [
-    'skill:explorer:Grep',
-    'skill:explorer:Read',
-    'skill:explorer:Glob',
+    'skill:direxplorer:Grep',
+    'skill:direxplorer:Read',
+    'skill:direxplorer:Glob',
 ]
+
+
+def worker_skill_enabled() -> bool:
+    """True if the DirExplorer worker skill (mandatory tool source) is enabled."""
+    from backend.skills_manager import skills_manager
+    return skills_manager.is_skill_enabled(WORKER_SKILL_ID)
 
 
 def is_explorer(agent: Optional[Dict[str, Any]]) -> bool:

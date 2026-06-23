@@ -7,6 +7,7 @@ back to the caller's session via agent messaging.
 
 import os
 import logging
+import threading
 
 _logger = logging.getLogger(__name__)
 
@@ -15,10 +16,11 @@ _MAX_CONTEXT_VARS = 10
 _MAX_VAR_VALUE_LEN = 1024
 
 EXPLORER_TASK_DIRECTIVE = (
-    "You are an explorer sub-agent. Investigate the directory you have been given "
-    "(your file tools are confined to it) and report a clear, concise summary of "
-    "your findings back to whoever delegated this task. Do NOT make a plan or ask "
-    "for approval — explore directly until you have an answer.\n\n--- EXPLORE ---\n"
+    "You are an explorer sub-agent. Your tools are confined to the target directory.\n"
+    "Read your system prompt — it contains your question and rules. Your ONLY goal "
+    "is to answer that question directly. Do NOT produce a general project overview. "
+    "Do NOT make a plan or ask for approval — explore directly until you have an answer.\n\n"
+    "--- EXPLORE ---\n"
 )
 
 
@@ -74,6 +76,15 @@ def execute(agent: dict, args: dict) -> dict:
     if cv_err:
         return {'error': cv_err}
 
+    # Top-level query parameter (mandatory, injected via {{query}} placeholder)
+    query_arg = (args.get('query') or '').strip()
+    if not query_arg:
+        return {'error': 'A "query" is required. Use Explore({path: "/abs/dir", query: "your question"}).'}
+
+    # Build injected system vars: query is required, context_vars provides extras
+    injected_vars = dict(context_vars)
+    injected_vars['query'] = query_arg
+
     # Explorers run with the DirExplorer worker skill's read-only tools.
     if not explorer.worker_skill_enabled():
         return {'error': (
@@ -111,7 +122,7 @@ def execute(agent: dict, args: dict) -> dict:
     result = notify_agent(
         agent_id=explorer_id,
         tag=f"AGENT/{parent_name}",
-        message=f"{EXPLORER_TASK_DIRECTIVE}Target directory: {path}",
+        message=f"{EXPLORER_TASK_DIRECTIVE}Target directory: {path}\nQuestion: {query_arg}",
         external_user_id=f"__agent__{parent_id}",
         channel_id=None,
         dedup=False,
@@ -122,17 +133,73 @@ def execute(agent: dict, args: dict) -> dict:
             'from_agent_name': parent_name,
             'agent_message_depth': 1,
             'subagent_spawn': True,
-            'injected_system_vars': context_vars,
+            'injected_system_vars': injected_vars,
             'report_to_id': report_to_id,
             'report_to_channel_id': report_to_channel_id,
         },
     )
+
+    session_id = result.get('session_id')
 
     _logger.info(
         "Explorer %s spawned by %s for path=%s (notify_result=%s)",
         explorer_id, parent_id, path, result,
     )
 
+    # --- Sync mode: block until the explorer finishes and return findings directly ---
+    sync = bool(skill_cfg.get('sync', False))
+    if sync:
+        if not result.get('success'):
+            return {
+                'error': f"Failed to dispatch explorer task: {result.get('reason', 'unknown')}",
+                'explorer_id': explorer_id,
+                'path': path,
+            }
+        if not session_id:
+            return {
+                'error': 'Explorer dispatched but no session allocated. Cannot track completion.',
+                'explorer_id': explorer_id,
+                'path': path,
+            }
+
+        timeout = int(skill_cfg.get('timeout', 300))
+        done = threading.Event()
+        answer_data = {}
+
+        from backend.event_stream import event_stream
+
+        def _on_explorer_done(data):
+            if data.get('agent_id') == explorer_id:
+                answer_data['answer'] = data.get('answer', '')
+                answer_data['tool_trace'] = data.get('tool_trace', [])
+                answer_data['error'] = data.get('error', False)
+                done.set()
+
+        event_stream.on('final_answer', _on_explorer_done)
+
+        try:
+            if not done.wait(timeout=timeout):
+                return {
+                    'explorer_id': explorer_id,
+                    'path': path,
+                    'error': (
+                        f"Explorer '{explorer_id}' timed out after {timeout}s. "
+                        f"It will continue exploring and report back via agent messaging."
+                    ),
+                    'session_id': session_id,
+                }
+
+            return {
+                'explorer_id': explorer_id,
+                'path': path,
+                'findings': answer_data.get('answer', ''),
+                'tool_trace': answer_data.get('tool_trace', []),
+                'session_id': session_id,
+            }
+        finally:
+            event_stream.off('final_answer', _on_explorer_done)
+
+    # --- Async mode (default): return immediately ---
     return {
         'explorer_id': explorer_id,
         'path': path,
@@ -141,4 +208,5 @@ def execute(agent: dict, args: dict) -> dict:
             f"It will explore independently and report its findings back to you "
             f"via agent messaging."
         ),
+        'session_id': session_id,
     }

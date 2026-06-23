@@ -3,10 +3,10 @@
   "name": "Explorer",
   "version": "1.0.0",
   "description": "Spawn read-only explorer sub-agents to investigate any directory or codebase — even outside your own workspace. Each Explore() call runs an independent explorer (its own model, prompt, and tools, configured centrally) that greps/reads the target path with the DirExplorer worker tools and reports findings back to you via agent messaging. Requires the DirExplorer skill to be enabled.",
-  "brief": "You can investigate any directory or codebase — even outside your own workspace — with the `explorer` skill. Load it with `use_skill('explorer')`, then call `Explore({path, context_vars})` to spawn a read-only explorer sub-agent that searches the target path and reports its findings back to you automatically. Call it multiple times to explore several paths in parallel.",
+  "brief": "Call `Explore({path, query, context_vars?})` to spawn a read-only explorer sub-agent that investigates any directory or codebase — even outside your own workspace — and reports its findings back to you automatically. Call it multiple times to explore several paths in parallel.",
   "author": "Evonic",
   "tools_file": "tools.json",
-  "lazy_tools": true,
+  "lazy_tools": false,
   "default_enabled": true,
   "requires": ["direxplorer"],
   "variables": [
@@ -32,7 +32,7 @@
       "name": "system_prompt",
       "label": "Explorer system prompt",
       "type": "textarea",
-      "default": "You are an Explorer sub-agent: a focused, read-only code & directory investigator. You have been given a target directory to explore using the Grep, Glob, and Read tools (all paths resolve against that directory). Investigate thoroughly and efficiently, then report a clear, concise summary of your findings back to whoever delegated the task. Do NOT make a plan or ask for approval — explore directly until you have an answer. You cannot modify any files.",
+      "default": "You are an Explorer sub-agent: a focused, read-only code & directory investigator. Your tools (Grep, Glob, Read) are confined to a target directory.\n\nYOUR QUESTION: {{query}}\n\nRULES:\n- Your ONLY goal is to answer the question above. Do NOT produce a general project overview.\n- START with Grep using keywords from the question to find relevant files. Do NOT use Glob **/* to scan everything.\n- Read ONLY files that help answer the question. Skip generic files like README, VERSION, CHANGELOG, etc. unless directly relevant to the query.\n- Your report must DIRECTLY answer the question, not describe the project or directory structure.\n- Stop as soon as you have the answer. Do NOT catalog the entire codebase.\n- Do NOT make a plan or ask for approval — explore directly until you have an answer.\n- You cannot modify any files.",
       "description": "System prompt for explorer sub-agents. Supports {{variable}} placeholders filled from the context_vars passed to Explore()."
     },
     {
@@ -41,6 +41,20 @@
       "type": "string",
       "default": "",
       "description": "Comma-separated tool IDs to grant explorers IN ADDITION to the mandatory DirExplorer Grep/Read/Glob. Each must be a valid, enabled tool (e.g. skill:someskill:fn). Invalid or disabled references cause Explore() to error."
+    },
+    {
+      "name": "sync",
+      "label": "Sync mode",
+      "type": "boolean",
+      "default": false,
+      "description": "When enabled, Explore() blocks until the explorer finishes and returns findings directly. When disabled (default), the call returns immediately and the explorer reports back via agent messaging."
+    },
+    {
+      "name": "timeout",
+      "label": "Sync timeout (seconds)",
+      "type": "number",
+      "default": 300,
+      "description": "Maximum seconds to wait when sync mode is enabled. On timeout, Explore() returns an error and the explorer continues running in async mode."
     }
   ]
 }

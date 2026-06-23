@@ -378,9 +378,28 @@ async function toggleEnabled(enabled) {
     });
     if (!res.ok) {
         const err = await res.json();
-        toast.show(err.error || 'Failed to toggle', 'error');
         document.getElementById('skill-enabled').checked = !enabled;
+        if (err.missing_requires && err.missing_requires.length) {
+            await showMissingRequiresDialog(err);
+        } else {
+            toast.show(err.error || 'Failed to toggle', 'error');
+        }
+    } else {
+        skillData.enabled = enabled;
     }
+}
+
+// Dialog shown when enabling a skill whose required dependencies are off.
+async function showMissingRequiresDialog(err) {
+    const dep = err.missing_requires[0];
+    const go = await showConfirm({
+        danger: false,
+        title: 'Required skill not enabled',
+        message: err.error || 'A required skill must be enabled first.',
+        confirmText: dep ? `Open ${dep.name}` : 'OK',
+        cancelText: 'Close',
+    });
+    if (go && dep) window.location.href = `/skills/${dep.id}`;
 }
 
 function esc(s) {

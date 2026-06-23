@@ -21,7 +21,7 @@ Spawn sub-agents when you have **independent, parallelizable work**. Each sub-ag
 1. Call `subagent_spawn(task="detailed task description")` — this creates a sub-agent and sends it the task as its first message
 2. The sub-agent processes the task independently in its own session
 3. **Results are delivered automatically** — when the sub-agent finishes its task, the system auto-forwards its final response back to you as an incoming message. You do NOT need to poll, check, or call `subagent_list()` to get results.
-4. Sub-agents auto-destroy after 10 minutes of idle. You can also destroy them early with `subagent_destroy(sub_agent_id)`
+4. Sub-agents auto-destroy after 30 minutes of idle. You can also destroy them early with `subagent_destroy(sub_agent_id)`
 
 ## Key Rules
 

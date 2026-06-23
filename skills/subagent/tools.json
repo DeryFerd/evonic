@@ -3,7 +3,7 @@
     "type": "function",
     "function": {
       "name": "subagent_spawn",
-      "description": "Spawn a new sub-agent that inherits your model, tools, skills, and system prompt. The sub-agent runs in parallel and communicates results back to you via the agent messaging protocol. Use this to parallelize independent work — each sub-agent processes one task concurrently. Sub-agents are auto-destroyed after 10 minutes of idle. Returns the sub-agent's ID.",
+      "description": "Spawn a new sub-agent that inherits your model, tools, skills, and system prompt. The sub-agent runs in parallel and communicates results back to you via the agent messaging protocol. Use this to parallelize independent work — each sub-agent processes one task concurrently. Sub-agents are auto-destroyed after 30 minutes of idle. Returns the sub-agent's ID.",
       "parameters": {
         "type": "object",
         "properties": {

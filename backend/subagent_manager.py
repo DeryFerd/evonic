@@ -119,6 +119,61 @@ class SubAgentManager:
 
         return sub_id
 
+    def spawn_explorer(self, parent_agent: Dict[str, Any], build_config) -> str:
+        """Spawn an explorer sub-agent from a pre-built config (NOT a parent copy).
+
+        Unlike ``spawn``, the explorer's config is supplied by ``build_config`` — a
+        callable that receives the allocated explorer id and returns the full config
+        dict (see backend.agent_runtime.explorer.build_config). The explorer does not
+        inherit the parent's model/tools/prompt. It is registered in the same
+        ``_subagents`` map so ``get``, idle cleanup, destroy, and the runtime
+        in-memory lookup all keep working.
+
+        Args:
+            parent_agent: Full agent dict from DB (must have 'id').
+            build_config: Callable[[explorer_id: str], Dict] returning the config.
+
+        Returns:
+            The explorer's ID string.
+
+        Raises:
+            ValueError: if parent_agent has no 'id' or the per-parent cap is reached.
+        """
+        parent_id = parent_agent.get('id', '')
+        if not parent_id:
+            raise ValueError("parent_agent must have an 'id'")
+
+        with self._lock:
+            active_count = sum(
+                1 for s in self._subagents.values()
+                if s.parent_id == parent_id
+            )
+            if active_count >= _MAX_SUBAGENTS_PER_PARENT:
+                raise ValueError(
+                    f"Cannot spawn more sub-agents: limit of "
+                    f"{_MAX_SUBAGENTS_PER_PARENT} active sub-agents reached. "
+                    f"Destroy existing sub-agents first."
+                )
+            counter = self._counters.get(parent_id, 0) + 1
+            self._counters[parent_id] = counter
+
+        explorer_id = f"{parent_id}_explorer_{counter}"
+        config = build_config(explorer_id)
+
+        sub = SubAgent(explorer_id, parent_id, config)
+
+        with self._lock:
+            self._subagents[explorer_id] = sub
+
+        _logger.info(
+            "Explorer spawned: %s (parent=%s, counter=%d)",
+            explorer_id, parent_id, counter,
+        )
+
+        self._ensure_cleanup()
+
+        return explorer_id
+
     def destroy(self, sub_agent_id: str) -> bool:
         """Destroy a sub-agent by ID.
 

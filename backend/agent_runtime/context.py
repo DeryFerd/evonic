@@ -53,7 +53,14 @@ def _effective_id(agent: Dict[str, Any]) -> str:
     Sub-agents don't exist in the agents table or agents/ directory.
     They inherit the parent's SYSTEM.md, KB files, tool assignments,
     and skill assignments.
+
+    Explorers are the exception: although they are sub-agents, they must NOT
+    inherit the parent — they use their own (row-less) id so the system prompt
+    falls back to their configured prompt and KB/tool/variable lookups resolve
+    to empty. (Guard is a no-op for every non-explorer.)
     """
+    if agent.get('is_explorer'):
+        return agent['id']
     if agent.get('is_subagent'):
         return agent.get('parent_id', agent['id'])
     return agent['id']
@@ -985,8 +992,22 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
         from backend.tools.agent_messaging import get_agent_messaging_tool_defs
         tools.extend(get_agent_messaging_tool_defs())
 
+    # Explorers use their own configured tool set (no parent inheritance), and
+    # their tools may come from a LAZY skill — so resolve the defs directly
+    # (get_all_tool_defs omits lazy skills) and return.
+    if agent.get('is_explorer'):
+        from backend.agent_runtime import explorer as _explorer
+        seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
+        for tool_def in _explorer.tool_defs(agent):
+            fn_name = tool_def.get('function', {}).get('name', '')
+            if not fn_name or fn_name in seen_fn_names:
+                continue
+            seen_fn_names.add(fn_name)
+            tools.append(tool_def)
+        return tools
+
     # Add assigned tools from the registry (including skill tools)
-    # Sub-agents inherit parent's tool assignments
+    # Sub-agents inherit parent's tool assignments.
     eid = _effective_id(agent)
     assigned_ids = set(db.get_agent_tools(eid))
     if assigned_ids:

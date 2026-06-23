@@ -2,7 +2,7 @@
   "id": "explorer",
   "name": "Explorer",
   "version": "1.0.0",
-  "description": "Spawn read-only explorer sub-agents to investigate any directory or codebase — even outside your own workspace. Each Explore() call runs an independent explorer (its own model, prompt, and tools, configured centrally) that greps/reads the target path and reports findings back to you via agent messaging.",
+  "description": "Spawn read-only explorer sub-agents to investigate any directory or codebase — even outside your own workspace. Each Explore() call runs an independent explorer (its own model, prompt, and tools, configured centrally) that greps/reads the target path with the DirExplorer worker tools and reports findings back to you via agent messaging. Requires the DirExplorer skill to be enabled.",
   "brief": "You can investigate any directory or codebase — even outside your own workspace — with the `explorer` skill. Load it with `use_skill('explorer')`, then call `Explore({path, context_vars})` to spawn a read-only explorer sub-agent that searches the target path and reports its findings back to you automatically. Call it multiple times to explore several paths in parallel.",
   "author": "Evonic",
   "tools_file": "tools.json",
@@ -38,7 +38,7 @@
       "label": "Extra explorer tools",
       "type": "string",
       "default": "",
-      "description": "Comma-separated tool IDs to grant explorers IN ADDITION to the mandatory Grep/Read/Glob. Each must be a valid, enabled tool (e.g. skill:somekill:fn). Invalid or disabled references cause Explore() to error."
+      "description": "Comma-separated tool IDs to grant explorers IN ADDITION to the mandatory DirExplorer Grep/Read/Glob. Each must be a valid, enabled tool (e.g. skill:someskill:fn). Invalid or disabled references cause Explore() to error."
     }
   ]
 }

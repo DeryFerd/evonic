@@ -68,6 +68,13 @@ def execute(agent: dict, args: dict) -> dict:
     if cv_err:
         return {'error': cv_err}
 
+    # Explorers run with the DirExplorer worker skill's read-only tools.
+    if not explorer.worker_skill_enabled():
+        return {'error': (
+            f"The '{explorer.WORKER_SKILL_ID}' (DirExplorer) skill must be enabled — "
+            f"explorer sub-agents use its Grep/Read/Glob tools to do the work."
+        )}
+
     parent_agent = db.get_agent(parent_id)
     if not parent_agent:
         return {'error': f'Calling agent "{parent_id}" not found in DB.'}

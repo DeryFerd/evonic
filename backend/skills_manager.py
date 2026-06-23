@@ -289,6 +289,29 @@ class SkillsManager:
         shutil.rmtree(skill_dir)
         return {'success': True, 'setup_result': setup_result}
 
+    def _missing_requirements(self, manifest: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Return required skills that are not installed or not enabled.
+
+        A skill may declare ``"requires": ["other_skill_id", ...]`` in skill.json.
+        Each entry is returned as {id, name, installed} so callers can build a
+        helpful message.
+        """
+        missing = []
+        for req in (manifest.get('requires') or []):
+            req_path = os.path.join(SKILLS_DIR, req, 'skill.json')
+            installed = os.path.isfile(req_path)
+            if installed and self.is_skill_enabled(req):
+                continue
+            name = req
+            if installed:
+                try:
+                    with open(req_path, encoding='utf-8') as f:
+                        name = json.load(f).get('name', req)
+                except Exception:
+                    pass
+            missing.append({'id': req, 'name': name, 'installed': installed})
+        return missing
+
     def set_skill_enabled(self, skill_id: str, enabled: bool) -> Dict[str, Any]:
         """Enable or disable a skill. State is stored in DB, not in skill.json."""
         skill_dir = os.path.join(SKILLS_DIR, skill_id)
@@ -296,11 +319,25 @@ class SkillsManager:
         if not os.path.isfile(manifest_path):
             return {'error': f'Skill not found: {skill_id}'}
 
+        with open(manifest_path, encoding='utf-8') as f:
+            manifest = json.load(f)
+
+        # Block enabling a skill whose required dependencies aren't enabled.
+        if enabled:
+            missing = self._missing_requirements(manifest)
+            if missing:
+                names = ', '.join(m['name'] for m in missing)
+                return {
+                    'error': (
+                        f"\"{manifest.get('name', skill_id)}\" depends on {names}. "
+                        f"Please enable {names} first."
+                    ),
+                    'missing_requires': missing,
+                }
+
         from models.db import db
         db.set_setting(f'skill_enabled:{skill_id}', '1' if enabled else '0')
 
-        with open(manifest_path, encoding='utf-8') as f:
-            manifest = json.load(f)
         manifest['enabled'] = enabled
         return manifest
 

@@ -5,7 +5,11 @@ Agents use this tool to analyze images rather than having images auto-fed to the
 main LLM. The vision model is selected via a configurable priority chain:
   1. agent-level `vision_model_id` column
   2. system config `vision_model_id` (app_settings)
-  3. first enabled model with `vision_supported = 1` in `llm_models`
+  3. agent's current model (if vision_supported)
+  4. all enabled models with `vision_supported = 1` in `llm_models`
+
+On connection errors, the tool automatically falls back to the next
+vision-capable model in priority order.
 
 The `vision_enabled` flag on the agent gates access to this tool entirely:
 when `vision_enabled = 0`, the tool returns an error.
@@ -30,49 +34,63 @@ _SUPPORTED_IMAGE_TYPES = frozenset({
 })
 
 
-def _resolve_vision_model(agent: dict) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Resolve the vision model to use for image description.
+def _resolve_vision_models(agent: dict) -> tuple[list, Optional[str]]:
+    """Resolve vision models to use for image description, ordered by priority.
+
+    Returns a list so the caller can fallback to the next model on connection errors.
 
     Priority:
       1. Agent-level vision_model_id (from agent_context)
       2. System config vision_model_id (app_settings)
-      3. First enabled model with vision_supported = 1
+      3. Agent's current model (if vision_supported)
+      4. All enabled models with vision_supported = 1
 
     Returns:
-        (model_dict, error_string).  Exactly one will be non-None.
+        (models_list, error_string).  Exactly one will be non-None/empty.
+        models_list is a deduplicated list of model dicts in priority order.
     """
     from models.db import db
 
-    vision_model_id = None
+    models = []
+    seen_ids = set()
+
+    def _add_model(model):
+        """Add model if not seen before (dedup by id, fallback to name)."""
+        model_id = model.get("id") or model.get("name", "")
+        if model_id and model_id not in seen_ids:
+            seen_ids.add(model_id)
+            models.append(model)
 
     # Priority 1: agent-level config (from context dict)
     vision_model_id = agent.get("vision_model_id")
-
-    # Priority 2: system config
-    if not vision_model_id:
-        vision_model_id = db.get_setting("vision_model_id")
-
-    # Look up the model
     if vision_model_id:
         model = db.get_model_by_id(vision_model_id)
         if model and model.get("enabled"):
-            return model, None
-        # model_id was set but invalid — fall through to auto-detect
+            _add_model(model)
+
+    # Priority 2: system config
+    system_vision_id = db.get_setting("vision_model_id")
+    if system_vision_id and system_vision_id != vision_model_id:
+        model = db.get_model_by_id(system_vision_id)
+        if model and model.get("enabled"):
+            _add_model(model)
 
     # Priority 3: agent's current model (natural fallback before global auto-detect).
-    # Uses _db_agent_id for sub-agents so they resolve to the parent agent's model.
     _agent_db_id = agent.get("_db_agent_id") or agent.get("id")
     agent_model = db.get_agent_model(_agent_db_id)
     if agent_model and agent_model.get("vision_supported"):
-        return agent_model, None
+        _add_model(agent_model)
 
-    # Priority 4: first enabled vision-capable model
+    # Priority 4: all enabled vision-capable models
     all_models = db.get_enabled_llm_models()
     for model in all_models:
         if model.get("vision_supported"):
-            return model, None
+            _add_model(model)
 
-    return None, (
+    if models:
+        return models, None
+
+    return [], (
         "No vision-capable model is available. "
         "Please configure a vision model in System Settings (requires vision_supported=1)."
     )
@@ -140,8 +158,8 @@ def execute(agent: dict, args: dict) -> Any:
 
     image_b64 = base64.b64encode(image_data).decode("utf-8")
 
-    # --- Resolve vision model ---
-    vision_model, error = _resolve_vision_model(agent)
+    # --- Resolve vision models (ordered list for fallback) ---
+    vision_models, error = _resolve_vision_models(agent)
     if error:
         return f"Error: {error}"
 
@@ -174,21 +192,46 @@ def execute(agent: dict, args: dict) -> Any:
         },
     ]
 
-    # --- Call the vision model ---
-    try:
-        client = LLMClient(model_config=vision_model)
-        result = client.chat_completion(
-            messages=messages,
-            enable_thinking=False,  # No need for reasoning on vision task
-        )
-    except Exception as e:
-        return f"Error: Vision model call failed: {e}"
+    # --- Call vision models with fallback on connection errors ---
+    result = None
+    connection_failures = 0
+    last_error = None
 
-    # Check for explicit errors in the result
-    if not result.get("success"):
-        error_type = result.get("error_type", "unknown")
+    for vision_model in vision_models:
+        model_name = vision_model.get("name", vision_model.get("id", "unknown"))
+        try:
+            client = LLMClient(model_config=vision_model)
+            result = client.chat_completion(
+                messages=messages,
+                enable_thinking=False,  # No need for reasoning on vision task
+            )
+        except Exception as e:
+            # Unexpected exception — treat as connection failure and try next
+            connection_failures += 1
+            last_error = str(e)
+            continue
+
+        if result.get("success"):
+            break  # Success — use this result
+
+        # Check if this is a connection error we should fallback from
+        error_type = result.get("error_type", "")
         error_detail = result.get("error_detail", "")
+        if error_type == "connection_error":
+            connection_failures += 1
+            last_error = error_detail or f"connection to {model_name}"
+            continue  # Try next model
+
+        # Non-connection error — fail immediately (auth, rate limit, API error, etc.)
         return f"Error: Vision model call failed ({error_type}): {error_detail}"
+
+    if result is None or not result.get("success"):
+        if connection_failures >= len(vision_models):
+            return (
+                "Error: All vision-capable models failed with connection errors. "
+                "Please check your network and LLM server status."
+            )
+        return f"Error: Vision model call failed: {last_error or 'unknown error'}"
 
     # Extract text content from the nested API response.
     # result["response"] is the raw API dict: {"choices": [{"message": {"content": "..."}}]}

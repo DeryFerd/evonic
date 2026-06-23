@@ -411,7 +411,7 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
                    (SELECT COUNT(*) FROM links WHERE dst_slug = p.slug AND dst_page_id IS NOT NULL) as incoming_count,
                    (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN pages src ON l.src_page_id = src.id WHERE l.dst_slug = p.slug) as incoming_slugs,
                    (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN pages dst ON l.dst_page_id = dst.id WHERE l.src_page_id = p.id) as outgoing_slugs
-            FROM pages p WHERE p.page_type = 'kb' AND p.deleted_at IS NULL
+            FROM pages p WHERE p.source_dir = 'kb' AND p.deleted_at IS NULL
             ORDER BY p.slug
         """).fetchall()
 
@@ -497,7 +497,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         # Look up the source page
         page_row = conn.execute(
             "SELECT id, slug, title, tags, updated_at FROM pages "
-            "WHERE slug = ? AND page_type = 'kb' AND deleted_at IS NULL",
+            "WHERE slug = ? AND source_dir = 'kb' AND deleted_at IS NULL",
             (filename,),
         ).fetchone()
 
@@ -525,7 +525,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         out_rows = conn.execute(
             "SELECT dst.slug, dst.title, dst.updated_at FROM links l "
             "JOIN pages dst ON l.dst_page_id = dst.id "
-            "WHERE l.src_page_id = ? AND dst.page_type = 'kb' AND dst.deleted_at IS NULL "
+            "WHERE l.src_page_id = ? AND dst.source_dir = 'kb' AND dst.deleted_at IS NULL "
             "ORDER BY dst.slug",
             (page_id,),
         ).fetchall()
@@ -548,7 +548,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             "SELECT src.slug, src.title FROM links l "
             "JOIN pages src ON l.src_page_id = src.id "
             "WHERE l.dst_slug = ? AND l.dst_page_id IS NOT NULL "
-            "AND src.page_type = 'kb' AND src.deleted_at IS NULL "
+            "AND src.source_dir = 'kb' AND src.deleted_at IS NULL "
             "ORDER BY src.slug",
             (filename,),
         ).fetchall()
@@ -561,7 +561,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             placeholders = ",".join("?" for _ in source_tags)
             tag_rows = conn.execute(
                 f"SELECT slug, title, tags FROM pages "
-                f"WHERE page_type = 'kb' AND deleted_at IS NULL AND slug != ? "
+                f"WHERE source_dir = 'kb' AND deleted_at IS NULL AND slug != ? "
                 f"AND ({' OR '.join('tags LIKE ?' for _ in source_tags)}) "
                 f"ORDER BY slug",
                 [filename] + [f"%{t}%" for t in source_tags],

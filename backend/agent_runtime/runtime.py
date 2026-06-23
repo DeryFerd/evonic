@@ -2551,6 +2551,23 @@ class AgentRuntime:
             'video_url': video_url,
         })
 
+        # Mid-loop injection: if session is currently processing, inject message
+        # into the active loop instead of queuing a new task.
+        if agent and self._is_busy(session_id):
+            self._get_inject_queue(session_id).put({
+                'role': 'user',
+                'content': text,
+            })
+            event_stream.emit('message_injected', {
+                'agent_id': agent_id,
+                'agent_name': agent.get('name', ''),
+                'session_id': session_id,
+                'external_user_id': external_user_id,
+                'channel_id': channel_id,
+                'message': text,
+            })
+            return True
+
         # Enqueue for agent processing (fire-and-forget)
         if agent and agent.get('enabled', True):
             task = _QueueTask(agent, SessionContext(session_id, external_user_id, channel_id),

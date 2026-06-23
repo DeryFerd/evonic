@@ -39,6 +39,12 @@ def resolve_report_to_for_subagent_spawn(
     if report_to_id and not report_to_id.startswith(_AGENT_MSG_PREFIX):
         return report_to_id, report_to_channel_id
 
+    # Inter-agent session: preserve the routing so sub-agent/explorer findings
+    # are forwarded back to the caller's current (inter-agent) session rather
+    # than resolved to the parent's human session (e.g. test web chat tab).
+    if report_to_id:
+        return report_to_id, report_to_channel_id
+
     return _lookup_human_session(parent_agent_id)
 
 

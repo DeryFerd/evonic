@@ -70,7 +70,10 @@ class TestResolveReportToForSubagentSpawn(unittest.TestCase):
         self.assertEqual(ch, 'ch9')
         mock_lookup.assert_called_once_with('parent_a')
 
-    def test_inter_agent_spawner_looks_up_parent(self):
+    def test_inter_agent_spawner_preserves_routing(self):
+        """Inter-agent spawner_user_id is returned as-is so sub-agent/explorer
+        findings are forwarded back to the caller's current (inter-agent) session
+        rather than resolved to the parent's human session."""
         human = {'external_user_id': 'user_abc', 'channel_id': ''}
         with mock.patch(
             'models.db.db.get_latest_human_session',
@@ -79,5 +82,6 @@ class TestResolveReportToForSubagentSpawn(unittest.TestCase):
             rid, ch = resolve_report_to_for_subagent_spawn(
                 'parent_a', '__agent__parent_a', '',
             )
-        self.assertEqual(rid, 'user_abc')
-        mock_lookup.assert_called_once_with('parent_a')
+        self.assertEqual(rid, '__agent__parent_a')
+        self.assertEqual(ch, '')
+        mock_lookup.assert_not_called()

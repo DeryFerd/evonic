@@ -44,7 +44,7 @@ _EVOMEM_TIMEOUT = int(os.environ.get("EVOMEM_TIMEOUT", "5"))
 # Operational tracing for evomem internals, shared by all evomem modules.
 # Set EVOMEM_VERBOSE=1 to emit these traces at INFO level (so they appear in
 # normal logs); otherwise they go to DEBUG.
-vlogger = logging.getLogger("evomem")
+vlogger = logging.getLogger(__name__)
 _EVOMEM_VERBOSE = os.environ.get("EVOMEM_VERBOSE", "").strip().lower() in (
     "1", "true", "yes", "on")
 if _EVOMEM_VERBOSE and vlogger.level == logging.NOTSET:

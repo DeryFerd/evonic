@@ -1,38 +1,31 @@
-# Explorer
+## **CRITICAL!**
 
-The `explorer` skill lets you delegate read-only investigation of any directory
-or codebase — including paths **outside your own workspace** — to a temporary
-explorer sub-agent.
-
-## When to use
-
-- You need to understand the structure or contents of a directory you don't
-  have direct access to (e.g. another project at `/home/www/web-a`).
-- You want to search/read across a large tree without filling your own context
-  with the raw file dumps — the explorer does the digging and reports a summary.
-- You want to investigate several locations at once — call `Explore` multiple
-  times to run explorers in parallel.
+- You MUST delegate ALL codebase exploration, directory investigation, and multi-file searches to the `Explore()` tool. Never use Grep, Read, or Glob directly for exploration.
+- Direct file tools (Grep, Read, Glob) are permitted ONLY for truly trivial operations: reading a single known file path, listing one known directory, or finding a specific string in a single known file.
+- When in doubt: if answering a question requires more than ONE file operation, use `Explore()`.
+- You can run multiple `Explore()` calls in parallel to investigate several paths at once.
+- The explorer runs independently and reports back automatically — you do not need to poll it.
 
 ## How to use
 
-Call `Explore` with the absolute path to explore. Optionally pass `context_vars`
-to fill `{{placeholders}}` in the explorer's configured system prompt (for
-example, the specific question you want answered).
+Call `Explore` with the path to investigate and a required `query`. Use
+`context_vars` for additional placeholders.
 
+```json
+Explore({"path": "/home/www/web-a", "query": "Please search xxx in /frontend"})
 ```
-Explore({"path": "/home/www/web-a", "context_vars": {"query": "where is auth handled?"}})
+
+With extra context variables:
+```json
+Explore({"path": "/home/www/web-a", "query": "find the login handler in /backend", "context_vars": {"focus": "security"}})
 ```
 
 - `path` (required): an existing directory. It becomes the explorer's root —
   the explorer's Grep/Read/Glob are confined to it. Accepts an absolute host
   path (including outside your workspace), `/workspace` (your own workspace), or
   a path relative to your workspace.
-- `context_vars` (optional): flat key→value pairs injected into the explorer's
-  system prompt via `{{key}}` placeholders.
+- `query` (required): the question or focus for the exploration. Injected into
+  the explorer sub-agent's system prompt.
+- `context_vars` (optional): additional flat key→value pairs injected as
+  placeholders in the explorer's system prompt.
 
-The call returns immediately with the explorer's ID. The explorer runs
-independently and **reports its findings back to your session automatically**
-when finished — you do not need to poll it.
-
-The explorer is read-only (it cannot modify files) and is automatically cleaned
-up after it finishes / goes idle.

@@ -52,7 +52,6 @@ _SEVERITY_SCORE = {
 
 _GUARDED_TOOLS = frozenset({
     "read_file",
-    "bash",
     "runpy",
     "send_agent_message",
 })

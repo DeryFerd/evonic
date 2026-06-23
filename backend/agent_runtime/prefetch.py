@@ -92,8 +92,13 @@ class TurnPrefetcher:
             # Rebuild tools
             fresh_tools = _ctx.build_tools(agent)
 
-            # Rebuild agent context
-            assigned_tool_ids = db.get_agent_tools(db_agent_id)
+            # Rebuild agent context. Explorers use their own configured tool
+            # set; everyone else inherits from the DB.
+            if agent.get('is_explorer'):
+                from backend.agent_runtime import explorer as _explorer
+                assigned_tool_ids = list(_explorer.tool_ids(agent))
+            else:
+                assigned_tool_ids = db.get_agent_tools(db_agent_id)
 
             # Agents with save_artifact automatically get list_artifacts + fetch_artifact.
             # No DB assignment needed — every artifacts-enabled agent can search and fetch their files.

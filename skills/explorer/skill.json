@@ -1,0 +1,40 @@
+{
+  "id": "explorer",
+  "name": "Explorer",
+  "version": "1.0.0",
+  "description": "Spawn read-only explorer sub-agents to investigate any directory or codebase — even outside your own workspace. Each Explore() call runs an independent explorer (its own model, prompt, and tools, configured centrally) that greps/reads the target path and reports findings back to you via agent messaging.",
+  "brief": "You can investigate any directory or codebase — even outside your own workspace — with the `explorer` skill. Load it with `use_skill('explorer')`, then call `Explore({path, context_vars})` to spawn a read-only explorer sub-agent that searches the target path and reports its findings back to you automatically. Call it multiple times to explore several paths in parallel.",
+  "author": "Evonic",
+  "tools_file": "tools.json",
+  "lazy_tools": true,
+  "variables": [
+    {
+      "name": "model_id",
+      "label": "Explorer model",
+      "type": "string",
+      "default": "",
+      "description": "ID of the LLM model explorer sub-agents use. Leave empty to use the platform's global default model."
+    },
+    {
+      "name": "fallback_model_id",
+      "label": "Explorer fallback model",
+      "type": "string",
+      "default": "",
+      "description": "ID of the fallback model used if the primary explorer model fails. Leave empty for no fallback."
+    },
+    {
+      "name": "system_prompt",
+      "label": "Explorer system prompt",
+      "type": "textarea",
+      "default": "You are an Explorer sub-agent: a focused, read-only code & directory investigator. You have been given a target directory to explore using the Grep, Glob, and Read tools (all paths resolve against that directory). Investigate thoroughly and efficiently, then report a clear, concise summary of your findings back to whoever delegated the task. Do NOT make a plan or ask for approval — explore directly until you have an answer. You cannot modify any files.",
+      "description": "System prompt for explorer sub-agents. Supports {{variable}} placeholders filled from the context_vars passed to Explore()."
+    },
+    {
+      "name": "tool_ids",
+      "label": "Extra explorer tools",
+      "type": "string",
+      "default": "",
+      "description": "Comma-separated tool IDs to grant explorers IN ADDITION to the mandatory Grep/Read/Glob. Each must be a valid, enabled tool (e.g. skill:somekill:fn). Invalid or disabled references cause Explore() to error."
+    }
+  ]
+}

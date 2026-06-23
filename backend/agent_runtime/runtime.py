@@ -1812,8 +1812,13 @@ class AgentRuntime:
         else:
             tools = _ctx.build_tools(agent)
 
-            # Build agent context for tool backends
-            assigned_tool_ids = db.get_agent_tools(db_agent_id)
+            # Build agent context for tool backends. Explorers use their own
+            # configured tool set; everyone else inherits from the DB.
+            if agent.get('is_explorer'):
+                from backend.agent_runtime import explorer as _explorer
+                assigned_tool_ids = list(_explorer.tool_ids(agent))
+            else:
+                assigned_tool_ids = db.get_agent_tools(db_agent_id)
 
             # Super agent gets all skill tool IDs automatically — authorization guard
             # must allow execution of all skill tools without per-skill assignment.

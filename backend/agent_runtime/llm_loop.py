@@ -402,10 +402,13 @@ def run_tool_loop(agent: Dict[str, Any],
     except Exception as e:
         _logger.warning("Failed to read agent_state for fallback check: %s", e)
 
-    # Step 2: If no fallback from state, resolve normal default model
+    # Step 2: If no fallback from state, resolve normal default model.
+    # Explorers use their configured model when set, else the global default
+    # (db.get_agent_model on their row-less id already returns the default).
     if not agent_model_config:
         try:
-            model = db.get_agent_model(agent_id)
+            from backend.agent_runtime import explorer as _explorer
+            model = _explorer.primary_model(agent) or db.get_agent_model(agent_id)
             if model:
                 agent_model_config = _build_model_config(model)
                 _logger.info("%s using model: %s (%s)", agent_id, model.get('name'), model.get('model_name'))
@@ -730,7 +733,10 @@ def run_tool_loop(agent: Dict[str, Any],
             # Auto-retry on transient provider/connection errors (no partial output to preserve)
             if error_type in ('provider_error', 'connection_error') and timeout_retries < max_timeout_retries:
                 timeout_retries += 1
-                _has_fallback = db.get_agent_fallback_model(agent_id) is not None
+                from backend.agent_runtime import explorer as _explorer
+                _has_fallback = (
+                    _explorer.fallback_model(agent) or db.get_agent_fallback_model(agent_id)
+                ) is not None
                 # If a fallback model is configured, only retry once then fall through
                 # to fallback logic (line ~573+). Without fallback: retry as usual.
                 if not _has_fallback or timeout_retries < 1:
@@ -924,7 +930,8 @@ def run_tool_loop(agent: Dict[str, Any],
             # agent's configured fallback model (if any) before giving up.
             _fallback_succeeded = False
             _fallback_vision_stripped = False
-            _fallback_model = db.get_agent_fallback_model(agent_id)
+            from backend.agent_runtime import explorer as _explorer
+            _fallback_model = _explorer.fallback_model(agent) or db.get_agent_fallback_model(agent_id)
             if _fallback_model:
                 _logger.warning(
                     "Primary model failed [%s] for agent %s — attempting fallback model %s (%s)",

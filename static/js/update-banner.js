@@ -97,7 +97,8 @@
             showBanner('updating', 'Updating...' + step, linkBtn('/system/update', 'View Progress'));
             connectSSE();
         } else if (data.status === 'success') {
-            showBanner('success', 'Update complete!', actionBtn('Restart', 'window._evUpdateRestart()'));
+            if (isDismissedToday()) { hideBanner(); return; }
+            showBanner('success', 'Update complete!', actionBtn('Restart', 'window._evUpdateRestart()') + closeBtn());
         } else if (data.status === 'failed') {
             var errMsg = data.error ? ': ' + data.error : '';
             showBanner('failed', 'Update failed' + errMsg, linkBtn('/system/update', 'View Details'));

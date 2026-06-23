@@ -58,6 +58,17 @@ def main():
         "-d", "--daemon", action="store_true", default=False, help="Run server in background (daemon mode)"
     )
 
+    # --- setup ---
+    setup_parser = subparsers.add_parser(
+        "setup",
+        help="First-time setup wizard",
+        description="Run the interactive first-time setup wizard to configure your super agent and default LLM model.",
+    )
+    setup_parser.add_argument(
+        "--non-interactive", action="store_true", default=False,
+        help="Skip interactive prompts and use defaults where possible",
+    )
+
     # --- pass ---
     subparsers.add_parser(
         "pass",
@@ -798,7 +809,10 @@ def main():
         parser.print_help()
         sys.exit(0)
 
-    if args.command == "pass":
+    if args.command == "setup":
+        from cli.commands import setup_command
+        setup_command(non_interactive=args.non_interactive)
+    elif args.command == "pass":
         pass_setup()
     elif args.command == "update":
         update_server(

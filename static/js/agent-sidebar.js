@@ -330,17 +330,22 @@ function _stripMarkdown(text) {
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
         // Links
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-        // Bold / italic
-        .replace(/(\*\*|__)(.*?)\1/g, '$2')
-        .replace(/(\*|_)(.*?)\1/g, '$2')
         // Headings
         .replace(/^#{1,6}\s+/gm, '')
         // Blockquotes
         .replace(/^>\s?/gm, '')
         // List markers
         .replace(/^\s*([-*+]|\d+\.)\s+/gm, '')
-        // Horizontal rules
+        // Horizontal rules (before bold/italic so *** and ___ are fully stripped)
         .replace(/^(\s*[-*_]){3,}\s*$/gm, '')
+        // Bold with ** (non-greedy, handles nested italic)
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        // Bold with __ (requires word boundary to avoid matching __init__ etc.)
+        .replace(/(^|\s)__([^_]+)__(?=\s|$|[.,;:!?)])/g, '$1$2')
+        // Italic with * (rarely conflicts with identifiers)
+        .replace(/\*([^*]+)\*/g, '$1')
+        // Italic with _ (requires word boundary to avoid matching file_names)
+        .replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:!?)])/g, '$1$2')
         // Collapse whitespace — the preview is a one-line snippet
         .replace(/\s+/g, ' ')
         .trim();

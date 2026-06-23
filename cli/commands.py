@@ -1990,7 +1990,176 @@ def workplace_disconnect(workplace_id):
         sys.exit(1)
 
 
+def setup_command(non_interactive=False):
+    """First-time setup wizard: configure LLM provider and create super agent."""
+    import getpass
 
+    from models.db import db
+
+    # If already set up, run doctor --fix to keep things healthy
+    if db.has_super_agent():
+        print("Super agent already exists — running doctor --fix to ensure everything is healthy.\n")
+        doctor_command(fix=True)
+        return
+
+    print()
+    print("  ╔══════════════════════════════════════════════════╗")
+    print("  ║        Welcome to Evonic Setup Wizard            ║")
+    print("  ╚══════════════════════════════════════════════════╝")
+    print()
+    print("  This wizard will help you configure your first")
+    print("  super agent and default LLM provider.")
+    print()
+
+    # Rebind stdin to /dev/tty for interactive input when called via wrapper
+    try:
+        sys.stdin = open("/dev/tty", "r")
+    except OSError:
+        pass
+
+    # --- Provider selection ---
+    from backend.setup import PROVIDER_DEFAULTS
+
+    providers = list(PROVIDER_DEFAULTS.keys())
+    print("  Available LLM providers:")
+    for i, p in enumerate(providers, 1):
+        cfg = PROVIDER_DEFAULTS[p]
+        print(f"    {i}. {cfg['label']} — {cfg['description']}")
+
+    if non_interactive:
+        provider = "openrouter"
+        print(f"\n  [non-interactive] Using default provider: {provider}")
+    else:
+        try:
+            choice = input(f"\n  Choose provider [1-{len(providers)}] (default: 1): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        try:
+            idx = int(choice) - 1 if choice else 0
+            if idx < 0 or idx >= len(providers):
+                print(f"  Invalid choice, using default (1. {PROVIDER_DEFAULTS[providers[0]]['label']})")
+                idx = 0
+        except ValueError:
+            idx = 0
+        provider = providers[idx]
+
+    provider_cfg = PROVIDER_DEFAULTS[provider]
+    print(f"  Selected: {provider_cfg['label']}")
+
+    # --- API key ---
+    api_key = ""
+    if provider_cfg["api_key_required"]:
+        if non_interactive:
+            print("  [non-interactive] Skipping API key — you can set it later in .env")
+        else:
+            try:
+                api_key = getpass.getpass(f"  {provider_cfg['label']} API key: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  Setup aborted.")
+                return
+
+    # --- Model name ---
+    default_model = provider_cfg["placeholder_model"]
+    if non_interactive:
+        model_name = default_model
+        print(f"  [non-interactive] Using default model: {model_name}")
+    else:
+        try:
+            inp = input(f"  Model name (default: {default_model}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        model_name = inp if inp else default_model
+
+    # --- Agent name ---
+    if non_interactive:
+        agent_name = "Siwa Miwa"
+        print(f"  [non-interactive] Using default agent name: {agent_name}")
+    else:
+        try:
+            agent_name = input("  Your super agent's name (default: Siwa Miwa): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        agent_name = agent_name if agent_name else "Siwa Miwa"
+
+    # --- Language ---
+    if non_interactive:
+        language = "english"
+    else:
+        try:
+            lang = input("  Language [english/indonesian/adaptive] (default: english): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        language = lang if lang in ("english", "indonesian", "adaptive") else "english"
+
+    # --- Admin password ---
+    password = ""
+    if non_interactive:
+        print("  [non-interactive] Skipping admin password — you can set it later with 'evonic pass'")
+    else:
+        try:
+            set_pw = input("  Set admin dashboard password? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        if set_pw in ("y", "yes"):
+            pw1 = getpass.getpass("  New password: ")
+            if not pw1 or len(pw1) < 6:
+                print("  Password must be at least 6 characters — skipping password setup.")
+            else:
+                pw2 = getpass.getpass("  Confirm password: ")
+                if pw1 != pw2:
+                    print("  Passwords do not match — skipping password setup.")
+                else:
+                    password = pw1
+
+    # --- Confirm ---
+    print()
+    print(f"  Summary:")
+    print(f"    Provider    : {provider_cfg['label']}")
+    print(f"    Model       : {model_name}")
+    print(f"    Agent Name  : {agent_name}")
+    print(f"    Language    : {language}")
+    if password:
+        print(f"    Admin Pass  : (set)")
+    print()
+
+    if not non_interactive:
+        try:
+            confirm = input("  Proceed with setup? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Setup aborted.")
+            return
+        if confirm in ("n", "no"):
+            print("  Setup cancelled.")
+            return
+
+    # --- Execute setup ---
+    from backend.setup import run_setup
+
+    result = run_setup(
+        provider=provider,
+        model_name=model_name,
+        base_url="",
+        api_key=api_key,
+        agent_name=agent_name,
+        agent_id="",
+        description="Evonic Super Agent",
+        language=language,
+        sandbox_enabled=False,
+        password=password,
+    )
+
+    if "error" in result:
+        print(f"\n  Error: {result['error']}")
+        sys.exit(1)
+
+    print(f"\n  Setup complete! Super agent '{result['agent_id']}' created.")
+    print(f"  Run 'evonic start -d' to start the platform.")
+    print()
 
 
 def pass_setup():
@@ -2079,17 +2248,18 @@ def update_server(
     check_only=False, force=False, tag=None, rollback_flag=False, nightly=False
 ):
     """
-    Update evonic to the latest release tag, then repair the environment
-    with `evonic doctor --fix`.
+    Update evonic to the latest release tag via the shared apply pipeline
+    (reset → reinstall deps → doctor --fix → smoke test → auto-rollback on
+    failure), so the CLI and the web updater behave identically.
 
     In the flat-repo architecture, the project root IS the live directory.
 
     Modes:
     - check_only: fetch and report current version vs latest tag
-    - default: check out the latest vX.Y.Z tag GREATER than the current
-      version, then run `evonic doctor --fix`
-    - tag=X: check out a specific tag, then run `evonic doctor --fix`
+    - default: update to the latest vX.Y.Z tag GREATER than the current version
+    - tag=X: update to a specific tag
     - nightly: track origin/main instead of release tags
+    - rollback_flag: restore the previously recorded commit
     """
     import re
 
@@ -2133,14 +2303,17 @@ def update_server(
                 return line.strip(), ver
         return None, None
 
-    def _run_doctor_fix():
-        # Run via the wrapper so the freshly checked-out code is used.
-        print("\nRepairing environment (evonic doctor --fix)...")
-        evonic_bin = os.path.join(ROOT, "evonic")
-        proc = subprocess.run([evonic_bin, "doctor", "--fix"], cwd=ROOT)
-        if proc.returncode != 0:
-            print("doctor --fix reported problems. See output above.")
-            sys.exit(proc.returncode)
+    # Rollback to the previous version. Reuses the shared rollback core so the
+    # CLI and the web UI restore the same recorded commit and repair identically.
+    if rollback_flag:
+        print("Rolling back to the previous version...")
+        from backend import update_manager
+        result = update_manager.apply_rollback()
+        if "error" in result:
+            print(result["error"])
+            sys.exit(1)
+        print(f"Rollback complete — now at {result['target'][:8]}.")
+        return
 
     # Nightly channel: track origin/main instead of release tags.
     if nightly:
@@ -2155,12 +2328,12 @@ def update_server(
             print(f"Current     : {cur if rc == 0 else 'unknown'}")
             print(f"origin/main : {rem if rc2 == 0 else 'unknown'}")
             return
-        print("Resetting to origin/main...")
-        rc, _, err = _git(["reset", "--hard", "origin/main"])
-        if rc != 0:
-            print(f"Git reset failed: {err}")
+        print("Applying update (origin/main)...")
+        from backend import update_manager
+        result = update_manager.apply_update("origin/main")
+        if "error" in result:
+            print(result["error"])
             sys.exit(1)
-        _run_doctor_fix()
         print("Update complete.")
         return
 
@@ -2206,13 +2379,13 @@ def update_server(
         return
 
     print(f"Updating to {target_name}...")
-    rc, _, err = _git(["checkout", target_name])
-    if rc != 0:
-        print(f"Git checkout failed: {err}")
+    from backend import update_manager
+    result = update_manager.apply_update(target_name)
+    if "error" in result:
+        print(result["error"])
         print("Resolve local changes/conflicts, then re-run `evonic update`.")
         sys.exit(1)
 
-    _run_doctor_fix()
     print(f"Update complete — now at {target_name}.")
 
 

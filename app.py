@@ -29,8 +29,12 @@ _log = logging.getLogger(__name__)
 # Skipped when EVONIC_TESTING=1 (set by unit_tests/conftest.py) because
 # the guard relies on a process-level flock that is not compatible with
 # pytest's module import/reload patterns.
+#
+# Also skipped when EVONIC_SMOKE_TEST=1 — the update pipeline's smoke test
+# runs `import app` in a subprocess to verify the new code imports cleanly,
+# and the live server already holds the flock.
 # ---------------------------------------------------------------------------
-if not os.environ.get('EVONIC_TESTING'):
+if not os.environ.get('EVONIC_TESTING') and not os.environ.get('EVONIC_SMOKE_TEST'):
     _APP_ROOT = os.path.dirname(os.path.abspath(__file__))
     _PID_FILE = os.path.join(_APP_ROOT, "shared", "run", "evonic.pid")
     _PID_DIR = os.path.dirname(_PID_FILE)
@@ -319,7 +323,10 @@ init_super_agent_notifier()
 import os as _os
 _reloader_active = _os.environ.get('WERKZEUG_RUN_MAIN') is not None
 _is_reloader_child = _os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
-if not _reloader_active or _is_reloader_child:
+# Smoke-test import (used by the updater to validate a new tree before
+# restarting): import all modules but skip channel/scheduler startup.
+_smoke_test = _os.environ.get('EVONIC_SMOKE_TEST') == '1'
+if (not _reloader_active or _is_reloader_child) and not _smoke_test:
     # Run SYSTEM.md migration eagerly (not lazily on first GET /api/agents).
     # Agents that predate the on-disk SYSTEM.md feature need their file written
     # before they start processing messages — otherwise read_file("/_self/SYSTEM.md")

@@ -618,7 +618,7 @@ def _builtin_save_plan_factory(agent_context: dict):
     Writes a markdown plan file to the agent's personal plan/ directory
     (agents/<agent-id>/plan/) and links it to the agent state so the content
     is re-injected on every subsequent LLM call.
-    Available in both plan and execute modes (not in GUARDED_TOOLS).
+    Available in both plan and execute modes (not in ARG_GUARDED_TOOLS).
     """
     import os
 

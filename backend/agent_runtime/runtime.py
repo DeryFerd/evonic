@@ -2454,7 +2454,7 @@ class AgentRuntime:
 
         chatlog = chatlog_manager.get(agent_id, session_id)
         chatlog.append({
-            'type': 'user',
+            'type': 'final',
             'session_id': session_id,
             'content': content,
             'metadata': {'attachment_info': attachment_info, 'channel': channel_type},

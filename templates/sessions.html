@@ -647,7 +647,7 @@ function renderSessionList() {
         const prefixIcon = s.last_message_role === 'assistant' ? '<span class="text-indigo-400 mr-1">Bot:</span>' : '';
         const chBadge = channelBadge(s.channel_type);
         const botDot = s.bot_enabled ? '' : '<span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Bot disabled"></span>';
-        const displayName = s.peer_agent_name ? [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ') : esc(s.agent_name || 'Unknown');
+        const displayName = explorerDisplayName(s);
         return `
         <div class="session-item relative p-3 cursor-pointer ${selected}${activeClass} transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0" onclick="selectSession('${s.id}')">
             <div class="flex items-center gap-2 mb-1">
@@ -686,7 +686,7 @@ function renderMobileDropdown() {
     dd.classList.remove('hidden');
     dd.innerHTML = allSessions.slice(0, 20).map(s => {
         const chBadge = channelBadge(s.channel_type);
-        const displayName = s.peer_agent_name ? [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ') : esc(s.agent_name || 'Unknown');
+        const displayName = explorerDisplayName(s);
         return `
         <div class="p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-50 dark:border-gray-600 last:border-0" onclick="selectSession('${s.id}'); document.getElementById('mobile-dropdown').classList.add('hidden');">
             <div class="flex items-center gap-2">
@@ -1541,6 +1541,18 @@ function showMobileSummaryBtn(show) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function truncate(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || ''); }
+
+function explorerDisplayName(s) {
+    // Check if peer (external_user_id) is an explorer — e.g. __agent__foo_explorer_1
+    const euMatch = s.external_user_id && s.external_user_id.match(/_explorer_(\d+)/);
+    if (euMatch) return esc(s.agent_name || 'Unknown') + ' - Explorer ' + euMatch[1];
+    // Check if session owner (agent_id) is an explorer
+    const aiMatch = s.agent_id && s.agent_id.match(/_explorer_(\d+)/);
+    if (aiMatch) return esc(s.peer_agent_name || 'Unknown') + ' - Explorer ' + aiMatch[1];
+    // Regular inter-agent or single-agent session
+    if (s.peer_agent_name) return [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ');
+    return esc(s.agent_name || 'Unknown');
+}
 
 function userIdColorClass(userId) {
     if (!userId) return '';

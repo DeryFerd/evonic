@@ -47,6 +47,7 @@ def execute(agent: dict, args: dict) -> dict:
     from backend.agent_runtime import explorer
     from backend.agent_runtime.notifier import notify_agent
     from backend.agent_report_to import resolve_report_to_for_subagent_spawn
+    from backend.tools._workspace import resolve_workspace_path
 
     parent_id = agent.get('id', '')
     if not parent_id:
@@ -56,13 +57,18 @@ def execute(agent: dict, args: dict) -> dict:
     if agent.get('is_explorer') or agent.get('is_subagent'):
         return {'error': 'Sub-agents and explorers cannot spawn explorers.'}
 
-    path = (args.get('path') or '').strip()
-    if not path:
+    raw_path = (args.get('path') or '').strip()
+    if not raw_path:
         return {'error': 'A "path" is required. Use Explore({path: "/abs/dir", ...}).'}
-    if not os.path.isabs(path):
-        return {'error': f'path must be an absolute directory path, got: {path}'}
+
+    # Resolve like the other file tools: the sandbox alias '/workspace' and
+    # relative paths map to the caller's workspace; absolute host paths pass
+    # through unchanged (exploring outside the workspace is the whole point).
+    caller_ws = agent.get('workspace') or ''
+    path = os.path.abspath(resolve_workspace_path(agent, raw_path, caller_ws))
     if not os.path.isdir(path):
-        return {'error': f'path is not an existing directory: {path}'}
+        suffix = f' (resolved to: {path})' if path != raw_path else ''
+        return {'error': f'path is not an existing directory: {raw_path}{suffix}'}
 
     context_vars, cv_err = _sanitize_context_vars(args.get('context_vars'))
     if cv_err:

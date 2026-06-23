@@ -24,7 +24,9 @@ Explore({"path": "/home/www/web-a", "context_vars": {"query": "where is auth han
 ```
 
 - `path` (required): an existing directory. It becomes the explorer's root —
-  the explorer's Grep/Read/Glob are confined to it.
+  the explorer's Grep/Read/Glob are confined to it. Accepts an absolute host
+  path (including outside your workspace), `/workspace` (your own workspace), or
+  a path relative to your workspace.
 - `context_vars` (optional): flat key→value pairs injected into the explorer's
   system prompt via `{{key}}` placeholders.
 

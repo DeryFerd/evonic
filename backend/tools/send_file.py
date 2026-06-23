@@ -13,6 +13,11 @@ Usage:
 
 import os
 
+try:
+    from config import SANDBOX_WORKSPACE as _WORKSPACE_ROOT
+except ImportError:
+    _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
 
 def execute(agent: dict, args: dict) -> dict:
     session_id = agent.get("session_id", "default")
@@ -27,12 +32,12 @@ def execute(agent: dict, args: dict) -> dict:
         return {
             "error": 'The "file_path" parameter is required. '
                      'Provide the path to the file to send, '
-                     'e.g. file_path="/workspace/output/report.pdf"'
+                     'e.g. file_path="output/report.pdf"'
         }
 
-    # Resolve relative paths against /workspace
+    # Resolve relative paths against the workspace root
     if not os.path.isabs(file_path):
-        file_path = os.path.join("/workspace", file_path)
+        file_path = os.path.join(_WORKSPACE_ROOT, file_path)
 
     # Validate file exists and is readable
     if not os.path.exists(file_path):

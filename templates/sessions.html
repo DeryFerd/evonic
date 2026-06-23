@@ -753,7 +753,7 @@ async function selectSession(sessionId) {
     document.getElementById('reply-bar').classList.remove('hidden');
     document.getElementById('empty-state')?.classList.add('hidden');
 
-    document.getElementById('hdr-agent').textContent = s.agent_name || 'Unknown';
+    document.getElementById('hdr-agent').textContent = explorerDisplayName(s);
     document.getElementById('hdr-user').textContent = s.external_user_id;
 
     const badge = document.getElementById('hdr-channel-badge');
@@ -1543,6 +1543,10 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 function truncate(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || ''); }
 
 function explorerDisplayName(s) {
+    // Check if the agent_name itself is a raw explorer id (fallback when agent not in agents table)
+    // e.g. agent_name = "linus_explorer_1", but agent "linus_explorer_1" not in agents table
+    const anMatch = s.agent_name && s.agent_name.match(/_explorer_(\d+)$/);
+    if (anMatch && s.peer_agent_name) return esc(s.peer_agent_name) + ' - Explorer ' + anMatch[1];
     // Check if peer (external_user_id) is an explorer — e.g. __agent__foo_explorer_1
     const euMatch = s.external_user_id && s.external_user_id.match(/_explorer_(\d+)/);
     if (euMatch) return esc(s.agent_name || 'Unknown') + ' - Explorer ' + euMatch[1];

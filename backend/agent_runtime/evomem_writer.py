@@ -281,11 +281,12 @@ def delete_note(agent_id: str, memory_id) -> bool:
 def _do_sync(agent_id: str) -> None:
     with _sync_lock:
         _sync_timers.pop(agent_id, None)
-    vlog("writer[%s]: debounced sync firing", agent_id)
+    logger.info("evomem_writer[%s]: debounced sync firing", agent_id)
     try:
-        _evomem_sync(agent_id)
+        ok = _evomem_sync(agent_id)
+        logger.info("evomem_writer[%s]: sync completed (ok=%s)", agent_id, ok)
     except Exception as e:
-        logger.debug("debounced sync failed for %s: %s", agent_id, e)
+        logger.warning("evomem_writer[%s]: debounced sync failed: %s", agent_id, e)
 
 
 def mark_dirty(agent_id: str) -> None:
@@ -298,8 +299,9 @@ def mark_dirty(agent_id: str) -> None:
         timer.daemon = True
         _sync_timers[agent_id] = timer
         timer.start()
-    vlog("writer[%s]: sync scheduled in %.1fs%s", agent_id, _SYNC_DEBOUNCE_SECONDS,
-         " (coalesced)" if existing is not None else "")
+    logger.info("evomem_writer[%s]: sync scheduled in %.1fs%s",
+                agent_id, _SYNC_DEBOUNCE_SECONDS,
+                " (coalesced)" if existing is not None else "")
 
 
 def sync_now(agent_id: str) -> bool:

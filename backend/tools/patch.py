@@ -576,8 +576,9 @@ def execute(agent, args: dict) -> dict:
             try:
                 from backend.agent_runtime.evomem_writer import mark_dirty
                 mark_dirty(agent_id)
-            except Exception:
-                pass
+                logger.info("patch[%s]: kb edit detected, evomem sync scheduled", agent_id)
+            except Exception as e:
+                logger.warning("patch[%s]: failed to schedule evomem sync: %s", agent_id, e)
         return result
 
     # Hint when path starts with _self/ but missing leading slash

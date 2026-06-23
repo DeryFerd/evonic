@@ -108,6 +108,28 @@ class SkillsManager:
                 continue
         return skills
 
+    def get_skill_stats(self) -> Dict[str, int]:
+        """Return total and enabled skill counts without loading tool defs.
+
+        Much lighter than list_skills() — no JSON parsing of manifests,
+        no tool-def loading. Only checks skill.json existence and enabled status.
+        """
+        total = 0
+        enabled = 0
+        if not os.path.isdir(SKILLS_DIR):
+            return {"total": 0, "enabled": 0}
+        for name in os.listdir(SKILLS_DIR):
+            skill_dir = os.path.join(SKILLS_DIR, name)
+            if not os.path.isdir(skill_dir):
+                continue
+            manifest_path = os.path.join(skill_dir, 'skill.json')
+            if not os.path.isfile(manifest_path):
+                continue
+            total += 1
+            if self.is_skill_enabled(name):
+                enabled += 1
+        return {"total": total, "enabled": enabled}
+
     def get_skill(self, skill_id: str) -> Optional[Dict[str, Any]]:
         """Get a single skill's metadata, tool list, variables, and config."""
         skill_dir = os.path.join(SKILLS_DIR, skill_id)

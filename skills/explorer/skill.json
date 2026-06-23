@@ -11,16 +11,20 @@
     {
       "name": "model_id",
       "label": "Explorer model",
-      "type": "string",
+      "type": "select",
+      "options_source": "models",
+      "empty_label": "Global default model",
       "default": "",
-      "description": "ID of the LLM model explorer sub-agents use. Leave empty to use the platform's global default model."
+      "description": "The LLM model explorer sub-agents use. Leave on the global default to inherit the platform default model."
     },
     {
       "name": "fallback_model_id",
       "label": "Explorer fallback model",
-      "type": "string",
+      "type": "select",
+      "options_source": "models",
+      "empty_label": "No fallback",
       "default": "",
-      "description": "ID of the fallback model used if the primary explorer model fails. Leave empty for no fallback."
+      "description": "Model used if the primary explorer model fails. Leave as 'No fallback' to disable."
     },
     {
       "name": "system_prompt",

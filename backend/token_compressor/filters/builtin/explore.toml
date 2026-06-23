@@ -1,0 +1,8 @@
+[filter]
+command = "^Explore\\b"
+description = "Explore — keep findings, truncate oversized tool_trace"
+# The Explore tool returns a JSON object:
+#   {"explorer_id":"...","path":"...","findings":"...","tool_trace":[...],"session_id":"..."}
+# The tool_trace array is the bulk — often 1M+ chars of Grep/Glob results.
+# Strip it to prevent context overflow; the LLM only needs findings.
+truncate_lines_at = 8000

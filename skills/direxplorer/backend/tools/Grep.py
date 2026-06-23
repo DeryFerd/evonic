@@ -9,6 +9,12 @@ import subprocess
 from ._utils import _auto_correct_path, _validate_workspace_boundary, _resolve_workspace
 
 _MAX_MATCHES = 500
+# Cap total output size (~50KB) to prevent context overflow when the
+# explorer sub-agent returns a tool_trace to the delegating agent.
+# A single Grep result with long lines can produce 1M+ chars through
+# 500 matches x 2KB lines.  50KB keeps ~125 typical 400-char lines
+# which is enough for the explorer to reason about.
+_MAX_OUTPUT_CHARS = 50_000
 
 
 def execute(agent: dict, args: dict) -> dict:
@@ -102,5 +108,31 @@ def execute(agent: dict, args: dict) -> dict:
     if truncated:
         result['truncated'] = True
         result['note'] = f'Results truncated at {_MAX_MATCHES} matches. Narrow your search.'
+
+    # --- Output size cap ---
+    # Even with _MAX_MATCHES=500, long line content can produce 1M+ chars
+    # of JSON.  Truncate progressively (drop ~20 % of matches per pass)
+    # until the serialised output fits within _MAX_OUTPUT_CHARS.
+    _result_str = json.dumps(result)
+    if len(_result_str) > _MAX_OUTPUT_CHARS:
+        _dropped = 0
+        while len(_result_str) > _MAX_OUTPUT_CHARS and matches:
+            _n_to_drop = max(1, len(matches) // 5)
+            for _ in range(_n_to_drop):
+                if not matches:
+                    break
+                matches.pop()
+                _dropped += 1
+            result['matches'] = matches
+            result['total_matches'] = total_matches
+            _result_str = json.dumps(result)
+        if _dropped > 0:
+            result['truncated'] = True
+            taken = total_matches - _dropped
+            result['note'] = (
+                f'Output truncated to {_MAX_OUTPUT_CHARS} chars — '
+                f'showing {taken}/{total_matches} matches across '
+                f'{len(matches)} file(s). Narrow your search pattern or scope.'
+            )
 
     return result

@@ -1830,17 +1830,27 @@ def run_tool_loop(agent: Dict[str, Any],
                 _exit_code = tool_result.get('exit_code', 0)
 
             # --- RTK split-path compression ---
+            _rtk_failed = False
             try:
                 _cmd = _extract_command(fn_name, args)
                 compressed_str = _get_rtk_registry().compress(_cmd, _exit_code, result_str)
             except Exception:
                 _logger.warning("RTK compression failed for %r — falling back to truncation", fn_name, exc_info=True)
-                if len(result_str) > MAX_TOOL_RESULT_CHARS:
-                    remaining = len(result_str) - MAX_TOOL_RESULT_CHARS
-                    compressed_str = (result_str[:MAX_TOOL_RESULT_CHARS] +
-                                      f"\n...[truncated — {remaining} chars omitted]")
-                else:
-                    compressed_str = result_str
+                _rtk_failed = True
+                compressed_str = result_str
+
+            # --- Hard truncation safety net ---
+            # Runs even when RTK succeeded but returned uncompressed oversized
+            # output (e.g. no filter matched).  This is the final backstop
+            # against sending multi-megabyte tool outputs to the LLM and
+            # triggering "Conversation is too long" errors.
+            if len(compressed_str) > MAX_TOOL_RESULT_CHARS:
+                remaining = len(compressed_str) - MAX_TOOL_RESULT_CHARS
+                compressed_str = (compressed_str[:MAX_TOOL_RESULT_CHARS] +
+                                  f"\n...[truncated — {remaining} chars omitted]")
+                if not _rtk_failed:
+                    _logger.info("Hard-truncated %r output: %d -> %d chars (RTK returned uncompressed)", 
+                                 fn_name, len(result_str), MAX_TOOL_RESULT_CHARS)
 
             # Structured result for timeline/UI — always full data, never truncated
             if isinstance(tool_result, dict):

@@ -2443,7 +2443,11 @@ class AgentRuntime:
         }
 
         # 3. Write chat entry
-        if caption:
+        if is_image:
+            content = f"![{filename}](/api/attachments/{attachment_id}/view)"
+            if caption:
+                content = f"{caption}\n" + content
+        elif caption:
             content = f"{caption}\n[File: {filename}]"
         else:
             content = f"[File: {filename}]"

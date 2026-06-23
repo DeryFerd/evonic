@@ -571,7 +571,14 @@ def execute(agent, args: dict) -> dict:
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
-        return apply_patch(local_path, patch_text)
+        result = apply_patch(local_path, patch_text)
+        if '/kb/' in local_path and result.get('result') == 'success':
+            try:
+                from backend.agent_runtime.evomem_writer import mark_dirty
+                mark_dirty(agent_id)
+            except Exception:
+                pass
+        return result
 
     # Hint when path starts with _self/ but missing leading slash
     if agent_id and file_path and (file_path.startswith('_self/') or file_path == '_self'):

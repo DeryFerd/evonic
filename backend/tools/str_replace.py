@@ -213,6 +213,12 @@ def execute(agent, args: dict) -> dict:
         result = str_replace(local_path, old_str, new_str, count=count)
         if 'error' in result and display_path != local_path:
             result['error'] = result['error'].replace(local_path, display_path)
+        if '/kb/' in local_path and result.get('result') == 'success':
+            try:
+                from backend.agent_runtime.evomem_writer import mark_dirty
+                mark_dirty(agent_id)
+            except Exception:
+                pass
         return result
 
     # Hint when path starts with _self/ but missing leading slash

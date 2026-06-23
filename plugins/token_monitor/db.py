@@ -20,6 +20,7 @@ PLUGIN_DB_DIR = os.path.join(_data_root, 'db', 'plugins')
 DB_PATH = os.path.join(PLUGIN_DB_DIR, 'token_monitor.db')
 
 _SUBAGENT_RE = re.compile(r'_sub_\d+$')
+_EXPLORER_RE = re.compile(r'_explorer_\d+$')
 
 
 def _now() -> str:
@@ -114,15 +115,29 @@ class UsageDB:
                 GROUP BY agent_id
                 ORDER BY total_tokens DESC
             """, params).fetchall()]
+        # Flag explorer sub-agents (id like "parent_explorer_1") so the UI can
+        # render them distinctly.
+        for r in rows:
+            r['is_explorer'] = bool(_EXPLORER_RE.search(r.get('agent_id') or ''))
         if not rollup_subagents:
             return rows
-        # Re-aggregate sub-agents (id like "parent_sub_1") under the parent.
+        # Re-aggregate sub-agents under a parent key. Regular sub-agents
+        # ("parent_sub_1") roll into the parent; explorers ("parent_explorer_1")
+        # collapse into a single per-parent explorer entry kept separate from
+        # the parent so they stay visually distinct.
         merged: Dict[str, Dict[str, Any]] = {}
         for r in rows:
-            key = _SUBAGENT_RE.sub('', r.get('agent_id') or '') or (r.get('agent_id') or '')
+            aid = r.get('agent_id') or ''
+            if _EXPLORER_RE.search(aid):
+                key = _EXPLORER_RE.sub('_explorer', aid)  # parent_explorer_1 -> parent_explorer
+                is_explorer = True
+            else:
+                key = _SUBAGENT_RE.sub('', aid) or aid
+                is_explorer = False
             acc = merged.setdefault(key, {
                 'agent_id': key, 'agent_name': r.get('agent_name'),
                 'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0,
+                'is_explorer': is_explorer,
             })
             for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                 acc[f] += r.get(f, 0)

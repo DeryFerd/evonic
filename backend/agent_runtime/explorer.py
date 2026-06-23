@@ -181,6 +181,12 @@ def build_config(
         'agent_messaging_enabled': True,
         'builtin_tools_enabled': True,
         'enabled': True,
+        # Inherit the delegator's EXECUTION ENVIRONMENT so the explorer runs the
+        # same way the delegator does (sandbox on/off, remote workplace/tunnel,
+        # run-as user). Prompt/tools/model are still the explorer's own.
+        'sandbox_enabled': parent_agent.get('sandbox_enabled', 1),
+        'workplace_id': parent_agent.get('workplace_id'),
+        'run_as_user': parent_agent.get('run_as_user'),
         # carry the parent's user/channel so report-back routing resolves
         'user_id': parent_agent.get('user_id', ''),
         'channel_id': parent_agent.get('channel_id', '') or '',

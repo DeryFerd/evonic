@@ -37,7 +37,7 @@ import re
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Maximum characters of plan file content injected into each LLM call
-_PLAN_FILE_MAX_CHARS = 4000
+_PLAN_FILE_MAX_CHARS = 15000
 
 GUARDED_TOOLS = {"write_file", "str_replace", "patch"}
 
@@ -328,8 +328,12 @@ class AgentState:
 
         return "\n".join(lines)
 
-    def _read_plan_file(self, agent_id: str = None) -> str:
-        """Read plan file content from disk, capped at _PLAN_FILE_MAX_CHARS.
+    def _read_plan_file(self, agent_id: str = None, max_chars: int = _PLAN_FILE_MAX_CHARS) -> str:
+        """Read plan file content from disk, capped at max_chars.
+
+        Pass max_chars=None to read the full file without truncation (used by
+        the UI plan viewer); the default cap keeps the plan small when injected
+        into the LLM system-state context.
 
         Resolution order:
         1. If agent_id is provided, try agents/<agent-id>/<plan_file> first
@@ -363,8 +367,8 @@ class AgentState:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                if len(content) > _PLAN_FILE_MAX_CHARS:
-                    content = content[:_PLAN_FILE_MAX_CHARS] + f"\n\n_[truncated — {len(content) - _PLAN_FILE_MAX_CHARS} chars omitted]_"
+                if max_chars is not None and len(content) > max_chars:
+                    content = content[:max_chars] + f"\n\n_[truncated — {len(content) - max_chars} chars omitted]_"
                 return content
             except FileNotFoundError:
                 last_error = f"_[plan file not found: {self.plan_file}]_"

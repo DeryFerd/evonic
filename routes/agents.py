@@ -1756,7 +1756,8 @@ def api_agent_plan_file(agent_id):
 
     from backend.agent_state import AgentState
     state = AgentState(plan_file=plan_file)
-    content = state._read_plan_file(agent_id)
+    # Read the full file (no LLM-context truncation cap) for the UI viewer.
+    content = state._read_plan_file(agent_id, max_chars=None)
 
     if not content:
         return jsonify({'error': 'Plan file is empty or could not be read', 'plan_file': plan_file}), 404

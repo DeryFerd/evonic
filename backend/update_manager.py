@@ -346,9 +346,30 @@ def _git_run(*args, cwd=None):
 
 
 def _get_current_version():
-    """Get the current version from git describe."""
+    """Get the current version from git describe.
+
+    Prefers the VERSION file when it indicates a newer release than the
+    base tag from git describe.  This handles diverged branches where the
+    latest release tag lives on another branch (e.g. main) and is not
+    reachable from the current HEAD (e.g. dev).
+    """
     rc, stdout, _ = _git_run('describe', '--tags', '--always')
-    return stdout if rc == 0 else None
+    if rc != 0:
+        return None
+
+    version_file = os.path.join(config.APP_ROOT, 'VERSION')
+    if os.path.exists(version_file):
+        try:
+            with open(version_file) as f:
+                file_ver = f.read().strip()
+            if file_ver:
+                tag_match = re.match(r'v?(\d+\.\d+\.\d+)', stdout)
+                if tag_match and _version_tuple(file_ver) > _version_tuple(tag_match.group(0)):
+                    return file_ver
+        except (IOError, OSError):
+            pass
+
+    return stdout
 
 
 # ---------------------------------------------------------------------------

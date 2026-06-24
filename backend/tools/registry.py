@@ -45,13 +45,11 @@ class ToolRegistry:
         self._builtins['builtin:save_plan'] = _builtin_save_plan_factory
         # State machine gate tool — always available, handlers registered by system/plugins
         self._builtins['builtin:state'] = _builtin_state_factory
-        # Long-term memory tools
+        # Long-term memory tools. `recall` covers keyword search, brain-layer
+        # synthesis (mode='think'), and graph traversal (mode='graph').
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
         self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
-        # Knowledge-graph memory tools (evomem): synthesis + graph traversal
-        self._builtins['builtin:think'] = _builtin_think_factory
-        self._builtins['builtin:graph_query'] = _builtin_graph_query_factory
         # Session recall tool
         self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
         # Tool to clear active fallback flag from agent_state (agent calls this)
@@ -695,9 +693,13 @@ def _builtin_remember_factory(agent_context: dict):
         "function": {
             "name": "remember",
             "description": (
-                "Store a fact in your long-term memory so it persists across future conversations. "
-                "Use this when the user shares important information worth retaining "
-                "(name, preferences, decisions, context, or persistent instructions). "
+                "Pin an important fact for the current session. It is noted instantly "
+                "(no delay) and stays available to you for the rest of this conversation; "
+                "the summarizer then persists it to long-term memory and the knowledge "
+                "graph automatically in the background. Use it when the user shares "
+                "something worth retaining (name, preferences, decisions, context, or "
+                "persistent instructions). You do NOT need to remember() routine details "
+                "— the summarizer captures the conversation on its own. "
                 "Example: remember(content='User prefers responses in English', category='preference')"
             ),
             "parameters": {
@@ -731,23 +733,50 @@ def _builtin_remember_factory(agent_context: dict):
 
 
 def _builtin_recall_factory(agent_context: dict):
-    """Factory for the built-in 'recall' tool — searches long-term memory."""
+    """Factory for the built-in 'recall' tool — searches long-term memory.
+
+    One tool, three modes:
+      - fts   (default): fast keyword search over remembered facts
+      - think           : reason over everything known about a topic (synthesis
+                          with citations + knowledge gaps)
+      - graph           : traverse the knowledge graph from an entity
+    """
     tool_def = {
         "type": "function",
         "function": {
             "name": "recall",
             "description": (
                 "Search your long-term memory for facts from past conversations. "
-                "Use this when you need to recall something about the user or context "
-                "that may not be in the current conversation history. "
-                "Example: recall(query='user phone number')"
+                "Modes: mode='fts' (default) for a fast keyword lookup; "
+                "mode='think' to reason over EVERYTHING you know about a topic and "
+                "surface what's missing (synthesis with citations + knowledge gaps); "
+                "mode='graph' to traverse the knowledge graph from an entity (here "
+                "'query' is the entity name; use edge_type/hops to steer). "
+                "Examples: recall(query='user phone number'); "
+                "recall(query='what do I know about Acme Corp?', mode='think'); "
+                "recall(query='Robin Syihab', mode='graph')"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Keywords to search for in memory."
+                        "description": "Keywords to search for, or the entity name when mode='graph'."
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fts", "think", "graph"],
+                        "description": "Retrieval mode (default: fts)."
+                    },
+                    "edge_type": {
+                        "type": "string",
+                        "enum": ["founded", "invested_in", "works_at",
+                                 "advises", "attended", "mentions"],
+                        "description": "Only for mode='graph': only follow edges of this type."
+                    },
+                    "hops": {
+                        "type": "integer",
+                        "description": "Only for mode='graph': how many hops to traverse (default 2)."
                     }
                 },
                 "required": ["query"]
@@ -756,9 +785,21 @@ def _builtin_recall_factory(agent_context: dict):
     }
 
     def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import search_memories
+        from backend.agent_runtime.memory_manager import (
+            search_memories, synthesize_memory, graph_lookup,
+        )
         agent_id = agent_context.get('id', '')
-        return search_memories(agent_id, args.get('query', ''))
+        query = args.get('query', '')
+        mode = args.get('mode', 'fts')
+        if mode == 'think':
+            return synthesize_memory(agent_id, query)
+        if mode == 'graph':
+            return graph_lookup(
+                agent_id, query,
+                edge_type=args.get('edge_type'),
+                hops=int(args.get('hops', 2) or 2),
+            )
+        return search_memories(agent_id, query)
 
     return tool_def, executor
 
@@ -805,88 +846,6 @@ def _builtin_forget_memory_factory(agent_context: dict):
             memory_id=args.get('memory_id'),
             target_agent_id=args.get('agent_id'),
             is_super=is_super,
-        )
-
-    return tool_def, executor
-
-
-def _builtin_think_factory(agent_context: dict):
-    """Factory for the built-in 'think' tool — brain-layer synthesis over memory."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "think",
-            "description": (
-                "Reason over EVERYTHING you know about a topic and surface what's missing. "
-                "Returns synthesized facts (with citations) plus knowledge gaps. "
-                "Heavier than 'recall' — use it for open questions like "
-                "'what do I know about the user's project?' rather than a simple keyword lookup. "
-                "Example: think(query='what do I know about Acme Corp?')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "The question or topic to synthesize knowledge about."
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import synthesize_memory
-        agent_id = agent_context.get('id', '')
-        return synthesize_memory(agent_id, args.get('query', ''))
-
-    return tool_def, executor
-
-
-def _builtin_graph_query_factory(agent_context: dict):
-    """Factory for the built-in 'graph_query' tool — traverse the knowledge graph."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "graph_query",
-            "description": (
-                "Traverse your knowledge graph from an entity to find what it's connected to "
-                "(employer, companies founded, people advised, events attended, etc.). "
-                "Use this to follow relationships between people, organizations, and projects. "
-                "Example: graph_query(entity='Robin Syihab')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "entity": {
-                        "type": "string",
-                        "description": "The entity (name, alias, or slug) to start from."
-                    },
-                    "edge_type": {
-                        "type": "string",
-                        "enum": ["founded", "invested_in", "works_at",
-                                 "advises", "attended", "mentions"],
-                        "description": "Optional: only follow edges of this type."
-                    },
-                    "hops": {
-                        "type": "integer",
-                        "description": "How many hops to traverse (default 2)."
-                    }
-                },
-                "required": ["entity"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import graph_lookup
-        agent_id = agent_context.get('id', '')
-        return graph_lookup(
-            agent_id,
-            args.get('entity', ''),
-            edge_type=args.get('edge_type'),
-            hops=int(args.get('hops', 2) or 2),
         )
 
     return tool_def, executor

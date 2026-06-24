@@ -114,18 +114,15 @@ It follows an Extract → Deduplicate → Store → Retrieve pipeline:
 ### Tools
 
 **Capture:**
-- **`remember`** — explicitly store a fact. Use when the user shares important info.
+- **`remember`** — pin an important fact for the current session. It is noted instantly (no delay) and stays available to you for the rest of the conversation; the summarizer then persists it to long-term memory and the knowledge graph in the background. You do NOT need to `remember()` routine details — the summarizer captures the conversation on its own.
   - `content`: the fact as a single clear sentence
   - `category`: one of `user_info`, `preference`, `decision`, `context`, `instruction`, `general`
 - **`forget_memory`** — delete a stored fact by id (removed from both FTS5 and evomem).
 
-**Retrieve:**
-- **`recall`** — fast keyword lookup of stored facts.
-  - `query`: keywords to search for
-- **`think`** — brain-layer synthesis: reason over everything known about a topic and surface knowledge gaps. Heavier than `recall`; prefer it for open questions ("what do I know about the user's project?").
-  - `query`: the topic/question to synthesize
-- **`graph_query`** — traverse the knowledge graph from an entity to its relationships (employer, companies founded, people advised, etc.).
-  - `entity`: a person/organization/project name (or slug)
+**Retrieve:** one tool, `recall`, with three modes:
+- **`recall(query="...")`** — fast keyword lookup of stored facts (default, `mode="fts"`).
+- **`recall(query="...", mode="think")`** — brain-layer synthesis: reason over everything known about a topic and surface knowledge gaps. Prefer it for open questions ("what do I know about the user's project?").
+- **`recall(query="...", mode="graph")`** — traverse the knowledge graph from an entity to its relationships (employer, companies founded, people advised, etc.); `query` is the entity name. Optional `edge_type` and `hops` steer the traversal.
 
 ### Memory Categories
 
@@ -146,9 +143,9 @@ Facts in user-scoped categories (`user_info`, `preference`, `instruction`, `deci
 - User states a durable preference or interest → `remember(category="preference")` (this feeds the graph; reserve `notes.md` for always-apply communication/style rules)
 - User gives persistent instructions ("Always use English") → `remember(category="instruction")`
 - User mentions project context → `remember(category="context")`
-- Need to reason about a topic across many facts → `think(query="...")`
-- Need to follow relationships between entities → `graph_query(entity="...")`
-- Memories are auto-injected each turn, so use `recall`/`think` only when you need MORE than what was already provided.
+- Need to reason about a topic across many facts → `recall(query="...", mode="think")`
+- Need to follow relationships between entities → `recall(query="...", mode="graph")`
+- Memories are auto-injected each turn, so use `recall` (any mode) only when you need MORE than what was already provided.
 
 ---
 

@@ -14,7 +14,7 @@ from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
 from backend.tools import tool_registry
 from backend.tools.super_agent_tools import _sync_skill_tools
-from backend.agent_runtime.evomem_client import get_kb_graph_metadata
+from backend.agent_runtime.evomem_client import get_kb_graph_metadata, get_engine
 from backend.agent_runtime.context import validate_kb_frontmatter
 
 agents_bp = Blueprint('agents', __name__)
@@ -219,7 +219,8 @@ def agent_detail(agent_id):
     return render_template('agent_detail.html', agent=agent,
                            DEFAULT_SUMMARIZE_PROMPT=DEFAULT_SUMMARIZE_PROMPT,
                            workspace_invalid=workspace_invalid,
-                           workspace_path=ws if ws else '(not set)')
+                           workspace_path=ws if ws else '(not set)',
+                           memory_engine=get_engine())
 
 
 # ==================== Agent CRUD API ====================
@@ -759,6 +760,27 @@ def api_kb_graph(agent_id):
         'links': links,
         'dangling_links': dangling_links
     })
+
+
+@agents_bp.route('/api/agents/<agent_id>/kb-sync', methods=['POST'])
+def api_kb_sync(agent_id):
+    """Force a full evomem memory sync for the agent."""
+    if not session.get('authenticated'):
+        return jsonify({'error': 'Authentication required'}), 401
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return jsonify({'error': 'Agent not found'}), 404
+    if get_engine() != 'evomem':
+        return jsonify({'error': 'Memory engine is not evomem'}), 400
+
+    from backend.agent_runtime.evomem_writer import sync_now
+    try:
+        ok = sync_now(agent_id)
+    except Exception as e:
+        return jsonify({'error': f'Sync failed: {e}'}), 500
+    if not ok:
+        return jsonify({'error': 'Sync failed'}), 500
+    return jsonify({'ok': True})
 
 
 def _artifacts_dir(agent_id: str) -> str:
@@ -1734,7 +1756,8 @@ def api_agent_plan_file(agent_id):
 
     from backend.agent_state import AgentState
     state = AgentState(plan_file=plan_file)
-    content = state._read_plan_file(agent_id)
+    # Read the full file (no LLM-context truncation cap) for the UI viewer.
+    content = state._read_plan_file(agent_id, max_chars=None)
 
     if not content:
         return jsonify({'error': 'Plan file is empty or could not be read', 'plan_file': plan_file}), 404

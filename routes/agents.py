@@ -554,7 +554,7 @@ def api_list_kb(agent_id):
     return jsonify({'tree': tree})
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['GET'])
+@agents_bp.route('/api/agents/<agent_id>/kb/<path:filename>', methods=['GET'])
 def api_get_kb_file(agent_id, filename):
     try:
         filename = _sanitize_kb_path(filename)
@@ -603,7 +603,7 @@ def api_upload_kb(agent_id):
         return jsonify({'success': True, 'filename': fname})
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['PUT'])
+@agents_bp.route('/api/agents/<agent_id>/kb/<path:filename>', methods=['PUT'])
 def api_update_kb_file(agent_id, filename):
     try:
         filename = _sanitize_kb_path(filename)
@@ -619,7 +619,7 @@ def api_update_kb_file(agent_id, filename):
     return jsonify({'success': True, 'filename': filename})
 
 
-@agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['DELETE'])
+@agents_bp.route('/api/agents/<agent_id>/kb/<path:filename>', methods=['DELETE'])
 def api_delete_kb_file(agent_id, filename):
     try:
         filename = _sanitize_kb_path(filename)

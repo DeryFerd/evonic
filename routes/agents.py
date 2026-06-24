@@ -704,25 +704,36 @@ def api_kb_graph(agent_id):
     links = []
     dangling_links = []
 
+    # Evomem stores KB page slugs with a 'kb/' prefix (e.g. 'kb/howto-report'),
+    # but the actual files live at agents/<id>/kb/<path>.md without the prefix.
+    # Strip the prefix so the frontend gets clean slugs and file lookups work.
+    clean_pages = {}
+    kb_dir = _kb_dir(agent_id)
+
     for slug, page in pages.items():
+        clean_slug = slug[3:] if slug.startswith('kb/') else slug
         outgoing_slugs = page.get('outgoing_slugs', [])
         page['outgoing_count'] = len(outgoing_slugs)
+
         # Override evomem-generated title with KB file heading/description
-        kb_path = os.path.join(_kb_dir(agent_id), slug + '.md')
+        kb_path = os.path.join(kb_dir, clean_slug + '.md')
         extracted_title = _extract_kb_title(kb_path)
         if extracted_title:
             page['title'] = extracted_title
         elif not page.get('title'):
-            page['title'] = slug
+            page['title'] = clean_slug
+
+        clean_pages[clean_slug] = page
 
         for target in outgoing_slugs:
+            clean_target = target[3:] if target.startswith('kb/') else target
             if target in pages:
-                links.append({'source': slug, 'target': target})
+                links.append({'source': clean_slug, 'target': clean_target})
             else:
-                dangling_links.append({'source': slug, 'target': target})
+                dangling_links.append({'source': clean_slug, 'target': clean_target})
 
     return jsonify({
-        'pages': pages,
+        'pages': clean_pages,
         'links': links,
         'dangling_links': dangling_links
     })

@@ -3104,6 +3104,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     _section("10. Evomem Memory Engine Check")
 
     try:
+        from cli import evomem_update as _evup
+
         engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
         engine_explicit = "EVONIC_MEMORY_ENGINE" in os.environ
         binary_path = os.environ.get("EVOMEM_BINARY", "shared/bin/evomem")
@@ -3117,33 +3119,81 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                 f"or not executable at {binary_full}"
             ))
 
+        # Consult GitHub for the latest release (best-effort, networked). Skipped
+        # in quick mode or when EVONIC_SKIP_EVOMEM_UPDATE_CHECK is set.
+        update_check = (
+            engine != "fts5"
+            and not quick
+            and os.environ.get("EVONIC_SKIP_EVOMEM_UPDATE_CHECK", "").strip().lower()
+            not in ("1", "true", "yes")
+        )
+        release = _evup.latest_release() if update_check else None
+
+        def _install_latest(action):
+            """Download + install the latest asset for this host. Returns True on
+            success. `action` is 'Updated'/'Installed' for the status line."""
+            target = _evup.host_target()
+            url = (release.get("assets") or {}).get(target) if release else None
+            if not url:
+                results.append(_warn(
+                    f"No evomem release asset for this platform "
+                    f"({target or 'unsupported'}); update/install manually."
+                ))
+                return False
+            try:
+                _evup.download_and_install(url, binary_full)
+                results.append(_ok(f"{action} evomem to {release['version']}"))
+                fixes_applied.append(f"{action} evomem to {release['version']}")
+                return True
+            except Exception as e:  # noqa: BLE001 — keep existing binary on failure
+                results.append(_warn(f"evomem {action.lower()} failed: {e}; "
+                                     f"existing binary kept."))
+                return False
+
         if engine == "fts5":
             _info("  Memory engine is FTS5 (evomem not used)")
         elif binary_ok:
-            results.append(_ok("Evomem memory engine available"))
-        elif engine_explicit:
-            results.append(_fail(
-                f"EVONIC_MEMORY_ENGINE=evomem is set but binary not found at "
-                f"{binary_full}. Set EVONIC_MEMORY_ENGINE=fts5 to use fallback, "
-                f"or install the evomem binary."
-            ))
+            cur = _evup.current_version(binary_full)
+            if release and cur and _evup.is_outdated(cur, release["version"]):
+                latest = release["version"]
+                if fix:
+                    _install_latest("Updated")
+                else:
+                    results.append(_warn(
+                        f"evomem {cur} installed; {latest} available — run "
+                        f"`evonic doctor --fix` to update."
+                    ))
+            elif release and cur:
+                results.append(_ok(f"Evomem memory engine available (latest: {cur})"))
+            else:
+                results.append(_ok("Evomem memory engine available"))
+                if update_check and release is None:
+                    _info("  (could not check latest evomem version)")
         else:
-            results.append(_warn(
-                f"Evomem is the default memory engine but binary not found at "
-                f"{binary_full}. Evomem features (think, graph_query) will "
-                f"silently fall back to FTS5."
-            ))
-
-        # Fix: provide actionable message + create directory if needed
-        if not binary_ok and engine != "fts5" and fix:
-            _info(
-                "  To install evomem: place the static binary at "
-                "shared/bin/evomem and make it executable (chmod +x)."
-            )
-            bin_dir = os.path.dirname(binary_full)
-            if not os.path.isdir(bin_dir):
-                os.makedirs(bin_dir, exist_ok=True)
-                fixes_applied.append(f"Created directory {bin_dir} for evomem binary")
+            # Binary missing. Under --fix, try to install the latest first.
+            installed = fix and _install_latest("Installed")
+            if not installed:
+                if engine_explicit:
+                    results.append(_fail(
+                        f"EVONIC_MEMORY_ENGINE=evomem is set but binary not found at "
+                        f"{binary_full}. Set EVONIC_MEMORY_ENGINE=fts5 to use fallback, "
+                        f"or install the evomem binary."
+                    ))
+                else:
+                    results.append(_warn(
+                        f"Evomem is the default memory engine but binary not found at "
+                        f"{binary_full}. Evomem features (think, graph_query) will "
+                        f"silently fall back to FTS5."
+                    ))
+                if fix:
+                    _info(
+                        "  To install evomem: place the static binary at "
+                        "shared/bin/evomem and make it executable (chmod +x)."
+                    )
+                    bin_dir = os.path.dirname(binary_full)
+                    if not os.path.isdir(bin_dir):
+                        os.makedirs(bin_dir, exist_ok=True)
+                        fixes_applied.append(f"Created directory {bin_dir} for evomem binary")
 
     except Exception as e:
         results.append(_fail(f"Evomem check failed: {e}"))

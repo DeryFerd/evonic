@@ -113,7 +113,7 @@ def execute(agent: dict, args: dict) -> dict:
         return {'error': str(e)}
 
     parent_name = parent_agent.get('name', parent_id)
-    report_to_id, report_to_channel_id = resolve_report_to_for_subagent_spawn(
+    report_to_id, report_to_channel_id, _ = resolve_report_to_for_subagent_spawn(
         parent_id,
         agent.get('user_id', ''),
         agent.get('channel_id', '') or '',

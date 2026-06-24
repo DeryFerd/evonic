@@ -379,7 +379,7 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
     from backend.agent_report_to import resolve_report_to_from_context
 
     reply_to_id = str(uuid.uuid4())
-    report_to_id, report_to_channel_id = resolve_report_to_from_context(
+    report_to_id, report_to_channel_id, session_id = resolve_report_to_from_context(
         agent_context, sender_id,
     )
     if (agent_context.get('user_id', '') or '').startswith(_AGENT_MSG_PREFIX) and not report_to_id:
@@ -399,6 +399,8 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
         'report_to_id': report_to_id,
         'report_to_channel_id': report_to_channel_id,
     }
+    if session_id:
+        metadata['session_id'] = session_id
 
     # Deliver via notify_agent (handles routing, dedup, and LLM triggering)
     from backend.agent_runtime.notifier import notify_agent
@@ -651,6 +653,7 @@ def _on_final_answer(data: dict) -> None:
 
     report_to_id = None
     report_to_channel_id = None
+    session_id_from_meta = None
     original_depth = 0
     subagent_user_direct = False
     reply_to_id = None
@@ -665,6 +668,7 @@ def _on_final_answer(data: dict) -> None:
         if meta.get('from_agent_id') == sender_id:
             report_to_id = meta.get('report_to_id')
             report_to_channel_id = meta.get('report_to_channel_id') or None
+            session_id_from_meta = meta.get('session_id')
             original_depth = meta.get('agent_message_depth', 0)
             subagent_user_direct = meta.get('subagent_user_direct', False)
             reply_to_id = meta.get('reply_to_id')
@@ -689,6 +693,7 @@ def _on_final_answer(data: dict) -> None:
         if latest_meta and latest_meta.get('from_agent_id') == sender_id:
             report_to_id = latest_meta.get('report_to_id')
             report_to_channel_id = latest_meta.get('report_to_channel_id') or None
+            session_id_from_meta = latest_meta.get('session_id')
             original_depth = latest_meta.get('agent_message_depth', 0)
             subagent_user_direct = latest_meta.get('subagent_user_direct', False)
             reply_to_id = latest_meta.get('reply_to_id')
@@ -735,7 +740,7 @@ def _on_final_answer(data: dict) -> None:
 
     try:
         from backend.agent_runtime.notifier import notify_agent
-        result = notify_agent(
+        notify_kwargs = dict(
             agent_id=sender_id,
             tag=f'AGENT/{agent_b_name}',
             message=forwarded_message,
@@ -754,6 +759,12 @@ def _on_final_answer(data: dict) -> None:
                 'reply_to_session_id': session_id,
             },
         )
+        # Pass session_id from originating message metadata so the reply
+        # is delivered to the exact session, not re-routed via get_or_create_session.
+        # Skip for inter-agent chains (session_id from an __agent__ session would be wrong).
+        if session_id_from_meta and not report_to_id.startswith(_AGENT_MSG_PREFIX):
+            notify_kwargs['session_id'] = session_id_from_meta
+        result = notify_agent(**notify_kwargs)
         if result.get('success'):
             _logger.info(
                 "Auto-forward: '%s' reply forwarded to '%s' session '%s' (channel=%s).",

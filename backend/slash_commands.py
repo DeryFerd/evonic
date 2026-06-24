@@ -992,7 +992,7 @@ def _register_builtins():
 
         # Resolve report_to destination
         from backend.agent_report_to import resolve_report_to_for_subagent_spawn
-        report_to_id, report_to_channel_id = resolve_report_to_for_subagent_spawn(
+        report_to_id, report_to_channel_id, _ = resolve_report_to_for_subagent_spawn(
             agent_id, external_user_id, channel_id
         )
 

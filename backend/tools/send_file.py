@@ -39,6 +39,17 @@ def execute(agent: dict, args: dict) -> dict:
     if not os.path.isabs(file_path):
         file_path = os.path.join(_WORKSPACE_ROOT, file_path)
 
+    # /_self/ path: resolve to agent's local directory on the evonic server
+    agent_id = (agent or {}).get('id', '')
+    if agent_id:
+        from backend.tools._workspace import is_self_path, resolve_self_path
+        if is_self_path(file_path):
+            resolved = resolve_self_path(agent_id, file_path)
+            if resolved:
+                file_path = resolved
+            else:
+                return {"error": f"File not found: \"{file_path}\" — path outside agent directory"}
+
     # Validate file exists and is readable
     if not os.path.exists(file_path):
         return {"error": f'File not found: "{file_path}"'}

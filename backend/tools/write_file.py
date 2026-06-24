@@ -1,5 +1,6 @@
 """Backend implementation for the write_file tool — writes full content to a file."""
 
+import logging
 import os
 
 try:
@@ -7,12 +8,13 @@ try:
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+logger = logging.getLogger(__name__)
+
 from backend.tools._workspace import resolve_workspace_path
 try:
     from backend.tools.lib.safety_pipeline import should_skip_safety
 except ImportError:
-    import logging
-    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for write_file tool")
+    logger.warning("safety_pipeline unavailable — safety checks disabled for write_file tool")
     should_skip_safety = lambda agent: True
 _STR_REPLACE_STEPS = """1. First, call read_file() to see the current content.
 2. Then call {tool} with old_str set to the exact lines you want to change (copy them from read_file's output).

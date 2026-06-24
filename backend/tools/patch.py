@@ -5,6 +5,7 @@ Fallback backend: pure-Python implementation that is reliable for all hunk types
 including insertion-only hunks with no surrounding context.
 """
 
+import logging
 import os
 import re
 
@@ -13,12 +14,13 @@ try:
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+logger = logging.getLogger(__name__)
+
 from backend.tools._workspace import resolve_workspace_path
 try:
     from backend.tools.lib.safety_pipeline import should_skip_safety
 except ImportError:
-    import logging
-    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for patch tool")
+    logger.warning("safety_pipeline unavailable — safety checks disabled for patch tool")
     should_skip_safety = lambda agent: True
 SEARCH_WINDOW = 50
 

@@ -272,6 +272,13 @@ def init_evomem(agent_id: str) -> bool:
         return False
     if os.path.isdir(brain_dir) and _brain_db_exists(brain_dir):
         return True
+    # Delete legacy .evobrain.db if it still exists alongside a missing
+    # .evomem.db — the DB filename was renamed and old agents may only have
+    # the legacy file. Removing it forces a fresh init with the new filename.
+    evobrain_db = os.path.join(brain_dir, ".evobrain.db")
+    if os.path.isfile(evobrain_db):
+        os.remove(evobrain_db)
+        vlog("init_evomem[%s]: removed legacy .evobrain.db", agent_id)
     os.makedirs(brain_dir, exist_ok=True)
     # `init` prints a plain-text confirmation even with --json, so verify success
     # by the presence of the database file rather than a parsed JSON result.

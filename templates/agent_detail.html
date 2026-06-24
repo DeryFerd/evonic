@@ -527,12 +527,15 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 
     <!-- Knowledge Tab -->
     <div id="tab-knowledge" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
-        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 max-w-3xl">
+        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 w-full">
             <div class="flex justify-between items-center mb-4">
                 <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
                 <div class="flex gap-2">
                     <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
                     <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
+                    {% if memory_engine == 'evomem' %}
+                    <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600" title="Force a full evomem memory sync">Sync</button>
+                    {% endif %}
                     <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors">
                         Upload
                         <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
@@ -2136,6 +2139,29 @@ async function loadKBGraph() {
     } catch(e) {
         console.error('Failed to load KB graph:', e);
         showToast('Failed to load graph data', 'error');
+    }
+}
+
+async function syncKB(btn) {
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Syncing…';
+    try {
+        const res = await fetch('/api/agents/' + AGENT_ID + '/kb-sync', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+            showToast('Memory sync complete', 'success');
+            kbGraphData = null;
+            if (kbGraphMode === 'graph') loadKBGraph();
+        } else {
+            showToast(data.error || 'Memory sync failed', 'error');
+        }
+    } catch(e) {
+        console.error('Failed to sync KB:', e);
+        showToast('Failed to sync memory', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = original;
     }
 }
 

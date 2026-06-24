@@ -1543,19 +1543,46 @@ function esc(s) { const d = document.createElement('div'); d.textContent = s; re
 function truncate(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || ''); }
 
 function explorerDisplayName(s) {
-    // Check if the agent_name itself is a raw explorer id (fallback when agent not in agents table)
-    // e.g. agent_name = "linus_explorer_1", but agent "linus_explorer_1" not in agents table
-    const anMatch = s.agent_name && s.agent_name.match(/_explorer_(\d+)$/);
-    if (anMatch && s.peer_agent_name) return esc(s.peer_agent_name) + ' - Explorer ' + anMatch[1];
-    // Check if peer (external_user_id) is an explorer — e.g. __agent__foo_explorer_1
-    const euMatch = s.external_user_id && s.external_user_id.match(/_explorer_(\d+)/);
-    if (euMatch) return esc(s.agent_name || 'Unknown') + ' - Explorer ' + euMatch[1];
-    // Check if session owner (agent_id) is an explorer
-    const aiMatch = s.agent_id && s.agent_id.match(/_explorer_(\d+)/);
-    if (aiMatch) return esc(s.peer_agent_name || 'Unknown') + ' - Explorer ' + aiMatch[1];
-    // Regular inter-agent or single-agent session
-    if (s.peer_agent_name) return [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ');
-    return esc(s.agent_name || 'Unknown');
+    // Unified matcher for both sub-agent (_sub_N) and explorer (_explorer_N).
+    // Sub-agents and explorers are in-memory only — absent from the agents table —
+    // so agent_name falls back to the raw agent_id via COALESCE(ag.name, si.agent_id).
+    // Patterns checked in order: agent_name, external_user_id, agent_id.
+    // Three display categories:
+    //   Regular agent (human ↔ agent):   "Linus"
+    //   Sub-agent   (agent ↔ sub):       "Linus - Sub-agent 1"
+    //   Explorer    (agent ↔ explorer):  "Linus - Explorer 1"
+
+    const KIND = /_(explorer|sub)_(\d+)/;           // anywhere in string
+    const KIND_END = /_(explorer|sub)_(\d+)$/;      // at end only (agent_name fallback)
+
+    const an = s.agent_name || 'Unknown';
+    const pn = s.peer_agent_name;  // null/undefined when peer not in agents table
+
+    if (an) {
+        const m = an.match(KIND_END);
+        if (m) {
+            const label = m[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
+            return esc(pn || 'Unknown') + ' - ' + label + ' ' + m[2];
+        }
+    }
+
+    const eu = s.external_user_id || '';
+    const euM = eu.match(KIND);
+    if (euM) {
+        const label = euM[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
+        return esc(an) + ' - ' + label + ' ' + euM[2];
+    }
+
+    const aid = s.agent_id || '';
+    const aiM = aid.match(KIND);
+    if (aiM) {
+        const label = aiM[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
+        return esc(pn || 'Unknown') + ' - ' + label + ' ' + aiM[2];
+    }
+
+    // Regular inter-agent (both in agents table) or single-agent session
+    if (pn) return [esc(an), esc(pn)].sort().join(' - ');
+    return esc(an);
 }
 
 function userIdColorClass(userId) {

@@ -1593,6 +1593,10 @@ class AgentRuntime:
             _att = msg.pop('attachment_info', None) or msg.get('attachment_info')
             if _att and isinstance(_att, dict):
                 fp = _att.get('file_path', '')
+                # Resolve relative paths (e.g. data/attachments/...) to absolute so
+                # agents can access the file from any working directory.
+                if fp and not os.path.isabs(fp):
+                    fp = os.path.abspath(os.path.join(_BASE_DIR, fp))
                 fn = _att.get('filename', '')
                 mt = _att.get('mime_type', '')
                 sb = int(_att.get('size_bytes', 0) or 0)

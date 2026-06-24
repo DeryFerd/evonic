@@ -1264,6 +1264,10 @@ def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True)
     attachment_note = None
     if attachment_info and isinstance(attachment_info, dict):
         file_path = attachment_info.get('file_path', '')
+        # Resolve relative paths (e.g. data/attachments/...) to absolute so agents
+        # can access the file from any working directory.
+        if file_path and not os.path.isabs(file_path):
+            file_path = os.path.abspath(os.path.join(_BASE_DIR, file_path))
         filename = attachment_info.get('filename', '')
         mime_type = attachment_info.get('mime_type', 'application/octet-stream')
         size_bytes = int(attachment_info.get('size_bytes', 0) or 0)

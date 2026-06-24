@@ -354,7 +354,8 @@ def sync(agent_id: str) -> bool:
     """
     brain_dir = _get_brain_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
-        return False
+        if not init_evomem(agent_id):
+            return False
 
     # Mirror KB files into brain/kb/ so the binary scans them
     kb_stats = _mirror_kb_files(agent_id)

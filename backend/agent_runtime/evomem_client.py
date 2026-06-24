@@ -261,16 +261,8 @@ def _mirror_kb_files(agent_id: str) -> dict:
 
 
 def _brain_db_exists(brain_dir: str) -> bool:
-    """Check whether the evomem database exists (either .evomem.db or .evobrain.db).
-
-    The evomem binary internally creates .evobrain.db, but the Python code
-    references .evomem.db. This helper checks for both so the brain is
-    considered initialised when either file is present.
-    """
-    return (
-        os.path.isfile(os.path.join(brain_dir, ".evomem.db")) or
-        os.path.isfile(os.path.join(brain_dir, ".evobrain.db"))
-    )
+    """Check whether the evomem database file (.evomem.db) exists."""
+    return os.path.isfile(os.path.join(brain_dir, ".evomem.db"))
 
 
 def init_evomem(agent_id: str) -> bool:
@@ -284,15 +276,6 @@ def init_evomem(agent_id: str) -> bool:
     # `init` prints a plain-text confirmation even with --json, so verify success
     # by the presence of the database file rather than a parsed JSON result.
     _run(brain_dir, ["init"], expect_json=False)
-
-    # The evomem binary internally creates .evobrain.db, but the Python code
-    # references .evomem.db after commit ead2b69. Create a symlink to bridge
-    # the mismatch without rebuilding the binary or reverting the rename.
-    evobrain_db = os.path.join(brain_dir, ".evobrain.db")
-    evomem_db = os.path.join(brain_dir, ".evomem.db")
-    if os.path.isfile(evobrain_db) and not os.path.isfile(evomem_db):
-        os.symlink(evobrain_db, evomem_db)
-        vlog("created symlink .evomem.db -> .evobrain.db in %s", brain_dir)
 
     return _brain_db_exists(brain_dir)
 

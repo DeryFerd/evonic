@@ -167,10 +167,24 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
     last_summarized_entry = all_entries[cut_index - 1]
     new_last_ts = last_summarized_entry['ts']
 
-    # Skip if summary already covers this point
-    if summary_record and (summary_record.get('last_message_ts') or 0) >= new_last_ts:
-        print(f"[AgentRuntime] Summarize skipped: summary already up to date (last_message_ts={summary_record.get('last_message_ts')} >= new_last_ts={new_last_ts})")
-        return False
+    # When an existing summary covers up to last_message_ts and the cut-point
+    # falls on or before that boundary (because cut_index counted already-summarized
+    # entries), walk forward past the already-summarized region to find new entries
+    # that lie before the tail.  Without this the summarizer deadlocks: it keeps
+    # hitting new_last_ts <= last_message_ts and never advances.
+    if summary_record:
+        last_ts = summary_record.get('last_message_ts') or 0
+        if new_last_ts <= last_ts:
+            # Find entries with ts > last_message_ts that are still before the tail
+            fresh_entries = [
+                e for e in all_entries[:cut_index]
+                if e['ts'] > last_ts
+            ]
+            if fresh_entries:
+                new_last_ts = fresh_entries[-1]['ts']
+            else:
+                print(f"[AgentRuntime] Summarize skipped: no new entries past last_message_ts={last_ts} (new_last_ts={new_last_ts})")
+                return False
 
     # Get entries to fold into summary
     if summary_record and summary_record.get('last_message_ts'):
@@ -186,8 +200,22 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
         existing_summary = None
 
     if not entries_to_summarize:
-        print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
-        return False
+        # get_entries_between_ts may return empty when both bounds are equal
+        # (e.g. after advancing new_last_ts past last_message_ts, the window
+        #  collapses).  Fall back to collecting entries explicitly from the
+        #  region between last_message_ts and the tail start.
+        if summary_record:
+            last_ts = summary_record.get('last_message_ts') or 0
+            tail_start_entry = all_entries[cut_index] if cut_index < len(all_entries) else None
+            entries_to_summarize = [
+                e for e in all_entries[:cut_index]
+                if e['ts'] > last_ts
+                and (tail_start_entry is None or e['ts'] <= tail_start_entry['ts'])
+                and e.get('type') in summary_count_types
+            ]
+        if not entries_to_summarize:
+            print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
+            return False
 
     prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
 

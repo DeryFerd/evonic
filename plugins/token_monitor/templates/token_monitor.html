@@ -107,7 +107,13 @@
   const charts = {};
 
   const PALETTE = ['#4f46e5', '#06b6d4', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#ec4899', '#64748b'];
-  const fmt = n => (n || 0).toLocaleString();
+  const fmt = n => {
+    if (n == null) return '0';
+    if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return n.toLocaleString();
+  };
   const isDark = () => document.documentElement.classList.contains('dark');
   const gridColor = () => isDark() ? 'rgba(148,163,184,0.15)' : 'rgba(0,0,0,0.06)';
   const tickColor = () => isDark() ? '#94a3b8' : '#6b7280';

@@ -7,6 +7,7 @@ import re
 import json
 import uuid
 import queue
+import logging
 from typing import Dict, Any, List, Optional
 from flask import Blueprint, render_template, jsonify, request, Response, session, stream_with_context
 from models.db import db
@@ -16,6 +17,8 @@ from backend.tools import tool_registry
 from backend.tools.super_agent_tools import _sync_skill_tools
 from backend.agent_runtime.evomem_client import get_kb_graph_metadata, get_engine
 from backend.agent_runtime.context import validate_kb_frontmatter
+
+logger = logging.getLogger(__name__)
 
 agents_bp = Blueprint('agents', __name__)
 
@@ -777,8 +780,10 @@ def api_kb_sync(agent_id):
     try:
         ok = sync_now(agent_id)
     except Exception as e:
+        logger.warning("api_kb_sync(%s): sync_now raised exception", agent_id, exc_info=True)
         return jsonify({'error': f'Sync failed: {e}'}), 500
     if not ok:
+        logger.warning("api_kb_sync(%s): sync_now returned False", agent_id)
         return jsonify({'error': 'Sync failed'}), 500
     return jsonify({'ok': True})
 

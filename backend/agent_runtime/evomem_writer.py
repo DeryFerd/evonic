@@ -314,4 +314,5 @@ def sync_now(agent_id: str) -> bool:
     try:
         return _evomem_sync(agent_id)
     except Exception:
+        logger.warning("evomem_writer[%s]: sync_now failed", agent_id, exc_info=True)
         return False

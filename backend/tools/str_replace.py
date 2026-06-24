@@ -222,6 +222,14 @@ def execute(agent, args: dict) -> dict:
                 logger.info("str_replace[%s]: kb edit detected, evomem sync scheduled", agent_id)
             except Exception as e:
                 logger.warning("str_replace[%s]: failed to schedule evomem sync: %s", agent_id, e)
+            if local_path.endswith('.md'):
+                try:
+                    from backend.agent_runtime.context import kb_frontmatter_warning
+                    _warn = kb_frontmatter_warning(local_path)
+                    if _warn:
+                        result['warning'] = _warn
+                except Exception:
+                    pass
         return result
 
     # Hint when path starts with _self/ but missing leading slash

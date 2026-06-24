@@ -376,6 +376,18 @@ def sync(agent_id: str) -> bool:
     # Mirror KB files into brain/kb/ so the binary scans them
     kb_stats = _mirror_kb_files(agent_id)
 
+    # Pre-flight: validate recently-changed KB frontmatter (soft-warn). Runs
+    # before sync so the default recency window (mtime >= last_synced_at)
+    # resolves to the pending set. Non-blocking — sync proceeds regardless.
+    try:
+        report = _run(brain_dir, ["validate"])
+        if report and report.get("invalid"):
+            for issue in report.get("issues", []):
+                logger.warning("kb validate[%s]: %s — %s",
+                               agent_id, issue.get("path"), issue.get("message"))
+    except Exception as e:
+        vlog("sync[%s]: kb validate skipped: %s", agent_id, e)
+
     result = _run(brain_dir, ["sync"]) is not None
 
     if result and (kb_stats["copied"] or kb_stats["removed"]):

@@ -15,6 +15,7 @@ from backend.audit_logger import audit
 from backend.tools import tool_registry
 from backend.tools.super_agent_tools import _sync_skill_tools
 from backend.agent_runtime.evomem_client import get_kb_graph_metadata
+from backend.agent_runtime.context import validate_kb_frontmatter
 
 agents_bp = Blueprint('agents', __name__)
 
@@ -583,6 +584,11 @@ def api_upload_kb(agent_id):
         except ValueError:
             return jsonify({'error': 'Invalid filename'}), 400
         fpath = os.path.join(kb, fname)
+        if fname.endswith('.md'):
+            err = validate_kb_frontmatter(f.read().decode('utf-8', 'replace'))
+            f.stream.seek(0)
+            if err:
+                return jsonify({'error': err}), 400
         os.makedirs(os.path.dirname(fpath), exist_ok=True)
         f.save(fpath)
         return jsonify({'success': True, 'filename': fname})
@@ -596,6 +602,10 @@ def api_upload_kb(agent_id):
             fname = _sanitize_kb_path(fname)
         except ValueError:
             return jsonify({'error': 'Invalid filename'}), 400
+        if fname.endswith('.md'):
+            err = validate_kb_frontmatter(content)
+            if err:
+                return jsonify({'error': err}), 400
         fpath = os.path.join(kb, fname)
         os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, 'w', encoding='utf-8') as f:
@@ -614,6 +624,10 @@ def api_update_kb_file(agent_id, filename):
         return jsonify({'error': 'File not found'}), 404
     data = request.get_json()
     content = data.get('content', '')
+    if filename.endswith('.md'):
+        err = validate_kb_frontmatter(content)
+        if err:
+            return jsonify({'error': err}), 400
     with open(fpath, 'w', encoding='utf-8') as f:
         f.write(content)
     return jsonify({'success': True, 'filename': filename})
@@ -632,22 +646,27 @@ def api_delete_kb_file(agent_id, filename):
     return jsonify({'success': True})
 
 
-def _extract_kb_title(filepath: str) -> str | None:
-    """Extract a human-friendly title from a KB markdown file.
+def _extract_kb_meta(filepath: str) -> dict:
+    """Extract display metadata from a KB markdown file in a single read.
 
-    Priority:
-    1. First # Heading (level 1 heading in markdown body)
-    2. Frontmatter description field
-    3. None (falls back to evomem-generated title or slug)
+    Returns {'title': str|None, 'type': str|None}.
+
+    Title priority:
+    1. Frontmatter `title`
+    2. First # Heading (level 1) in the body
+    3. Frontmatter `description`
+    4. None (caller falls back to evomem-generated title or slug)
     """
     import re
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
             content = f.read()
     except Exception:
-        return None
+        return {'title': None, 'type': None}
 
+    fm_title = None
     description = None
+    page_type = None
     body = content
 
     # Strip YAML frontmatter (--- ... ---)
@@ -658,25 +677,26 @@ def _extract_kb_title(filepath: str) -> str | None:
             body = content[second + 3:]
             for line in fm.split('\n'):
                 line = line.strip()
-                if line.startswith('description:'):
-                    description = line[len('description:'):].strip().strip('"\'')
-                    if not description:
-                        description = None
-                    break
+                if line.startswith('title:'):
+                    fm_title = line[len('title:'):].strip().strip('"\'') or None
+                elif line.startswith('description:'):
+                    description = line[len('description:'):].strip().strip('"\'') or None
+                elif line.startswith('type:'):
+                    page_type = line[len('type:'):].strip().strip('"\'') or None
 
-    # Extract first # Heading from body
+    if fm_title:
+        return {'title': fm_title, 'type': page_type}
+
+    # Fall back to first # Heading from body
     for line in body.split('\n'):
         line = line.strip()
         m = re.match(r'^#\s+(.+?)(?:\s+#+)?$', line)
         if m:
             heading = m.group(1).strip()
             if heading:
-                return heading
+                return {'title': heading, 'type': page_type}
 
-    if description:
-        return description
-
-    return None
+    return {'title': description, 'type': page_type}
 
 
 # ==================== KB Graph API ====================
@@ -715,13 +735,15 @@ def api_kb_graph(agent_id):
         outgoing_slugs = page.get('outgoing_slugs', [])
         page['outgoing_count'] = len(outgoing_slugs)
 
-        # Override evomem-generated title with KB file heading/description
+        # Override evomem-generated title with KB frontmatter title/heading,
+        # and surface the frontmatter `type` for graph node coloring.
         kb_path = os.path.join(kb_dir, clean_slug + '.md')
-        extracted_title = _extract_kb_title(kb_path)
-        if extracted_title:
-            page['title'] = extracted_title
+        meta = _extract_kb_meta(kb_path)
+        if meta['title']:
+            page['title'] = meta['title']
         elif not page.get('title'):
             page['title'] = clean_slug
+        page['type'] = meta['type']
 
         clean_pages[clean_slug] = page
 

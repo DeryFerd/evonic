@@ -150,11 +150,11 @@ def _build_portal_info(agent_id: str) -> list:
 
 
 def _extract_kb_frontmatter(filepath: str) -> dict:
-    """Parse YAML front matter in a KB file and return description + tags.
+    """Parse YAML front matter in a KB file and return title + description + type + tags.
 
-    Returns a dict: {description: str|None, tags: [str]}.
+    Returns a dict: {title: str|None, description: str|None, type: str|None, tags: [str]}.
     """
-    result = {"description": None, "tags": []}
+    result = {"title": None, "description": None, "type": None, "tags": []}
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             first_line = f.readline().strip()
@@ -164,9 +164,15 @@ def _extract_kb_frontmatter(filepath: str) -> dict:
                 line_stripped = line.strip()
                 if line_stripped == "---":
                     break
-                if line_stripped.startswith("description:"):
+                if line_stripped.startswith("title:"):
+                    val = line_stripped[len("title:"):].strip().strip("\"'")
+                    result["title"] = val if val else None
+                elif line_stripped.startswith("description:"):
                     val = line_stripped[len("description:"):].strip().strip("\"'")
                     result["description"] = val if val else None
+                elif line_stripped.startswith("type:"):
+                    val = line_stripped[len("type:"):].strip().strip("\"'")
+                    result["type"] = val if val else None
                 elif line_stripped.startswith("tags:"):
                     tag_val = line_stripped[len("tags:"):].strip()
                     if tag_val.startswith("[") and tag_val.endswith("]"):
@@ -176,6 +182,59 @@ def _extract_kb_frontmatter(filepath: str) -> dict:
     except Exception:
         pass
     return result
+
+
+# Allowed KB-file `type` frontmatter values (used for node colors in the KB graph).
+KB_VALID_TYPES = ("note", "session", "group")
+
+
+def validate_kb_frontmatter(content: str) -> str | None:
+    """Validate a KB markdown file's frontmatter. Return an error message if
+    invalid, else None.
+
+    Requires a leading YAML frontmatter block (`---` … `---`) with non-empty
+    `title`, `description`, and `type`, where `type` ∈ KB_VALID_TYPES.
+    """
+    lines = content.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return ("Missing YAML frontmatter. KB files must start with a `---` block "
+                "containing title, description, and type.")
+    fields = {}
+    closed = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            closed = True
+            break
+        key, sep, val = line.partition(":")
+        if sep:
+            fields[key.strip()] = val.strip().strip("\"'")
+    if not closed:
+        return "Unterminated frontmatter block (missing closing `---`)."
+
+    missing = [k for k in ("title", "description", "type") if not fields.get(k)]
+    if missing:
+        return f"Missing required frontmatter field(s): {', '.join(missing)}."
+    if fields["type"] not in KB_VALID_TYPES:
+        return (f"Invalid type '{fields['type']}'; must be one of: "
+                f"{', '.join(KB_VALID_TYPES)}.")
+    return None
+
+
+def kb_frontmatter_warning(filepath: str) -> str | None:
+    """Soft-warn helper for KB edits: validate a file's current content and
+    return a user-facing warning if its frontmatter is incomplete, else None.
+
+    Never raises — used to attach a non-blocking warning after an edit.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            err = validate_kb_frontmatter(f.read())
+    except Exception:
+        return None
+    if err:
+        return (f"⚠ KB frontmatter incomplete: {err} "
+                f"Add title, description, and type (note|session|group).")
+    return None
 
 
 def _format_size(size_bytes: int) -> str:
@@ -388,16 +447,25 @@ def _build_kb_listing(effective_id: str) -> list:
         "you want to recall across conversations."
     )
     lines.append(
-        "- **Frontmatter**: KB files MUST include YAML frontmatter "
-        "(delimited by `---` lines) with a `description` field. This "
-        "description appears as a snippet in the \"Available Knowledge Files\" "
-        "listing, helping agents decide whether to read the full file."
+        "- **Frontmatter (MANDATORY)**: Every KB file MUST start with a YAML "
+        "frontmatter block (delimited by `---` lines) containing three "
+        "non-empty fields: `title` (short human title), `description` "
+        "(one-line summary shown in the \"Available Knowledge Files\" listing), "
+        "and `type` — one of `note` | `session` | `group`. Files that omit any "
+        "of these are rejected when created. Template:\n"
+        "  ```\n"
+        "  ---\n"
+        "  title: \"<short title>\"\n"
+        "  description: \"<one-line summary>\"\n"
+        "  type: note\n"
+        "  ---\n"
+        "  ```"
     )
     lines.append(
         "- **Best practices**: Store structured reference material in KB "
         "(specs, API docs, conventions). Keep each file focused on one topic. "
-        "Update KB files when information changes. Always include frontmatter "
-        "with a `description` when creating a new KB file."
+        "Update KB files when information changes. Always include the mandatory "
+        "frontmatter (title, description, type) when creating a new KB file."
     )
     lines.append(
         "- **Wiki-links**: Use `[[kb/filename]]` (without `.md` extension) "

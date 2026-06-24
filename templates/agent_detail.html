@@ -2004,11 +2004,16 @@ async function saveFile() {
     setSaveLoading(btnId, true);
     try {
     const content = document.getElementById('kb-editor-content').value;
-    await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(currentEditFile)}`, {
+    const resp = await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(currentEditFile)}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({content})
     });
+    if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        alert('Could not save: ' + (data.error || resp.statusText));
+        return;  // keep the editor open so the user can fix the frontmatter
+    }
     closeEditor();
     loadKBFiles();
     } finally {
@@ -2065,11 +2070,18 @@ function closeNewFileModal() {
 async function createNewFile() {
     const fname = document.getElementById('new-file-name').value.trim();
     if (!fname) return alert('Filename is required.');
-    await fetch(`/api/agents/${AGENT_ID}/kb`, {
+    // Seed mandatory KB frontmatter so the create passes server-side validation.
+    const title = fname.replace(/\.md$/i, '');
+    const template = `---\ntitle: "${title}"\ndescription: "TODO: describe this knowledge file"\ntype: note\n---\n\n`;
+    const resp = await fetch(`/api/agents/${AGENT_ID}/kb`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({filename: fname, content: ''})
+        body: JSON.stringify({filename: fname, content: template})
     });
+    if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        return alert('Failed to create file: ' + (data.error || resp.statusText));
+    }
     closeNewFileModal();
     loadKBFiles();
     editFile(fname);
@@ -2168,6 +2180,7 @@ function renderKBGraph() {
             label: title,
             fullTitle: page.title || slug,
             tags: tags,
+            type: page.type || null,
             incoming: page.incoming_count || 0,
             outgoing: page.outgoing_count || 0
         });
@@ -2206,16 +2219,15 @@ function renderKBGraph() {
         return;
     }
 
-    // --- Color scale by top tag ---
-    const tagColors = [
-        '#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6',
-        '#06b6d4', '#ef4444', '#22c55e', '#3b82f6', '#a855f7'
-    ];
+    // --- Color by KB file `type` ---
     function getNodeColor(node) {
-        if (node.isDangling) return '#ef4444';
-        if (node.tags.length === 0) return '#9ca3af';
-        const h = node.tags[0].split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
-        return tagColors[h % tagColors.length];
+        if (node.isDangling) return '#ef4444';  // dangling stays red
+        switch (node.type) {
+            case 'session': return '#8b4513';  // brown
+            case 'note':    return '#ffffff';  // white
+            case 'group':   return '#3b82f6';  // blue
+            default:        return '#9ca3af';  // gray fallback (missing/invalid type)
+        }
     }
 
     // --- D3 setup ---
@@ -2284,7 +2296,7 @@ function renderKBGraph() {
     node.append('circle')
         .attr('r', d => d.isDangling ? 5 : 8)
         .attr('fill', d => getNodeColor(d))
-        .attr('stroke', d => d.isDangling ? '#dc2626' : '#fff')
+        .attr('stroke', d => d.isDangling ? '#dc2626' : (getNodeColor(d) === '#ffffff' ? '#9ca3af' : '#fff'))
         .attr('stroke-width', 1.5)
         .attr('cursor', 'pointer');
 
@@ -2302,6 +2314,7 @@ function renderKBGraph() {
     node.on('mouseenter', function(event, d) {
         const title = d.fullTitle;
         const info = [title];
+        if (!d.isDangling) info.push('Type: ' + (d.type || '—'));
         if (d.tags.length > 0) info.push('Tags: ' + d.tags.join(', '));
         info.push('In: ' + d.incoming + ' | Out: ' + d.outgoing);
         if (d.isDangling) info.push('(dangling)');

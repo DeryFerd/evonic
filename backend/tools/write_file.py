@@ -244,6 +244,14 @@ def execute(agent, args: dict) -> dict:
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
+        # KB files require mandatory frontmatter — reject before writing so the
+        # agent sees the error and self-corrects.
+        if '/kb/' in local_path and local_path.endswith('.md'):
+            from backend.agent_runtime.context import validate_kb_frontmatter
+            err = validate_kb_frontmatter(content)
+            if err:
+                return {'error': f"{err} KB files require frontmatter with title, "
+                                 f"description, and type (note|session|group)."}
         result = write_file(local_path, content, overwrite=overwrite, create_dirs=create_dirs, edit_suggestion=edit_suggestion)
         if '/kb/' in local_path and result.get('result') == 'success':
             try:

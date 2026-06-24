@@ -624,17 +624,17 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
     parts.append(
         "- `recall(query=\"...\")` — fast keyword lookup of a specific stored fact "
-        "(e.g. a phone number, an address, a name)."
+        "(e.g. a phone number, an address, a name). This is the default (mode='fts')."
     )
     parts.append(
-        "- `think(query=\"...\")` — reason over EVERYTHING you know about a topic; "
-        "returns a synthesis plus what is still missing. Prefer this over `recall` for "
+        "- `recall(query=\"...\", mode=\"think\")` — reason over EVERYTHING you know "
+        "about a topic; returns a synthesis plus what is still missing. Prefer this for "
         "open questions like \"what do I know about the user's project?\"."
     )
     parts.append(
-        "- `graph_query(entity=\"...\")` — follow relationships between people, "
+        "- `recall(query=\"...\", mode=\"graph\")` — follow relationships between people, "
         "organizations, and projects (e.g. where someone works, what they founded, "
-        "who they advise)."
+        "who they advise); `query` is the entity name."
     )
     parts.append(
         "Look facts up instead of guessing or asking the user for something you may "

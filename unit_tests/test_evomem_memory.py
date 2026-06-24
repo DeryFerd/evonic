@@ -100,38 +100,56 @@ class TestGetMemoriesForContext:
 
 
 class TestStoreMemory:
-    def test_stores_to_fts5_by_default(self, monkeypatch):
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "fts5")
-        with patch("backend.agent_runtime.memory_manager.db.add_memory", return_value=42), \
-             patch("backend.agent_runtime.memory_manager._extract_dimension", return_value="test.dim"), \
-             patch("backend.agent_runtime.memory_manager._backfill_null_dimensions"), \
-             patch("backend.agent_runtime.memory_manager.db.get_memories_by_dimension", return_value=[]), \
-             patch("backend.agent_runtime.memory_manager._try_evomem_store", return_value=False):
+    """`store_memory` (the `remember` tool) pins a fact into the running session
+    summary — no LLM, no direct long-term write. The summarizer persists it later."""
+
+    def test_pins_to_new_session_summary(self):
+        with patch("backend.agent_runtime.memory_manager.db.get_summary", return_value=None), \
+             patch("backend.agent_runtime.memory_manager.db.upsert_summary") as upsert:
             from backend.agent_runtime.memory_manager import store_memory
             result = store_memory("test-agent", "sess-1", "Test fact", "preference")
-            assert result["id"] == 42
-            assert result["result"] == "Memory stored."
+            assert result["result"].startswith("Noted")
+            assert result["content"] == "Test fact"
+            # Fresh summary seeded with the noted bullet; watermarks at zero.
+            args, kwargs = upsert.call_args
+            assert args[0] == "sess-1"
+            assert "- (noted, preference) Test fact" in args[1]
+            assert args[2] == 0 and args[3] == 0
+
+    def test_appends_to_existing_summary_preserving_watermarks(self):
+        rec = {"summary": "Prior text.", "last_message_id": 42,
+               "message_count": 7, "last_message_ts": 99}
+        with patch("backend.agent_runtime.memory_manager.db.get_summary", return_value=rec), \
+             patch("backend.agent_runtime.memory_manager.db.upsert_summary") as upsert:
+            from backend.agent_runtime.memory_manager import store_memory
+            store_memory("test-agent", "sess-1", "Phone 555", "user_info")
+            args, kwargs = upsert.call_args
+            assert "Prior text." in args[1]
+            assert "- (noted, user_info) Phone 555" in args[1]
+            assert args[2] == 42 and args[3] == 7
+            assert kwargs.get("last_message_ts") == 99
+
+    def test_makes_no_llm_or_longterm_write(self):
+        with patch("backend.agent_runtime.memory_manager.db.get_summary", return_value=None), \
+             patch("backend.agent_runtime.memory_manager.db.upsert_summary"), \
+             patch("backend.agent_runtime.memory_manager.db.add_memory") as add_mem, \
+             patch("backend.agent_runtime.memory_manager._try_evomem_store") as evo, \
+             patch("backend.agent_runtime.memory_manager.llm_client.chat_completion") as llm:
+            from backend.agent_runtime.memory_manager import store_memory
+            store_memory("test-agent", "sess-1", "Test fact", "general")
+            add_mem.assert_not_called()
+            evo.assert_not_called()
+            llm.assert_not_called()
 
     def test_empty_content_returns_error(self):
         from backend.agent_runtime.memory_manager import store_memory
         result = store_memory("test-agent", "sess-1", "", "general")
         assert "error" in result
 
-    def test_dual_write_attempted_when_evomem_configured(self, monkeypatch):
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "evomem")
-        # is_available() checks a cwd-relative binary path, so force it True to
-        # keep get_engine() == "evomem" regardless of the test's working dir.
-        monkeypatch.setattr(
-            "backend.agent_runtime.evomem_client.is_available", lambda: True)
-        with patch("backend.agent_runtime.memory_manager.db.add_memory", return_value=42), \
-             patch("backend.agent_runtime.memory_manager._extract_dimension", return_value="test.dim"), \
-             patch("backend.agent_runtime.memory_manager._backfill_null_dimensions"), \
-             patch("backend.agent_runtime.memory_manager.db.get_memories_by_dimension", return_value=[]), \
-             patch("backend.agent_runtime.memory_manager._try_evomem_store", return_value=True):
-            from backend.agent_runtime.memory_manager import store_memory
-            result = store_memory("test-agent", "sess-1", "Test fact", "preference")
-            assert result["id"] == 42
-            assert result.get("evomem") == "stored"
+    def test_missing_session_returns_error(self):
+        from backend.agent_runtime.memory_manager import store_memory
+        result = store_memory("test-agent", "", "Test fact", "general")
+        assert "error" in result
 
 
 class TestSearchMemories:

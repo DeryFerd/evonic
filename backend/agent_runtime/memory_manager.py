@@ -10,7 +10,9 @@ Extract→Deduplicate→Store→Retrieve pattern (inspired by Mem0):
 Primary + fallback architecture (evomem + FTS5):
 - When EVONIC_MEMORY_ENGINE=evomem, evomem is primary, FTS5 is fallback.
 - On any evomem failure (timeout, binary missing, bad JSON), falls back to FTS5.
-- Dual-write: store_memory() writes to both systems when evomem is enabled.
+- The summarizer is the single writer to long-term memory + graph. The
+  `remember` tool (store_memory) only pins a fact into the running session
+  summary; the summarizer later folds it into both systems.
 
 No new pip dependencies — uses existing LLM client, SQLite FTS5 (Python stdlib),
 and the evomem static binary via subprocess.
@@ -117,6 +119,15 @@ Conversation summary:
 
 Return only the JSON object:"""
 
+_CANONICALIZE_PROMPT = """You resolve entity coreference for a knowledge graph.
+
+New entity name: "{name}"
+Existing entity pages (candidates): {candidates}
+
+If the new entity name refers to the SAME real-world entity as one of the candidates (e.g. a shorter name, nickname, fuller name, or alias of the same person/organization/project/place), return that candidate's name EXACTLY as written. If it is a different entity, or you are not sure, return null.
+
+Return only the candidate name or null:"""
+
 
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
     """Try to retrieve memories via evomem hybrid search.
@@ -182,6 +193,77 @@ def _try_evomem_store(agent_id: str, content: str, category: str,
         return False
 
 
+def _canonicalize_entity(name: str, candidates: list,
+                         llm_lock: threading.Lock = None) -> Optional[str]:
+    """Ask the LLM whether `name` is the same entity as one of `candidates`.
+
+    Returns the matching candidate (exactly as given) or None when it is a
+    different entity or the model is unsure. Conservative by design — an
+    unsure answer yields a new page rather than a wrong merge.
+    """
+    if not candidates:
+        return None
+    prompt = _CANONICALIZE_PROMPT.format(name=name, candidates=json.dumps(candidates))
+    try:
+        call_kwargs = dict(
+            messages=[{"role": "user", "content": prompt}],
+            tools=None, temperature=0.0, enable_thinking=False, max_tokens=32,
+        )
+        if llm_lock:
+            with llm_lock:
+                result = llm_client.chat_completion(**call_kwargs)
+        else:
+            result = llm_client.chat_completion(**call_kwargs)
+        if not result.get('success'):
+            return None
+        raw = result['response']['choices'][0]['message']['content']
+        raw, _ = strip_thinking_tags(raw)
+        raw = raw.strip().strip('"').strip("'")
+        if raw.lower() == 'null' or not raw:
+            return None
+        # Only accept an exact (case-insensitive) match to a candidate.
+        for c in candidates:
+            if c.lower() == raw.lower():
+                return c
+        return None
+    except Exception:
+        return None
+
+
+def _resolve_existing_entity(agent_id: str, name: str,
+                             llm_lock: threading.Lock = None) -> Optional[str]:
+    """Resolve `name` to the title of an existing entity page for the SAME
+    real-world entity (cross-session coreference), or None to create a new page.
+
+    Searches the synced evomem entity pages; merges only on a strong match
+    (identical slug) or an explicit LLM confirmation for differing-slug
+    candidates. Defaults to None (new page) when uncertain.
+    """
+    try:
+        res = evomem_search(agent_id, name, limit=5, mode=_RECALL_SEARCH_MODE)
+    except Exception:
+        return None
+    if not res or not isinstance(res.get("hits"), list):
+        return None
+
+    name_slug = evomem_writer.slugify(name)
+    candidates = []
+    for h in res["hits"]:
+        if h.get("source_dir") != "entities":
+            continue
+        title = (h.get("title") or "").strip()
+        if not title:
+            continue
+        # Identical slug => upsert already lands on the same page (not a
+        # fragmentation case); adopt the existing title for stable casing.
+        if evomem_writer.slugify(title) == name_slug:
+            return title
+        candidates.append(title)
+    if not candidates:
+        return None
+    return _canonicalize_entity(name, candidates, llm_lock)
+
+
 def _extract_and_store_graph(agent_id: str, summary: str,
                              llm_lock: threading.Lock) -> None:
     """Extract entities + typed relations from a summary and wire the graph.
@@ -215,12 +297,24 @@ def _extract_and_store_graph(agent_id: str, summary: str,
             name = (ent.get("name") or "").strip()
             if not name:
                 continue
-            slug = evomem_writer.upsert_entity_page(
-                agent_id, name, entity_type=ent.get("type", "entity"),
-                aliases=ent.get("aliases") or [],
-            )
-            if slug:
-                name_to_slug[name.lower()] = slug
+            entity_type = ent.get("type", "entity")
+            aliases = ent.get("aliases") or []
+            # Cross-session coreference: fold a variant name ("Robin") into the
+            # existing canonical page ("Robin Syihab") as an alias instead of
+            # creating a duplicate node.
+            canonical = _resolve_existing_entity(agent_id, name, llm_lock)
+            if canonical and evomem_writer.slugify(canonical) != evomem_writer.slugify(name):
+                slug = evomem_writer.upsert_entity_page(
+                    agent_id, canonical, entity_type=entity_type,
+                    aliases=[name, *aliases])
+                if slug:
+                    name_to_slug[name.lower()] = slug
+                    name_to_slug[canonical.lower()] = slug
+            else:
+                slug = evomem_writer.upsert_entity_page(
+                    agent_id, name, entity_type=entity_type, aliases=aliases)
+                if slug:
+                    name_to_slug[name.lower()] = slug
 
         wrote_edge = False
         for rel in data.get("relations", []):
@@ -499,34 +593,40 @@ def get_memories_for_context(agent_id: str, messages: list,
 
 def store_memory(agent_id: str, session_id: str, content: str,
                  category: str = 'general') -> dict:
-    """Directly store a memory with conflict detection. Used by the `remember` built-in tool.
+    """Pin a fact into the running session summary. Backs the `remember` tool.
 
-    When EVONIC_MEMORY_ENGINE=evomem, also dual-writes to the agent's evomem.
+    Rather than writing to long-term memory directly, this appends the fact to
+    the session's running summary so it is (a) immediately visible in the
+    agent's context for the rest of the session and (b) later folded into
+    long-term memory + the knowledge graph by the background summarizer.
+    Summarization is incremental (it feeds the existing summary back into the
+    prompt as "Existing summary to update"), so the noted fact survives and is
+    picked up by extract_and_store_memories / _extract_and_store_graph.
+
+    No LLM call and no direct long-term write happen here — that work belongs to
+    the summarizer, the single writer to FTS5/evomem/graph.
     """
     content = content.strip()
     if not content:
         return {"error": "Memory content cannot be empty."}
+    if not session_id:
+        return {"error": "No active session to note this fact in."}
     try:
-        result = _store_with_conflict_detection(agent_id, session_id, content, category)
-        resp = {"result": "Memory stored.", "id": result['id'],
-                "content": content, "category": category}
-        if result['superseded']:
-            resp["superseded_ids"] = result['superseded']
-            resp["result"] = f"Memory stored (superseded {len(result['superseded'])} older memory/ies)."
-
-        # Dual-write to evomem (non-blocking, best-effort)
-        if get_engine() == "evomem":
-            evomem_ok = _try_evomem_store(agent_id, content, category,
-                                              memory_id=result['id'],
-                                              session_id=session_id)
-            if evomem_ok:
-                resp["evomem"] = "stored"
-            else:
-                logger.debug("evomem dual-write failed for agent %s", agent_id)
-
-        return resp
+        tag = "" if category in (None, "", "general") else f", {category}"
+        bullet = f"- (noted{tag}) {content}"
+        rec = db.get_summary(session_id, agent_id=agent_id)
+        if rec and rec.get('summary'):
+            new_summary = rec['summary'].rstrip() + "\n" + bullet
+            db.upsert_summary(session_id, new_summary,
+                              rec.get('last_message_id') or 0,
+                              rec.get('message_count') or 0,
+                              agent_id=agent_id,
+                              last_message_ts=rec.get('last_message_ts'))
+        else:
+            db.upsert_summary(session_id, bullet, 0, 0, agent_id=agent_id)
+        return {"result": "Noted for this session.", "content": content}
     except Exception as e:
-        return {"error": f"Failed to store memory: {e}"}
+        return {"error": f"Failed to note fact: {e}"}
 
 
 def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:

@@ -632,7 +632,51 @@ def api_delete_kb_file(agent_id, filename):
     return jsonify({'success': True})
 
 
+def _extract_kb_title(filepath: str) -> str | None:
+    """Extract a human-friendly title from a KB markdown file.
 
+    Priority:
+    1. First # Heading (level 1 heading in markdown body)
+    2. Frontmatter description field
+    3. None (falls back to evomem-generated title or slug)
+    """
+    import re
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception:
+        return None
+
+    description = None
+    body = content
+
+    # Strip YAML frontmatter (--- ... ---)
+    if content.startswith('---'):
+        second = content.find('---', 3)
+        if second != -1:
+            fm = content[3:second]
+            body = content[second + 3:]
+            for line in fm.split('\n'):
+                line = line.strip()
+                if line.startswith('description:'):
+                    description = line[len('description:'):].strip().strip('"\'')
+                    if not description:
+                        description = None
+                    break
+
+    # Extract first # Heading from body
+    for line in body.split('\n'):
+        line = line.strip()
+        m = re.match(r'^#\s+(.+?)(?:\s+#+)?$', line)
+        if m:
+            heading = m.group(1).strip()
+            if heading:
+                return heading
+
+    if description:
+        return description
+
+    return None
 
 
 # ==================== KB Graph API ====================
@@ -663,7 +707,12 @@ def api_kb_graph(agent_id):
     for slug, page in pages.items():
         outgoing_slugs = page.get('outgoing_slugs', [])
         page['outgoing_count'] = len(outgoing_slugs)
-        if not page.get('title'):
+        # Override evomem-generated title with KB file heading/description
+        kb_path = os.path.join(_kb_dir(agent_id), slug + '.md')
+        extracted_title = _extract_kb_title(kb_path)
+        if extracted_title:
+            page['title'] = extracted_title
+        elif not page.get('title'):
             page['title'] = slug
 
         for target in outgoing_slugs:

@@ -1634,39 +1634,34 @@ function explorerDisplayName(s) {
     // Unified matcher for both sub-agent (_sub_N) and explorer (_explorer_N).
     // Sub-agents and explorers are in-memory only — absent from the agents table —
     // so agent_name falls back to the raw agent_id via COALESCE(ag.name, si.agent_id).
-    // Patterns checked in order: agent_name, external_user_id, agent_id.
+    // Patterns checked in order: agent_name, external_user_id, agent_id, session_id.
     // Three display categories:
     //   Regular agent (human ↔ agent):   "Linus"
-    //   Sub-agent   (agent ↔ sub):       "Linus - Sub-agent 1"
-    //   Explorer    (agent ↔ explorer):  "Linus - Explorer 1"
+    //   Sub-agent   (agent ↔ sub):       "Linus Torvalds - Sub-agent #1"
+    //   Explorer    (agent ↔ explorer):  "Linus Torvalds - Explorer #1"
 
     const KIND = /_(explorer|sub)_(\d+)/;           // anywhere in string
     const KIND_END = /_(explorer|sub)_(\d+)$/;      // at end only (agent_name fallback)
+    const labelFor = k => k === 'explorer' ? 'Explorer' : 'Sub-agent';
 
     const an = s.agent_name || 'Unknown';
     const pn = s.peer_agent_name;  // null/undefined when peer not in agents table
 
     if (an) {
         const m = an.match(KIND_END);
-        if (m) {
-            const label = m[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
-            return esc(pn || 'Unknown') + ' - ' + label + ' ' + m[2];
-        }
+        if (m) return esc(pn || 'Unknown') + ' - ' + labelFor(m[1]) + ' #' + m[2];
     }
 
-    const eu = s.external_user_id || '';
-    const euM = eu.match(KIND);
-    if (euM) {
-        const label = euM[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
-        return esc(an) + ' - ' + label + ' ' + euM[2];
-    }
+    const euM = (s.external_user_id || '').match(KIND);
+    if (euM) return esc(an) + ' - ' + labelFor(euM[1]) + ' #' + euM[2];
 
-    const aid = s.agent_id || '';
-    const aiM = aid.match(KIND);
-    if (aiM) {
-        const label = aiM[1] === 'explorer' ? 'Explorer' : 'Sub-agent';
-        return esc(pn || 'Unknown') + ' - ' + label + ' ' + aiM[2];
-    }
+    const aiM = (s.agent_id || '').match(KIND);
+    if (aiM) return esc(pn || an) + ' - ' + labelFor(aiM[1]) + ' #' + aiM[2];
+
+    // Parent ↔ explorer where the marker only survives in the session id
+    // (e.g. id "linus_explorer_1-0bcfaa63"); the parent is this session's agent.
+    const idM = (s.id || '').match(KIND);
+    if (idM) return esc(an) + ' - ' + labelFor(idM[1]) + ' #' + idM[2];
 
     // Regular inter-agent (both in agents table) or single-agent session
     if (pn) return [esc(an), esc(pn)].sort().join(' - ');

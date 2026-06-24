@@ -269,6 +269,15 @@ class ChatDelegationMixin:
         agent = self.get_agent(session.get('agent_id') or agent_id)
         session['agent_name'] = (agent['name'] if agent
                                  else (session.get('agent_id') or 'Unknown'))
+        # Resolve the peer agent name for inter-agent sessions
+        # (external_user_id = '__agent__<peer_id>'), mirroring get_all_sessions so
+        # explorer/sub-agent captions can show the real parent name instead of 'Unknown'.
+        ext = session.get('external_user_id') or ''
+        if ext.startswith('__agent__'):
+            peer = self.get_agent(ext[len('__agent__'):])
+            session['peer_agent_name'] = peer['name'] if peer else None
+        else:
+            session['peer_agent_name'] = None
         if session.get('channel_id'):
             ch = self.get_channel(session['channel_id'])
             session['channel_type'] = ch.get('type') if ch else None

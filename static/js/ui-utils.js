@@ -142,7 +142,7 @@
      *  CONFIRM DIALOG
      * ==================================================================== */
     var confirmModalHtml =
-        '<div id="confirmModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center">' +
+        '<div id="confirmModal" class="hidden fixed inset-0 z-[250] flex items-center justify-center">' +
             '<div id="confirmOverlay" class="absolute inset-0 bg-black/50 transition-opacity"></div>' +
             '<div id="confirmBox" class="relative bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[400px] shadow-xl transform transition-all scale-95 opacity-0">' +
                 '<div class="p-6">' +

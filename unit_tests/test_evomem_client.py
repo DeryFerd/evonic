@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from backend.agent_runtime.evomem_client import (
     get_engine, is_available, _run,
-    init_evomem, capture, search, think, sync, _get_brain_dir,
+    init_evomem, capture, search, think, sync, _get_evomem_dir,
 )
 
 
@@ -62,10 +62,10 @@ class TestIsAvailable:
             monkeypatch.undo()
 
 
-class TestBrainDir:
-    def test_returns_agents_brain_path(self):
-        path = _get_brain_dir("test-agent")
-        assert path == "agents/test-agent/brain"
+class TestEvomemDir:
+    def test_returns_agents_kb_path(self):
+        path = _get_evomem_dir("test-agent")
+        assert path == "agents/test-agent/kb"
 
 
 class TestRunSubprocess:
@@ -119,7 +119,7 @@ class TestInitBrain:
         brain_dir.mkdir()
         (brain_dir / ".evomem.db").write_text("fake db")
         with patch(
-            "backend.agent_runtime.evomem_client._get_brain_dir",
+            "backend.agent_runtime.evomem_client._get_evomem_dir",
             return_value=str(brain_dir)
         ), patch("backend.agent_runtime.evomem_client.is_available", return_value=True):
             result = init_evomem("test-agent")
@@ -135,7 +135,7 @@ class TestInitBrain:
             open(os.path.join(bd, ".evomem.db"), "w").close()
             return None  # non-JSON init output
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir",
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir",
                    return_value=str(brain_dir)), \
              patch("backend.agent_runtime.evomem_client.is_available", return_value=True), \
              patch("backend.agent_runtime.evomem_client._run", side_effect=fake_run):
@@ -178,7 +178,9 @@ class TestThink:
 
 class TestSync:
     def test_returns_false_when_brain_missing(self):
-        with patch("os.path.isdir", return_value=False):
+        # Brain dir missing and init fails → sync returns False (no binary dance).
+        with patch("os.path.isdir", return_value=False), \
+             patch("backend.agent_runtime.evomem_client.init_evomem", return_value=False):
             result = sync("test-agent")
             assert result is False
 

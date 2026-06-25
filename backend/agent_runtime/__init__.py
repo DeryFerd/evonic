@@ -108,7 +108,13 @@ def _send_free_notification(agent_id: str):
 
 
 def _on_summary_updated(event):
-    """After summarization, extract and store memorable facts in the background."""
+    """After summarization, extract knowledge in the background.
+
+    When KB extraction is enabled (default), the summarizer harvests durable
+    knowledge into the agent's curated KB as merged, linked pages — the single
+    memory store. Set KB_EXTRACTION_ENABLED=0 to fall back to the legacy
+    notes/+entities fact pipeline.
+    """
     payload = event.get('payload', {})
     agent_id = payload.get('agent_id')
     session_id = payload.get('session_id')
@@ -116,8 +122,10 @@ def _on_summary_updated(event):
     if not (agent_id and session_id and summary):
         return
 
+    import os
     import threading
-    from backend.agent_runtime.memory_manager import extract_and_store_memories
+    from backend.agent_runtime.memory_manager import (
+        extract_and_store_memories, extract_and_store_kb)
     from backend.llm_usage_events import usage_context
     from models.db import db
 
@@ -125,12 +133,15 @@ def _on_summary_updated(event):
     if not agent:
         return
 
+    kb_enabled = os.environ.get('KB_EXTRACTION_ENABLED', '1').strip().lower() \
+        not in ('0', 'false', 'no', 'off')
+    extract = extract_and_store_kb if kb_enabled else extract_and_store_memories
+
     def _run_extract():
         # Tag all LLM calls in this background thread as 'memory' usage.
         with usage_context('memory', agent_id, agent.get('name'), session_id):
-            extract_and_store_memories(
-                agent, session_id, summary,
-                AgentRuntime._llm_serializer._llm_lock)
+            extract(agent, session_id, summary,
+                    AgentRuntime._llm_serializer._llm_lock)
 
     threading.Thread(target=_run_extract, daemon=True).start()
 

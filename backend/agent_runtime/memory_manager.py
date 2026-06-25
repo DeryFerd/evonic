@@ -19,6 +19,7 @@ and the evomem static binary via subprocess.
 """
 
 import os
+import re
 import json
 import logging
 import threading
@@ -540,6 +541,290 @@ def extract_and_store_memories(agent: dict, session_id: str, summary: str,
 
     except Exception as e:
         print(f"[MemoryManager] Extraction failed for agent {agent_id} (non-fatal): {e}")
+
+
+# ─── KB knowledge extraction (summarizer → curated KB pages) ─────────────────
+
+_DEFAULT_KB_GUIDANCE = (
+    "By default, capture EVERYTHING important and durable that could help in "
+    "future conversations."
+)
+
+_KB_EXTRACT_PROMPT = """You extract durable knowledge from a conversation summary to store in an AI agent's knowledge base (KB) for reuse in future conversations.
+
+{guidance}
+
+Rules:
+- Extract self-contained, reusable knowledge items: facts, procedures, decisions, domain/business info, preferences, persistent instructions.
+- Skip ephemeral chatter, pleasantries, and transient task status.
+- Each item has a short Title (the topic) and Content (1-5 factual sentences, English).
+- Group related facts under one item/title instead of splitting hairs.
+- Return a JSON array only: [{{"title": "...", "content": "...", "tags": ["..."]}}]
+- If nothing is worth keeping long-term, return: []
+
+Conversation summary:
+{summary}
+
+Return only the JSON array:"""
+
+_KB_DECIDE_PROMPT = """An AI agent is filing a new knowledge item into its KB. Avoid duplicate information.
+
+New item:
+Title: {title}
+Content: {content}
+
+Existing related KB pages (most relevant first):
+{candidates}
+
+Decide one:
+- "skip": the new item is already fully covered by an existing page (adds no new information).
+- "merge": it belongs on an existing page (same topic) — give that page's slug.
+- "create": it is a genuinely new topic.
+
+Return only JSON: {{"action": "skip|merge|create", "slug": "<existing slug, only if merge>"}}"""
+
+_KB_MERGE_SNIPPET_PROMPT = """An existing KB page already holds some knowledge. You are given new information. Output ONLY the part of the new information that is NOT already present on the page, as a concise markdown snippet (a short sentence or a few bullet points) ready to append to the page.
+
+Rules:
+- Do NOT restate anything already on the page.
+- Do NOT rewrite or return the existing content — output only the genuinely new delta.
+- If the new information is already fully covered by the page, output exactly: NONE
+
+Existing page body:
+{existing}
+
+New information:
+{content}
+
+New delta to append (or NONE):"""
+
+
+def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = 1024):
+    """Run a JSON-returning LLM call; return parsed value or None on any issue."""
+    try:
+        with llm_lock:
+            result = llm_client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens)
+        if not result.get('success'):
+            return None
+        choice = result['response'].get('choices', [{}])[0]
+        if choice.get('finish_reason') == 'length':
+            return None
+        raw = choice.get('message', {}).get('content', '')
+        raw, _ = strip_thinking_tags(raw)
+        raw = _strip_code_fences(raw)
+        return json.loads(raw)
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return None
+    except Exception:
+        return None
+
+
+def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = 2048):
+    """Run a free-text LLM call; return stripped text or None."""
+    try:
+        with llm_lock:
+            result = llm_client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens)
+        if not result.get('success'):
+            return None
+        choice = result['response'].get('choices', [{}])[0]
+        if choice.get('finish_reason') == 'length':
+            return None
+        raw = choice.get('message', {}).get('content', '')
+        raw, _ = strip_thinking_tags(raw)
+        raw = _strip_code_fences(raw).strip()
+        return raw or None
+    except Exception:
+        return None
+
+
+def _read_kb_page(agent_id: str, slug: str):
+    """Return {'title', 'body'} for a top-level KB page on disk, or None."""
+    base = slug.split("/", 1)[-1]
+    path = os.path.join(f"agents/{agent_id}/kb", f"{base}.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    fm, body = evomem_writer._parse_frontmatter(raw)
+    return {"title": fm.get("title") or base, "body": body.strip()}
+
+
+def _find_related_kb(agent_id: str, title: str, content: str, limit: int = 6):
+    """Find related TOP-LEVEL KB pages (slug without '/') as merge candidates.
+
+    Combines a deterministic title-slug match (so a same-titled page is ALWAYS
+    found, regardless of the weak semantic ranker — the main fix for missed
+    merges) with two hybrid searches (title+content, then title alone). De-duped
+    by slug; the exact slug match is surfaced first.
+    """
+    out, seen = [], set()
+
+    def _add(slug, title_, snippet):
+        slug = (slug or "").strip()
+        if not slug or "/" in slug or slug in seen:
+            return
+        seen.add(slug)
+        out.append({"slug": slug, "title": title_ or slug,
+                    "snippet": (snippet or "").strip()[:240]})
+
+    # 1) deterministic: a page whose slug == slugify(title) already exists
+    tslug = evomem_writer.slugify(title)
+    if tslug:
+        page = _read_kb_page(agent_id, tslug)
+        if page is not None:
+            _add(tslug, page["title"], page["body"])
+
+    # 2) semantic: title+content and title-only, merged for recall
+    for q in (f"{title}. {content}", title):
+        try:
+            res = evomem_search(agent_id, q, limit=limit * 2, mode=_RECALL_SEARCH_MODE)
+        except Exception:
+            res = None
+        if res and isinstance(res.get("hits"), list):
+            for h in res["hits"]:
+                _add(h.get("slug"), h.get("title"), h.get("snippet"))
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+_MENTION_LINE = re.compile(r"^\s*\[\[[^\]]+\]\]\s*$")
+
+
+def _strip_trailing_mentions(body: str) -> str:
+    """Drop trailing bare [[wiki-link]] lines so new prose isn't appended after them."""
+    lines = body.rstrip().split("\n")
+    while lines and _MENTION_LINE.match(lines[-1]):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+# Per-(agent, slug) re-entrant locks serialise read-modify-write on a single KB
+# page so concurrent background extractions can't lost-update each other.
+_page_locks: dict = {}
+_page_locks_guard = threading.Lock()
+
+
+def _kb_page_lock(agent_id: str, slug: str) -> threading.RLock:
+    key = (agent_id, slug)
+    with _page_locks_guard:
+        lk = _page_locks.get(key)
+        if lk is None:
+            lk = _page_locks[key] = threading.RLock()
+        return lk
+
+
+def _merge_into_page(agent_id: str, slug: str, new_content: str, tags: list,
+                     mentions: list, llm_lock: threading.Lock) -> bool:
+    """Non-destructively append only the NEW delta to an existing KB page.
+
+    Reads the page, asks the LLM for just the information not already present,
+    and appends it — existing content is never rewritten, so nothing is lost and
+    large pages can't be truncated. Serialised per page. Returns True if the page
+    changed; False if already covered, missing, or on error.
+    """
+    with _kb_page_lock(agent_id, slug):
+        page = _read_kb_page(agent_id, slug)
+        if page is None:
+            return False
+        snippet = _kb_llm_text(
+            _KB_MERGE_SNIPPET_PROMPT.format(existing=page["body"], content=new_content),
+            llm_lock, max_tokens=512)
+        if not snippet or snippet.strip().upper() == "NONE":
+            vlog("kb-extract[%s]: %s already covers item (no-op)", agent_id, slug)
+            return False
+        base = _strip_trailing_mentions(page["body"])
+        new_body = (base + "\n\n" + snippet).strip()
+        m = [x for x in mentions if x != slug and f"[[{x}]]" not in new_body]
+        ok = evomem_writer.upsert_kb_page(
+            agent_id, title=page["title"], body=new_body, tags=tags,
+            slug=slug, mentions=m)
+        if ok:
+            vlog("kb-extract[%s]: appended delta to %s", agent_id, slug)
+        return bool(ok)
+
+
+def extract_and_store_kb(agent: dict, session_id: str, summary: str,
+                          llm_lock: threading.Lock) -> None:
+    """Extract durable knowledge from a summary and file it into the agent's KB.
+
+    For each knowledge item: find related KB pages, then skip (duplicate),
+    merge into an existing page, or create a new linked page. Pages connect via
+    bare `[[slug]]` wiki-links. Runs in a background thread; non-fatal on error.
+    Requires the evomem engine (the KB lives in the evomem knowledge root).
+    """
+    agent_id = agent['id']
+    if get_engine() != "evomem":
+        return
+    try:
+        guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
+        items = _kb_llm_json(
+            _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)
+        if not isinstance(items, list) or not items:
+            return
+        items = [it for it in items
+                 if isinstance(it, dict) and it.get('content', '').strip()
+                 and it.get('title', '').strip()][:10]
+
+        wrote = False
+        for it in items:
+            title = it['title'].strip()
+            content = it['content'].strip()
+            tags = [t for t in (it.get('tags') or []) if isinstance(t, str) and t.strip()]
+
+            related = _find_related_kb(agent_id, title, content, limit=6)
+            decision = None
+            if related:
+                cand_text = "\n".join(
+                    f"[{r['slug']}] {r['title']} :: {r['snippet']}" for r in related)
+                decision = _kb_llm_json(
+                    _KB_DECIDE_PROMPT.format(title=title, content=content,
+                                             candidates=cand_text),
+                    llm_lock, max_tokens=128)
+            action = (decision or {}).get('action', 'create')
+            mentions = [r['slug'] for r in related][:4]
+
+            if action == 'skip':
+                vlog("kb-extract[%s]: skip duplicate %r", agent_id, title[:50])
+                continue
+
+            # Merge into the chosen page (append-only, locked).
+            if action == 'merge' and (decision or {}).get('slug'):
+                if _merge_into_page(agent_id, decision['slug'].strip(),
+                                    content, tags, mentions, llm_lock):
+                    wrote = True
+                continue
+
+            # Create — guard the title slug so a concurrent or colliding page is
+            # appended to rather than clobbered (atomic check-then-write).
+            cslug = evomem_writer.slugify(title)
+            if not cslug:
+                continue
+            with _kb_page_lock(agent_id, cslug):
+                if _read_kb_page(agent_id, cslug) is None:
+                    if evomem_writer.upsert_kb_page(
+                            agent_id, title=title, body=content, tags=tags,
+                            mentions=mentions):
+                        vlog("kb-extract[%s]: created %r (links=%d)",
+                             agent_id, title[:50], len(mentions))
+                        wrote = True
+                    continue
+            # A page already exists under this slug → append-merge instead.
+            if _merge_into_page(agent_id, cslug, content, tags, mentions, llm_lock):
+                wrote = True
+
+        if wrote:
+            evomem_writer.mark_dirty(agent_id)
+
+    except Exception as e:
+        print(f"[MemoryManager] KB extraction failed for agent {agent_id} (non-fatal): {e}")
 
 
 def get_memories_for_context(agent_id: str, messages: list,

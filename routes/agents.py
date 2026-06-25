@@ -528,6 +528,10 @@ def _build_kb_tree(kb_dir: str, rel_path: str = '') -> list:
         return items
 
     for entry in entries:
+        # Hide dot-prefixed entries — the evomem index (.evomem.db) and the
+        # auto-managed .gitignore live in kb/ but are not user KB files.
+        if entry.startswith('.'):
+            continue
         full_path = os.path.join(current_dir, entry)
         rel = os.path.join(rel_path, entry).replace('\\', '/') if rel_path else entry
         if os.path.isdir(full_path):

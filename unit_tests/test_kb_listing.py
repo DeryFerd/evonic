@@ -93,7 +93,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         assert meta is not None
@@ -112,7 +112,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
@@ -128,7 +128,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
@@ -144,7 +144,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
@@ -160,7 +160,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
@@ -173,7 +173,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
@@ -190,7 +190,7 @@ class TestGetKbGraphMetadata:
 
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value=db_dir):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
             meta = get_kb_graph_metadata("test-agent")
 
         target_updated = meta["target_updated_at"]
@@ -200,7 +200,7 @@ class TestGetKbGraphMetadata:
     def test_no_brain_db_returns_none(self):
         from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
-        with patch("backend.agent_runtime.evomem_client._get_brain_dir", return_value="/nonexistent"):
+        with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value="/nonexistent"):
             result = get_kb_graph_metadata("test-agent")
         assert result is None
 
@@ -239,7 +239,7 @@ class TestKbListingFormat:
         assert result
         text = "\n".join(result)
         assert "## Available Knowledge Files" in text
-        assert "[[kb/filename]]" in text
+        assert "[[filename]]" in text
         assert "### KB Usage" in text
         assert "- api.md" in text
         assert "- notes.md" in text

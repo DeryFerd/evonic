@@ -145,7 +145,7 @@ class TestKbCoaching:
 
         text = "\n".join(result)
         assert "### KB Coaching" in text
-        assert "[[kb/...]]" in text
+        assert "[[...]]" in text
         assert "_kb_index.md" in text
 
     def test_coaching_token_budget(self, tmp_path):

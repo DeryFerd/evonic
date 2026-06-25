@@ -16,7 +16,7 @@ from backend.agent_runtime import evomem_writer as W
 def brain(tmp_path, monkeypatch):
     """Point the writer at a temp brain dir and skip the DB-existence check."""
     root = tmp_path / "agents" / "a1" / "brain"
-    monkeypatch.setattr(W, "_get_brain_dir", lambda agent_id: str(root))
+    monkeypatch.setattr(W, "_get_evomem_dir", lambda agent_id: str(root))
     monkeypatch.setattr(W, "_ensure_brain", lambda agent_id: True)
     return root
 

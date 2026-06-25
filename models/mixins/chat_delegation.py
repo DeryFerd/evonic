@@ -1,5 +1,6 @@
 import functools
 import os
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 import sqlite3
@@ -419,7 +420,18 @@ class ChatDelegationMixin:
                 "SELECT agent_id FROM session_index WHERE session_id = ?",
                 (session_id,)
             ).fetchone()
-            return row['agent_id'] if row else None
+            agent_id = row['agent_id'] if row else None
+        if not agent_id:
+            return None
+        # Sub-agents and explorers persist their messages into the PARENT's
+        # per-agent chat DB (db_agent_id = parent_id), but session_index records
+        # the sub-agent id. Resolve to the parent so message/session lookups hit
+        # the DB that actually holds the rows — otherwise the chat panel loads
+        # from the sub-agent's empty DB and shows nothing.
+        m = re.match(r'^(.+)_(?:sub|explorer)_\d+$', agent_id)
+        if m and self._chat_db(m.group(1)).get_session(session_id):
+            return m.group(1)
+        return agent_id
 
     def clear_all_sessions(self):
         """Drop all chat sessions, messages, and summaries across all agents.

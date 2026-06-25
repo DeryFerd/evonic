@@ -631,6 +631,20 @@ def get_status() -> dict:
                 status['step'] = 0
                 status['step_label'] = ''
 
+        # --- stale-available auto-reset ---------------------------------
+        # A cached 'available' status may be stale: the VERSION file was
+        # bumped (e.g. via git pull-rebase) but the persisted state still
+        # carries an old current_version < latest_version.  Re-validate.
+        if _state['status'] == 'available':
+            current = _get_current_version()
+            latest = _state['latest_version']
+            if current and latest and _version_tuple(current) >= _version_tuple(latest):
+                _state['status'] = 'idle'
+                _state['current_version'] = current
+                _persist_state(_state)
+                status['status'] = 'idle'
+                status['current_version'] = current
+
         # Clear crashed flag after first status read
         if _state.get('crashed'):
             _state['crashed'] = False
@@ -642,6 +656,23 @@ def check_for_update(force=False) -> dict:
 
     with _lock:
         if not force and (now - _state['last_check']) < 86400:
+            # Re-validate stale 'available' status. After a server restart
+            # the persisted current_version may be outdated (e.g. VERSION
+            # was bumped by a git pull-rebase but the persisted state still
+            # has the old git-describe value).  If current >= latest the
+            # update was already applied — reset to idle.
+            if _state['status'] == 'available':
+                current = _get_current_version()
+                latest = _state['latest_version']
+                if current and latest and _version_tuple(current) >= _version_tuple(latest):
+                    _state['status'] = 'idle'
+                    _state['current_version'] = current
+                    _persist_state(_state)
+                    return {
+                        'available': False,
+                        'current': current,
+                        'latest': latest,
+                    }
             return {
                 'available': _state['status'] == 'available',
                 'current': _state['current_version'],
@@ -830,6 +861,8 @@ def trigger_restart() -> dict:
         _state['step_label'] = ''
         _state['error'] = None
         _state['crashed'] = False
+        _state['current_version'] = None
+        _state['latest_version'] = None
         _persist_state(_state)
 
     from backend.restart import schedule_restart

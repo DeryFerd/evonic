@@ -1506,7 +1506,16 @@ def api_chat_jsonl(agent_id):
     if not session_id:
         session_id = db.get_session_id(agent_id, user_id) or db.get_or_create_session(agent_id, user_id)
 
-    chatlog = chatlog_manager.get(agent_id, session_id)
+    # Sub-agents (including explorers) share the parent agent's chat DB and
+    # chatlog files.  chatlog_manager.get() keys by agent_id, so using the
+    # sub-agent's own ID would look in the wrong directory and return an
+    # empty log — the entries were written under the parent's ID.
+    from backend.subagent_manager import subagent_manager
+    chatlog_agent_id = agent_id
+    _sub = subagent_manager.get(agent_id)
+    if _sub:
+        chatlog_agent_id = _sub.get('parent_id', agent_id)
+    chatlog = chatlog_manager.get(chatlog_agent_id, session_id)
 
     if after_ts is not None:
         # Forward scan: entries newer than after_ts

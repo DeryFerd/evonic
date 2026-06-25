@@ -1141,6 +1141,19 @@ function connectSessionStream(sessionId, afterSeq = 0) {
             chatUI.finalizeThinkingBubble(_sseThinkingId);
             _sseThinkingId = null;
         }
+        // Render the final response from the done event. The SSE done event
+        // already carries the response text (from turn_complete). Rendering it
+        // here means the chat bubble appears instantly rather than waiting for
+        // the next poll tick. This is also the ONLY path that works for
+        // explorer sub-agent sessions — their JSONL chatlog lives under the
+        // parent's agent ID, so the poll's chatlog_manager.get(agent_id, ...)
+        // lookup returns nothing (see routes/agents.py api_chat_jsonl).
+        if (payload.response) {
+            const wasAtBottom = chatUI.isNearBottom(80);
+            chatUI.appendMessage('assistant', payload.response);
+            if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+            _pendingSlashResponse = payload.response;
+        }
         _sseCompleted = true;
         // Reconnect so we're ready for the next incoming message
         es.close();

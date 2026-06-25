@@ -188,11 +188,44 @@ export function openSavedArtifact(url, filename, category, gallery) {
 }
 
 let _escHandler = null;
+let _viewerRawContent = null;
 
 function _closeViewerModal() {
     const modal = document.getElementById('chat-artifact-viewer-modal');
     if (modal) modal.remove();
     if (_escHandler) { document.removeEventListener('keydown', _escHandler); _escHandler = null; }
+}
+
+async function _copyViewerContent() {
+    const $btn = $(this);
+    if (!_viewerRawContent) {
+        (window.toast?.warning || console.warn)('No content to copy.');
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(_viewerRawContent);
+    } catch(e) {
+        // Fallback for older browsers or non-HTTPS
+        const textarea = document.createElement('textarea');
+        textarea.value = _viewerRawContent;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+    }
+    // Visual feedback
+    const $span = $btn.find('span');
+    const origText = $span.text();
+    $btn.find('svg').replaceWith('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>');
+    $span.text(' Copied!');
+    $btn.removeClass('text-indigo-600 dark:text-indigo-400').addClass('text-green-600 dark:text-green-400');
+    setTimeout(() => {
+        $btn.find('svg').replaceWith('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>');
+        $span.text(origText);
+        $btn.removeClass('text-green-600 dark:text-green-400').addClass('text-indigo-600 dark:text-indigo-400');
+    }, 2000);
 }
 
 async function _deleteArtifactFromViewer(url, filename) {
@@ -249,12 +282,15 @@ function _openViewerModal(url, filename, category) {
     const $dl = $('<a class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Download">')
         .attr({ href: url, download: filename })
         .html(_DOWNLOAD_SVG + '<span>Download</span>');
+    const $copy = $('<button class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Copy content">')
+        .html('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg><span>Copy</span>');
+    $copy.on('click', _copyViewerContent);
     const $close = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">')
         .html('<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>');
     $close.on('click', _closeViewerModal);
     const $delete = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors" title="Delete">').html(_TRASH_SVG);
     $delete.on('click', (e) => { e.stopPropagation(); _deleteArtifactFromViewer(url, filename); });
-    $actions.append($dl, $delete, $close);
+    $actions.append($dl, $copy, $delete, $close);
     $head.append($title, $actions);
 
     const $body = $('<div class="flex-1 overflow-y-auto p-6">');
@@ -275,6 +311,7 @@ async function _renderViewerContent($body, url, filename, category) {
     try {
         if (ext === 'md') {
             const text = await (await fetch(url)).text();
+            _viewerRawContent = text;
             $body.html('<div class="recap-prose max-w-none">' + sanitize(marked.parse(text)) + '</div>');
         } else if (ext === 'pdf') {
             $body.html(`<iframe src="${url}" class="w-full rounded-md border border-gray-200 dark:border-gray-600" style="min-height:70vh;"></iframe>`);
@@ -288,6 +325,7 @@ async function _renderViewerContent($body, url, filename, category) {
             $body.html(`<div class="flex justify-center"><img src="${url}" alt="${_escape(filename)}" class="max-w-full max-h-[70vh] rounded-md shadow-lg object-contain"></div>`);
         } else if (_TEXT_EXTS.includes(ext) || category === 'text') {
             const text = await (await fetch(url)).text();
+            _viewerRawContent = text;
             $body.html(`<pre class="bg-gray-50 dark:bg-gray-900 rounded-md p-4 text-sm text-gray-800 dark:text-gray-200 overflow-x-auto max-h-[70vh] whitespace-pre-wrap font-mono">${_escape(text)}</pre>`);
         } else {
             $body.html(

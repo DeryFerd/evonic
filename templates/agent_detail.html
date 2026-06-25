@@ -4733,6 +4733,7 @@ let _artifactsFilterType = 'all';
 let _artifactsPage = 1;
 let _artifactsPages = 1;
 let _artifactsTotal = 0;
+let _artifactRawContent = null;
 
 async function loadArtifacts() {
     const sort = document.getElementById('artifacts-sort').value;
@@ -4926,6 +4927,10 @@ function openArtifact(filename, category) {
                         <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                         Download
                     </a>
+                    <button onclick="copyArtifactContent(this)" class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Copy content">
+                        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        Copy
+                    </button>
                     <button onclick="closeArtifactViewer()" class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                     </button>
@@ -4951,6 +4956,36 @@ function closeArtifactViewer() {
     document.removeEventListener('keydown', _artifactViewerEscHandler);
 }
 
+async function copyArtifactContent(btn) {
+    if (!_artifactRawContent) {
+        showToast('No content to copy.', 'warning');
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(_artifactRawContent);
+    } catch(e) {
+        // Fallback for older browsers or non-HTTPS
+        const textarea = document.createElement('textarea');
+        textarea.value = _artifactRawContent;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+    }
+    // Visual feedback
+    const origHTML = btn.innerHTML;
+    btn.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg> Copied!';
+    btn.classList.add('text-green-600', 'dark:text-green-400');
+    btn.classList.remove('text-indigo-600', 'dark:text-indigo-400');
+    setTimeout(() => {
+        btn.innerHTML = origHTML;
+        btn.classList.remove('text-green-600', 'dark:text-green-400');
+        btn.classList.add('text-indigo-600', 'dark:text-indigo-400');
+    }, 2000);
+}
+
 function _artifactViewerEscHandler(e) {
     if (e.key === 'Escape') closeArtifactViewer();
 }
@@ -4964,6 +4999,7 @@ async function renderArtifactContent(filename, category, fileUrl, ext) {
             // Fetch and render markdown
             const res = await fetch(fileUrl);
             const text = await res.text();
+            _artifactRawContent = text;
             body.innerHTML = '<div class="recap-prose max-w-none">' + marked.parse(text) + '</div>';
         } else if (ext === 'pdf') {
             // Embed PDF viewer
@@ -5008,6 +5044,7 @@ async function renderArtifactContent(filename, category, fileUrl, ext) {
             // Plain text / code viewer
             const res = await fetch(fileUrl);
             const text = await res.text();
+            _artifactRawContent = text;
             const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             body.innerHTML = `<pre class="bg-gray-50 dark:bg-gray-900 rounded-md p-4 text-sm text-gray-800 dark:text-gray-200 overflow-x-auto max-h-[70vh] whitespace-pre-wrap font-mono">${escaped}</pre>`;
         } else {

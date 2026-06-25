@@ -1517,8 +1517,10 @@ def api_chat_jsonl(agent_id):
         chatlog_agent_id = _sub.get('parent_id', agent_id)
     chatlog = chatlog_manager.get(chatlog_agent_id, session_id)
 
-    if after_ts is not None:
+    if after_ts:
         # Forward scan: entries newer than after_ts
+        # Guard: after_ts=0 (e.g. fresh page load) would scan the entire file —
+        # fall through to tail_by_messages instead.
         all_entries = chatlog.get_entries_after_ts(after_ts, types=_DISPLAY_TYPES)
         entries = all_entries[:limit]
         return jsonify({'entries': entries, 'has_more': len(all_entries) > limit})

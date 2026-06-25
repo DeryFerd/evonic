@@ -119,6 +119,7 @@ class ChatLog:
                     f.write(line)
             else:
                 self._fh.write(line)
+                self._fh.flush()  # make visible to concurrent readers immediately
 
     def close(self) -> None:
         with self._lock:

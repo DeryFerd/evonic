@@ -599,8 +599,13 @@ New information:
 New delta to append (or NONE):"""
 
 
-def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = 1024):
-    """Run a JSON-returning LLM call; return parsed value or None on any issue."""
+def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
+    """Run a JSON-returning LLM call; return parsed value or None on any issue.
+
+    max_tokens defaults to None (the model's configured default) — a thinking
+    model spends tokens on reasoning before the answer, so a small cap makes the
+    call finish on length with no parseable output.
+    """
     try:
         with llm_lock:
             result = llm_client.chat_completion(
@@ -622,8 +627,12 @@ def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = 1024):
         return None
 
 
-def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = 2048):
-    """Run a free-text LLM call; return stripped text or None."""
+def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
+    """Run a free-text LLM call; return stripped text or None.
+
+    max_tokens defaults to None (model default) so a thinking model has room to
+    reason before producing the answer (a small cap finishes on length).
+    """
     try:
         with llm_lock:
             result = llm_client.chat_completion(
@@ -736,7 +745,7 @@ def _merge_into_page(agent_id: str, slug: str, new_content: str, tags: list,
             return False
         snippet = _kb_llm_text(
             _KB_MERGE_SNIPPET_PROMPT.format(existing=page["body"], content=new_content),
-            llm_lock, max_tokens=512)
+            llm_lock)
         if not snippet or snippet.strip().upper() == "NONE":
             vlog("kb-extract[%s]: %s already covers item (no-op)", agent_id, slug)
             return False
@@ -787,7 +796,7 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
                 decision = _kb_llm_json(
                     _KB_DECIDE_PROMPT.format(title=title, content=content,
                                              candidates=cand_text),
-                    llm_lock, max_tokens=128)
+                    llm_lock)
             action = (decision or {}).get('action', 'create')
             mentions = [r['slug'] for r in related][:4]
 

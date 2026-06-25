@@ -437,6 +437,9 @@ export class Turn {
             $wrapper.append(labelSpan);
             if (resultContent) $wrapper.append(resultContent);
             $detail.append($wrapper);
+            // Auto-expand detail to show result inline
+            $detail.removeClass('hidden');
+            $target.find('.tl-chev').addClass('rotated');
         }
     }
 

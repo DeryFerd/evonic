@@ -777,12 +777,14 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
         items = _kb_llm_json(
             _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)
         if not isinstance(items, list) or not items:
+            logger.info("[MemoryManager] KB extract[%s]: no durable knowledge "
+                        "to file from this summary", agent_id)
             return
         items = [it for it in items
                  if isinstance(it, dict) and it.get('content', '').strip()
                  and it.get('title', '').strip()][:10]
 
-        wrote = False
+        created = appended = skipped = 0
         for it in items:
             title = it['title'].strip()
             content = it['content'].strip()
@@ -802,19 +804,23 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
 
             if action == 'skip':
                 vlog("kb-extract[%s]: skip duplicate %r", agent_id, title[:50])
+                skipped += 1
                 continue
 
             # Merge into the chosen page (append-only, locked).
             if action == 'merge' and (decision or {}).get('slug'):
                 if _merge_into_page(agent_id, decision['slug'].strip(),
                                     content, tags, mentions, llm_lock):
-                    wrote = True
+                    appended += 1
+                else:
+                    skipped += 1  # already covered (delta was NONE) or unreadable
                 continue
 
             # Create — guard the title slug so a concurrent or colliding page is
             # appended to rather than clobbered (atomic check-then-write).
             cslug = evomem_writer.slugify(title)
             if not cslug:
+                skipped += 1
                 continue
             with _kb_page_lock(agent_id, cslug):
                 if _read_kb_page(agent_id, cslug) is None:
@@ -823,14 +829,19 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
                             mentions=mentions):
                         vlog("kb-extract[%s]: created %r (links=%d)",
                              agent_id, title[:50], len(mentions))
-                        wrote = True
+                        created += 1
                     continue
             # A page already exists under this slug → append-merge instead.
             if _merge_into_page(agent_id, cslug, content, tags, mentions, llm_lock):
-                wrote = True
+                appended += 1
+            else:
+                skipped += 1
 
-        if wrote:
+        if created or appended:
             evomem_writer.mark_dirty(agent_id)
+        logger.info("[MemoryManager] KB extract[%s]: %d item(s) -> created=%d "
+                    "appended=%d skipped=%d", agent_id, len(items),
+                    created, appended, skipped)
 
     except Exception as e:
         print(f"[MemoryManager] KB extraction failed for agent {agent_id} (non-fatal): {e}")

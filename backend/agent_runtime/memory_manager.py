@@ -26,7 +26,7 @@ from models.db import db
 from backend.llm_client import llm_client, strip_thinking_tags
 from backend.agent_runtime.evomem_client import (
     get_engine, search as evomem_search, think as evomem_think,
-    graph_query as evomem_graph_query, init_brain as evomem_init, vlog,
+    graph_query as evomem_graph_query, init_evomem as evomem_init, vlog,
 )
 from backend.agent_runtime import evomem_writer
 

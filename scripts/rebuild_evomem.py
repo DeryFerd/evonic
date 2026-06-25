@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.db import db
 from backend.agent_runtime import evomem_writer as W
 from backend.agent_runtime.evomem_client import (
-    is_available, init_brain, _run, _get_brain_dir,
+    is_available, init_evomem, _run, _get_brain_dir,
 )
 from backend.agent_runtime.memory_manager import _USER_SCOPED, _extract_and_store_graph
 
@@ -52,7 +52,7 @@ def _fmt_stats(s: dict) -> str:
 
 def rebuild_agent(agent_id: str, with_graph: bool) -> None:
     before = _stats(agent_id)
-    if not init_brain(agent_id):
+    if not init_evomem(agent_id):
         print(f"  [{agent_id}] could not init brain — skipping")
         return
 

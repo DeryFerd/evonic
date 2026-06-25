@@ -19,6 +19,9 @@ from abc import ABC, abstractmethod
 # Shared utilities (used by all backends)
 # ---------------------------------------------------------------------------
 
+_ENV_KEY_PATTERN_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
 def truncate(text: str, max_bytes: int) -> str:
     encoded = text.encode('utf-8')
     if len(encoded) <= max_bytes:
@@ -28,9 +31,8 @@ def truncate(text: str, max_bytes: int) -> str:
 
 def validate_env_keys(env: dict) -> tuple:
     """Return (clean_env, error) where error is None if all keys are valid."""
-    pattern = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
     for key in env:
-        if not pattern.match(key):
+        if not _ENV_KEY_PATTERN_RE.match(key):
             return {}, f'Invalid environment variable key: {key!r}. Only [A-Za-z_][A-Za-z0-9_]* is allowed.'
     return env, None
 
@@ -208,7 +210,9 @@ class BackendRegistry:
         if sandbox_enabled:
             from backend.tools.lib.backends.docker_backend import DockerBackend
             agent_id = (agent_context or {}).get('agent_id', (agent_context or {}).get('id', ''))
-            backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace)
+            is_subagent = bool((agent_context or {}).get('is_subagent'))
+            backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace,
+                                    is_subagent=is_subagent)
         else:
             from backend.tools.lib.backends.local_backend import LocalBackend
             run_as_user = (agent_context or {}).get('run_as_user') or None

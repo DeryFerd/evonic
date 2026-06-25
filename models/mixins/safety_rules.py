@@ -13,8 +13,16 @@ class SafetyRuleMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            where = "WHERE enabled = 1" if enabled_only else ""
-            cursor.execute(f"SELECT * FROM safety_rules {where} ORDER BY is_system DESC, weight DESC, name")
+            # Two explicit branches avoids dynamic f-string for query-plan caching.
+            if enabled_only:
+                cursor.execute(
+                    "SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules WHERE enabled = 1 "
+                    "ORDER BY is_system DESC, weight DESC, name"
+                )
+            else:
+                cursor.execute(
+                    "SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules ORDER BY is_system DESC, weight DESC, name"
+                )
             return [dict(row) for row in cursor.fetchall()]
 
     def get_safety_rules_for_agent(self, agent_id: str, enabled_only: bool = True) -> List[Dict[str, Any]]:
@@ -22,23 +30,36 @@ class SafetyRuleMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            enabled_clause = "AND sr.enabled = 1" if enabled_only else ""
-            cursor.execute(f"""
-                SELECT sr.* FROM safety_rules sr
-                WHERE sr.scope = 'global' {enabled_clause}
-                UNION
-                SELECT sr.* FROM safety_rules sr
-                JOIN agent_safety_rules asr ON asr.rule_id = sr.id
-                WHERE asr.agent_id = ? AND sr.scope = 'specific' {enabled_clause}
-                ORDER BY weight DESC, name
-            """, (agent_id,))
+            # Two branches avoids dynamic f-string; all table/column names are compile-time constants.
+            if enabled_only:
+                cursor.execute(
+                    "SELECT sr.* FROM safety_rules sr "
+                    "WHERE sr.scope = 'global' AND sr.enabled = 1 "
+                    "UNION "
+                    "SELECT sr.* FROM safety_rules sr "
+                    "JOIN agent_safety_rules asr ON asr.rule_id = sr.id "
+                    "WHERE asr.agent_id = ? AND sr.scope = 'specific' AND sr.enabled = 1 "
+                    "ORDER BY weight DESC, name",
+                    (agent_id,)
+                )
+            else:
+                cursor.execute(
+                    "SELECT sr.* FROM safety_rules sr "
+                    "WHERE sr.scope = 'global' "
+                    "UNION "
+                    "SELECT sr.* FROM safety_rules sr "
+                    "JOIN agent_safety_rules asr ON asr.rule_id = sr.id "
+                    "WHERE asr.agent_id = ? AND sr.scope = 'specific' "
+                    "ORDER BY weight DESC, name",
+                    (agent_id,)
+                )
             return [dict(row) for row in cursor.fetchall()]
 
     def get_safety_rule(self, rule_id: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM safety_rules WHERE id = ?", (rule_id,))
+            cursor.execute("SELECT id, name, description, pattern, pattern_type, weight, category, tool_scope, scope, enabled, is_system, created_at, updated_at FROM safety_rules WHERE id = ?", (rule_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 

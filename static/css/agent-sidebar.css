@@ -116,6 +116,7 @@ html.dark {
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: none;
+    z-index: 1;
 }
 
 /* Static full ring: task done but user hasn't opened the chat yet */

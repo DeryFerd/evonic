@@ -1,0 +1,26 @@
+{
+  "id": "tool_code_add_feature_5",
+  "name": "Agentic Coding: Add Feature End-to-End",
+  "description": "Full agentic coding flow - explore conventions, read existing code, create new file, verify",
+  "prompt": "Tambahkan sebuah fungsi util baru ke project ini. Kerjakan dengan urutan berikut: (1) telusuri struktur kode untuk memahami konvensi dan lokasi modul util menggunakan tool bash, (2) baca file util yang sudah ada dengan tool read_file untuk mengikuti gayanya, (3) buat file util baru menggunakan tool write_file, lalu (4) jalankan kode untuk memastikan fungsi baru berjalan menggunakan tool runpy.",
+  "expected": {
+    "chain": [
+      "bash",
+      "read_file",
+      "write_file",
+      "runpy"
+    ]
+  },
+  "evaluator_id": "tool_call",
+  "timeout_ms": 60000,
+  "weight": 1.0,
+  "enabled": true,
+  "tool_ids": [
+    "bash",
+    "read_file",
+    "write_file",
+    "runpy"
+  ],
+  "created_at": "2026-06-20T00:00:00.000000",
+  "updated_at": "2026-06-20T00:00:00.000000"
+}

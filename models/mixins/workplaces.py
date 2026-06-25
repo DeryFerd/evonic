@@ -12,14 +12,14 @@ class WorkplaceMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM workplaces ORDER BY name")
+            cursor.execute("SELECT id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at FROM workplaces ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_workplace(self, workplace_id: str) -> Optional[Dict[str, Any]]:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM workplaces WHERE id = ?", (workplace_id,))
+            cursor.execute("SELECT id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at FROM workplaces WHERE id = ?", (workplace_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -99,7 +99,7 @@ class WorkplaceMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tunnel_connectors WHERE id = ?", (connector_id,))
+            cursor.execute("SELECT id, workplace_id, connector_token, pairing_code, pairing_expires_at, device_name, platform, version, last_seen_at FROM tunnel_connectors WHERE id = ?", (connector_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -107,7 +107,7 @@ class WorkplaceMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tunnel_connectors WHERE connector_token = ?", (token,))
+            cursor.execute("SELECT id, workplace_id, connector_token, pairing_code, pairing_expires_at, device_name, platform, version, last_seen_at FROM tunnel_connectors WHERE connector_token = ?", (token,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -115,7 +115,7 @@ class WorkplaceMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tunnel_connectors WHERE workplace_id = ?", (workplace_id,))
+            cursor.execute("SELECT id, workplace_id, connector_token, pairing_code, pairing_expires_at, device_name, platform, version, last_seen_at FROM tunnel_connectors WHERE workplace_id = ?", (workplace_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -123,7 +123,7 @@ class WorkplaceMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tunnel_connectors WHERE pairing_code = ?", (code,))
+            cursor.execute("SELECT id, workplace_id, connector_token, pairing_code, pairing_expires_at, device_name, platform, version, last_seen_at FROM tunnel_connectors WHERE pairing_code = ?", (code,))
             row = cursor.fetchone()
             return dict(row) if row else None
 

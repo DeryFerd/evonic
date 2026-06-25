@@ -98,7 +98,7 @@ class EvaluationMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                """SELECT * FROM evaluation_runs
+                """SELECT run_id, started_at, completed_at, model_name, summary, overall_score, total_tokens, total_duration_ms, notes, status, selected_domains FROM evaluation_runs
                    WHERE status = 'interrupted'
                    ORDER BY started_at DESC"""
             )
@@ -110,7 +110,7 @@ class EvaluationMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM evaluation_runs WHERE run_id = ?",
+                "SELECT run_id, started_at, completed_at, model_name, summary, overall_score, total_tokens, total_duration_ms, notes, status, selected_domains FROM evaluation_runs WHERE run_id = ?",
                 (run_id,)
             )
             row = cursor.fetchone()
@@ -122,7 +122,7 @@ class EvaluationMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM test_results WHERE run_id = ? ORDER BY domain, level",
+                "SELECT id, run_id, timestamp, model_name, domain, level, prompt, response, expected, score, status, details, duration_ms FROM test_results WHERE run_id = ? ORDER BY domain, level",
                 (run_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -278,7 +278,7 @@ class EvaluationMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM improvement_cycles WHERE cycle_id = ?",
+                "SELECT cycle_id, base_run_id, improved_run_id, created_at, completed_at, status, analysis, training_data_path, examples_count, comparison, recommendation FROM improvement_cycles WHERE cycle_id = ?",
                 (cycle_id,)
             )
             row = cursor.fetchone()
@@ -290,7 +290,7 @@ class EvaluationMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM improvement_cycles ORDER BY created_at DESC LIMIT ?",
+                "SELECT cycle_id, base_run_id, improved_run_id, created_at, completed_at, status, analysis, training_data_path, examples_count, comparison, recommendation FROM improvement_cycles ORDER BY created_at DESC LIMIT ?",
                 (limit,)
             )
             return [dict(row) for row in cursor.fetchall()]

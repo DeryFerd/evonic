@@ -46,23 +46,23 @@ def _seed_graph_data(db_path: str):
 
     pages = [
         # KB pages
-        (1, "notes.md", "User Notes", "kb", '["preferences","instructions"]', old),
-        (2, "howto-report.md", "Report Guide", "kb", '["guide","reporting"]', old),
-        (3, "changelog-format.md", "Changelog Format", "kb", '["guide"]', newer),
-        (4, "api-docs.md", "API Docs", "kb", '["reference"]', old),
+        (1, "notes.md", "User Notes", "kb", "kb", '["preferences","instructions"]', old),
+        (2, "howto-report.md", "Report Guide", "kb", "kb", '["guide","reporting"]', old),
+        (3, "changelog-format.md", "Changelog Format", "kb", "kb", '["guide"]', newer),
+        (4, "api-docs.md", "API Docs", "kb", "kb", '["reference"]', old),
         # Isolated KB page: no incoming and no outgoing links
-        (5, "isolated.md", "Isolated", "kb", '["reference"]', old),
+        (5, "isolated.md", "Isolated", "kb", "kb", '["reference"]', old),
         # Non-KB pages
-        (10, "entities/acme", "Acme Corp", "entity", '["entity"]', old),
-        (11, "notes/some-fact", "A Fact", "note", "[]", old),
+        (10, "entities/acme", "Acme Corp", "entity", "entities", '["entity"]', old),
+        (11, "notes/some-fact", "A Fact", "note", "notes", "[]", old),
         # Soft-deleted KB page
-        (12, "deleted-doc.md", "Deleted", "kb", "[]", old),
+        (12, "deleted-doc.md", "Deleted", "kb", "kb", "[]", old),
     ]
     for p in pages:
         deleted = old if p[0] == 12 else None  # page 12 is soft-deleted
         conn.execute(
-            "INSERT INTO pages(id,slug,title,page_type,tags,updated_at,synced_at,content_hash,deleted_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (p[0], p[1], p[2], p[3], p[4], p[5], p[5], "hash", deleted),
+            "INSERT INTO pages(id,slug,title,page_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[6], "hash", deleted),
         )
 
     links = [

@@ -1056,7 +1056,8 @@ class SchemaMixin:
 
             for aid in agent_ids:
                 chat_db = agent_chat_manager.get(aid)
-                cursor.execute("SELECT * FROM chat_sessions WHERE agent_id = ?", (aid,))
+                # No LIMIT: one-time migration needs all sessions for this agent
+                cursor.execute("SELECT id, agent_id, channel_id, external_user_id, bot_enabled, archived, created_at, updated_at FROM chat_sessions WHERE agent_id = ?", (aid,))
                 sessions = [dict(r) for r in cursor.fetchall()]
                 for s in sessions:
                     with chat_db._connect() as aconn:
@@ -1069,7 +1070,8 @@ class SchemaMixin:
                               s.get('bot_enabled', 1), s['created_at'], s['updated_at']))
                         aconn.commit()
 
-                    cursor.execute("SELECT * FROM chat_messages WHERE session_id = ?", (s['id'],))
+                    # No LIMIT: one-time migration needs all messages for this session
+                    cursor.execute("SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ?", (s['id'],))
                     messages = [dict(r) for r in cursor.fetchall()]
                     if messages:
                         with chat_db._connect() as aconn:

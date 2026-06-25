@@ -32,7 +32,7 @@ class ConversationTest(BaseTest):
     def _get_expected_keywords(self) -> list:
         """Get expected keywords for each level"""
         keywords = {
-            1: ["ai", "assistant", "membantu", "help", "asisten", "saya", "i am", "qwen", "alibaba", "llm", "model"],
+            1: ["ai", "asisten", "assistant", "membantu", "help", "saya", "bantuan", "model", "bahasa", "kecerdasan buatan", "llm"],
             2: ["jakarta", "ibu kota", "indonesia", "pusat", "pemerintahan", "nusantara", "ikn"],
             3: ["startup", "teknologi", "bisnis", "inovasi", "perusahaan", "skala", "pertumbuhan"],
             4: ["e-commerce", "tokopedia", "shopee", "pemasaran", "digital", "marketplace", "strategi"],

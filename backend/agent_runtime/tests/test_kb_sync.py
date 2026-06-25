@@ -3,7 +3,7 @@ Unit tests for KB sync extension in evomem_client.py.
 
 Tests cover:
 - Path resolution (_get_kb_dir, _mirror_kb_files)
-- Wiki-link parsing (via evobrain binary)
+- Wiki-link parsing (via evomem binary)
 - KB file registration
 - Deletion handling
 - Edge cases
@@ -28,8 +28,8 @@ from backend.agent_runtime.evomem_client import (
 )
 
 
-def _evobrain_available():
-    """Check if the evobrain binary is available for integration tests."""
+def _evomem_available():
+    """Check if the evomem binary is available for integration tests."""
     return is_available()
 
 
@@ -186,7 +186,7 @@ class TestPathResolution(unittest.TestCase):
 
     def test_slug_is_filename_without_md_extension(self):
         """Slug is derived as filename minus .md extension."""
-        # The evobrain binary strips .md when creating slugs.
+        # The evomem binary strips .md when creating slugs.
         # We test this principle by verifying the mirror copies files
         # with their original names (slug = filename minus .md).
         with tempfile.TemporaryDirectory() as tmp:
@@ -241,12 +241,12 @@ class TestPathResolution(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Integration tests (require evobrain binary)
+# Integration tests (require evomem binary)
 # ---------------------------------------------------------------------------
 
-@unittest.skipUnless(_evobrain_available(), "evobrain binary not available")
+@unittest.skipUnless(_evomem_available(), "evomem binary not available")
 class TestKBSyncIntegration(unittest.TestCase):
-    """Integration tests using the evobrain binary."""
+    """Integration tests using the evomem binary."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -343,7 +343,7 @@ class TestKBSyncIntegration(unittest.TestCase):
                           "---\ntitle: Linker\n---\n# Linker\n[[evonic]]")  # bare slug
         result = self._sync()
         self.assertIsNotNone(result)
-        # The evobrain binary treats bare [[evonic]] as a relative link
+        # The evomem binary treats bare [[evonic]] as a relative link
         # within the same source_dir, so it resolves to kb/evonic.
         stats = self._stats()
         self.assertIsNotNone(stats)
@@ -369,7 +369,7 @@ class TestKBSyncIntegration(unittest.TestCase):
                           "---\ntitle: Linker\n---\n# Linker\nLink: [[kb/evonic.md]]")
         result = self._sync()
         self.assertIsNotNone(result)
-        # The evobrain binary strips trailing .md from wiki-link targets,
+        # The evomem binary strips trailing .md from wiki-link targets,
         # so [[kb/evonic.md]] is treated the same as [[kb/evonic]] and resolves.
         stats = self._stats()
         self.assertIsNotNone(stats)
@@ -452,7 +452,7 @@ class TestKBSyncIntegration(unittest.TestCase):
         self._sync()
 
         stats_after = self._stats()
-        # The evobrain binary cleans up edges pointing to soft-deleted pages,
+        # The evomem binary cleans up edges pointing to soft-deleted pages,
         # so the link count decreases and no dangling links remain.
         self.assertLessEqual(stats_after["links"], stats["links"])
         # Target page is soft-deleted

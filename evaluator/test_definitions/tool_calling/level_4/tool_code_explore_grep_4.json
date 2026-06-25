@@ -1,0 +1,22 @@
+{
+  "id": "tool_code_explore_grep_4",
+  "name": "Code Exploration: Locate & Read Function",
+  "description": "Agentic coding - search the source code to locate a function, then read its implementation",
+  "prompt": "Saya ingin tahu di file mana fungsi `authenticate` didefinisikan dalam project ini, dan bagaimana isinya. Pertama telusuri source code untuk menemukan lokasinya (gunakan tool bash, misal grep), lalu baca isi file tersebut untuk menampilkan implementasi fungsinya (gunakan tool read_file).",
+  "expected": {
+    "chain": [
+      "bash",
+      "read_file"
+    ]
+  },
+  "evaluator_id": "tool_call",
+  "timeout_ms": 60000,
+  "weight": 1.0,
+  "enabled": true,
+  "tool_ids": [
+    "bash",
+    "read_file"
+  ],
+  "created_at": "2026-06-20T00:00:00.000000",
+  "updated_at": "2026-06-20T00:00:00.000000"
+}

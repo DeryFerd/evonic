@@ -371,7 +371,9 @@ class ChatDelegationMixin:
             )"""
 
         # Count total matching rows (same WHERE, no LIMIT/OFFSET).
-        count_sql = f"SELECT COUNT(*) FROM {base_from} WHERE {where_sql}"
+        # All table/column names in base_from, columns, where_sql are compile-time constants;
+        # values use ? placeholders.
+        count_sql = "SELECT COUNT(*) FROM " + base_from + " WHERE " + where_sql
 
         # Data query with ORDER BY, LIMIT, OFFSET.
         columns = """si.session_id AS id,
@@ -381,11 +383,11 @@ class ChatDelegationMixin:
                      COALESCE(ag.name, si.agent_id) AS agent_name,
                      ch.type AS channel_type, ch.name AS channel_name,
                      peer.name AS peer_agent_name"""
-        data_sql = f"""SELECT {columns}
-                       FROM {base_from}
-                       WHERE {where_sql}
-                       ORDER BY si.updated_at DESC
-                       LIMIT ? OFFSET ?"""
+        data_sql = ("SELECT " + columns
+                    + " FROM " + base_from
+                    + " WHERE " + where_sql
+                    + " ORDER BY si.updated_at DESC"
+                    + " LIMIT ? OFFSET ?")
 
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row

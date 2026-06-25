@@ -1267,6 +1267,7 @@ html.dark {
     opacity: 0;
     transition: opacity 0.2s ease;
     pointer-events: none;
+    z-index: 1;
 }
 
 #agent-sidebar .agent-avatar[data-unread="true"]::after {

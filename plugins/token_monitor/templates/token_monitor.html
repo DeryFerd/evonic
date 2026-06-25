@@ -130,21 +130,21 @@
     });
   }
 
-  function renderDoughnut(id, labels, values) {
+  function renderDoughnut(id, labels, values, colors) {
     if (charts[id]) charts[id].destroy();
     charts[id] = new Chart(document.getElementById(id), {
       type: 'doughnut',
-      data: { labels, datasets: [{ data: values, backgroundColor: PALETTE }] },
+      data: { labels, datasets: [{ data: values, backgroundColor: colors || PALETTE }] },
       options: { responsive: true, maintainAspectRatio: false,
         plugins: { legend: { position: 'right', labels: { color: tickColor() } } } }
     });
   }
 
-  function renderBar(id, labels, values) {
+  function renderBar(id, labels, values, colors) {
     if (charts[id]) charts[id].destroy();
     charts[id] = new Chart(document.getElementById(id), {
       type: 'bar',
-      data: { labels, datasets: [{ label: 'Total tokens', data: values, backgroundColor: '#4f46e5' }] },
+      data: { labels, datasets: [{ label: 'Total tokens', data: values, backgroundColor: colors || '#4f46e5' }] },
       options: { responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false } },
         scales: { x: { ticks: { color: tickColor() }, grid: { color: gridColor() } },
@@ -155,7 +155,17 @@
   function loadBySource() {
     getJSON(`${API}/by-source?range=${range}`).then(d => {
       const rows = d.sources || [];
-      renderDoughnut('tm-source-chart', rows.map(r => r.key || 'other'), rows.map(r => r.total_tokens));
+      const colors = rows.map(r => r.key === 'explorer' ? EXPLORER_COLOR : null);
+      const used = new Set();
+      let pi = 0;
+      colors.forEach((c, i) => {
+        if (c) { used.add(c); return; }
+        while (used.has(PALETTE[pi % PALETTE.length])) pi++;
+        colors[i] = PALETTE[pi % PALETTE.length];
+        used.add(colors[i]);
+        pi++;
+      });
+      renderDoughnut('tm-source-chart', rows.map(r => r.key || 'other'), rows.map(r => r.total_tokens), colors);
     });
   }
 
@@ -173,19 +183,27 @@
     });
   }
 
+  const EXPLORER_COLOR = '#ec4899';  // distinct color for explorer sub-agents
   function loadByAgent() {
     getJSON(`${API}/by-agent?range=${range}&rollup=${rollup ? 1 : 0}`).then(d => {
       const rows = d.agents || [];
-      renderBar('tm-agent-chart', rows.map(r => r.agent_name || r.agent_id || '(none)'), rows.map(r => r.total_tokens));
+      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : '#4f46e5');
+      renderBar('tm-agent-chart', rows.map(r => r.agent_id || '(none)'), rows.map(r => r.total_tokens), colors);
       const body = document.getElementById('tm-agent-body');
       if (!rows.length) { body.innerHTML = '<tr><td colspan="5">No data</td></tr>'; return; }
-      body.innerHTML = rows.map(r => `<tr>
-        <td>${(r.agent_name || r.agent_id || '(none)')}</td>
+      body.innerHTML = rows.map(r => {
+        const name = r.agent_id || '(none)';
+        const agentCell = r.is_explorer
+          ? `<span style="color:${EXPLORER_COLOR};font-weight:600;">${name}</span>`
+          : name;
+        return `<tr>
+        <td>${agentCell}</td>
         <td class="num">${fmt(r.prompt_tokens)}</td>
         <td class="num">${fmt(r.completion_tokens)}</td>
         <td class="num">${fmt(r.total_tokens)}</td>
         <td class="num">${fmt(r.calls)}</td>
-      </tr>`).join('');
+      </tr>`;
+      }).join('');
     });
   }
 

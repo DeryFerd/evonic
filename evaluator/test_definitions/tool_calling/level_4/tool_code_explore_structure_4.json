@@ -1,0 +1,22 @@
+{
+  "id": "tool_code_explore_structure_4",
+  "name": "Code Exploration: Structure & Entry Point",
+  "description": "Agentic coding - explore project directory structure, then read the main entry point",
+  "prompt": "Saya baru pertama kali melihat project ini. Telusuri struktur direktori project untuk menemukan file entry point utama (misalnya main.py atau app.py) menggunakan tool runpy (manfaatkan helper tree/find), lalu baca isi file entry point tersebut dengan tool read_file untuk menjelaskan apa yang dilakukan aplikasi.",
+  "expected": {
+    "chain": [
+      "runpy",
+      "read_file"
+    ]
+  },
+  "evaluator_id": "tool_call",
+  "timeout_ms": 60000,
+  "weight": 1.0,
+  "enabled": true,
+  "tool_ids": [
+    "runpy",
+    "read_file"
+  ],
+  "created_at": "2026-06-20T00:00:00.000000",
+  "updated_at": "2026-06-20T00:00:00.000000"
+}

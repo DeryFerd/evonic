@@ -13,7 +13,7 @@ class ChannelMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM channels WHERE agent_id = ? ORDER BY name", (agent_id,))
+            cursor.execute("SELECT id, agent_id, type, name, config, enabled, created_at, updated_at FROM channels WHERE agent_id = ? ORDER BY name LIMIT 100", (agent_id,))
             results = []
             for row in cursor.fetchall():
                 d = dict(row)
@@ -29,7 +29,7 @@ class ChannelMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
+            cursor.execute("SELECT id, agent_id, type, name, config, enabled, created_at, updated_at FROM channels WHERE id = ?", (channel_id,))
             row = cursor.fetchone()
             if not row:
                 return None
@@ -144,7 +144,7 @@ class ChannelMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""\
-                SELECT * FROM channel_pending_approvals
+                SELECT id, channel_id, external_user_id, user_name, pair_code, created_at, expires_at FROM channel_pending_approvals
                 WHERE channel_id = ? AND expires_at > CURRENT_TIMESTAMP
                 ORDER BY created_at DESC
             """, (channel_id,))
@@ -156,7 +156,7 @@ class ChannelMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""\
-                SELECT * FROM channel_pending_approvals
+                SELECT id, channel_id, external_user_id, user_name, pair_code, created_at, expires_at FROM channel_pending_approvals
                 WHERE pair_code = ? AND expires_at > CURRENT_TIMESTAMP
             """, (pair_code,))
             row = cursor.fetchone()
@@ -182,12 +182,12 @@ class ChannelMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             # Get pending record
-            cursor.execute("SELECT * FROM channel_pending_approvals WHERE id = ?", (pending_id,))
+            cursor.execute("SELECT id, channel_id, external_user_id, user_name, pair_code, created_at, expires_at FROM channel_pending_approvals WHERE id = ?", (pending_id,))
             pending = cursor.fetchone()
             if not pending:
                 return False
             # Get channel
-            cursor.execute("SELECT * FROM channels WHERE id = ?", (pending["channel_id"],))
+            cursor.execute("SELECT id, agent_id, type, name, config, enabled, created_at, updated_at FROM channels WHERE id = ?", (pending["channel_id"],))
             channel = cursor.fetchone()
             if not channel:
                 return False
@@ -320,14 +320,14 @@ class ChannelMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM channel_pending_approvals WHERE id = ?", (pending_id,))
+            cursor.execute("SELECT id, channel_id, external_user_id, user_name, pair_code, created_at, expires_at FROM channel_pending_approvals WHERE id = ?", (pending_id,))
             pending = cursor.fetchone()
             if not pending:
                 return None
             channel_id = pending["channel_id"]
             external_user_id = pending["external_user_id"]
             pending_user_name = (pending["user_name"] or "").strip()
-            cursor.execute("SELECT * FROM channels WHERE id = ?", (channel_id,))
+            cursor.execute("SELECT id, agent_id, type, name, config, enabled, created_at, updated_at FROM channels WHERE id = ?", (channel_id,))
             channel = cursor.fetchone()
             if not channel:
                 return None

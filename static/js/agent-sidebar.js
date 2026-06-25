@@ -330,17 +330,22 @@ function _stripMarkdown(text) {
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
         // Links
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-        // Bold / italic
-        .replace(/(\*\*|__)(.*?)\1/g, '$2')
-        .replace(/(\*|_)(.*?)\1/g, '$2')
         // Headings
         .replace(/^#{1,6}\s+/gm, '')
         // Blockquotes
         .replace(/^>\s?/gm, '')
         // List markers
         .replace(/^\s*([-*+]|\d+\.)\s+/gm, '')
-        // Horizontal rules
+        // Horizontal rules (before bold/italic so *** and ___ are fully stripped)
         .replace(/^(\s*[-*_]){3,}\s*$/gm, '')
+        // Bold with ** (non-greedy, handles nested italic)
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        // Bold with __ (requires word boundary to avoid matching __init__ etc.)
+        .replace(/(^|\s)__([^_]+)__(?=\s|$|[.,;:!?)])/g, '$1$2')
+        // Italic with * (rarely conflicts with identifiers)
+        .replace(/\*([^*]+)\*/g, '$1')
+        // Italic with _ (requires word boundary to avoid matching file_names)
+        .replace(/(^|\s)_([^_]+)_(?=\s|$|[.,;:!?)])/g, '$1$2')
         // Collapse whitespace — the preview is a one-line snippet
         .replace(/\s+/g, ' ')
         .trim();
@@ -528,14 +533,32 @@ function _onTurnComplete(payload) {
 var _busySSE = null;
 var _busyReconnectTimer = null;
 var _busyRealtimeHandlersBound = false;
+var _busyClearTimers = {};  // agent_id -> setTimeout id for minimum busy-hold debounce
+var BUSY_HOLD_MS = 300;    // minimum visible duration for the spinning ring
 
 function updateBusyAvatar(payload) {
     if (!payload || !payload.agent_id) return;
     var avatar = document.querySelector(
         '#agent-sidebar .agent-avatar[data-agent-id="' + CSS.escape(payload.agent_id) + '"]'
     );
-    if (avatar) {
-        avatar.setAttribute('data-busy', payload.busy ? 'true' : 'false');
+    if (!avatar) return;
+    if (payload.busy) {
+        // Cancel any pending clear — agent is still busy
+        if (_busyClearTimers[payload.agent_id]) {
+            clearTimeout(_busyClearTimers[payload.agent_id]);
+            delete _busyClearTimers[payload.agent_id];
+        }
+        avatar.setAttribute('data-busy', 'true');
+    } else {
+        // Cancel any previous pending clear for this agent
+        if (_busyClearTimers[payload.agent_id]) {
+            clearTimeout(_busyClearTimers[payload.agent_id]);
+        }
+        // Delay clearing to ensure the spinning ring is visible (minimum BUSY_HOLD_MS)
+        _busyClearTimers[payload.agent_id] = setTimeout(function () {
+            delete _busyClearTimers[payload.agent_id];
+            avatar.setAttribute('data-busy', 'false');
+        }, BUSY_HOLD_MS);
     }
 }
 
@@ -550,13 +573,7 @@ function subscribeBusySSE() {
             _statusSSE = new EventSource('/api/agents/status/stream');
             _statusSSE.addEventListener('agent_busy_changed', function (e) {
                 try {
-                    var payload = JSON.parse(e.data);
-                    var avatar = document.querySelector(
-                        '#agent-sidebar .agent-avatar[data-agent-id="' + CSS.escape(payload.agent_id) + '"]'
-                    );
-                    if (avatar) {
-                        avatar.setAttribute('data-busy', payload.busy ? 'true' : 'false');
-                    }
+                    updateBusyAvatar(JSON.parse(e.data));
                 } catch (_) {}
             });
             _statusSSE.addEventListener('agent_turn_complete', function (e) {

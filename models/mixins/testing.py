@@ -14,7 +14,7 @@ class TestingMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM domains ORDER BY name")
+            cursor.execute("SELECT id, name, description, icon, color, evaluator_id, system_prompt, system_prompt_mode, enabled, path, created_at, updated_at, tool_ids FROM domains ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_domain(self, domain_id: str) -> Optional[Dict[str, Any]]:
@@ -22,7 +22,7 @@ class TestingMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM domains WHERE id = ?", (domain_id,))
+            cursor.execute("SELECT id, name, description, icon, color, evaluator_id, system_prompt, system_prompt_mode, enabled, path, created_at, updated_at, tool_ids FROM domains WHERE id = ?", (domain_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -111,7 +111,7 @@ class TestingMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM levels WHERE domain_id = ? AND level = ?",
+                "SELECT domain_id, level, system_prompt, system_prompt_mode, path, updated_at, tool_ids FROM levels WHERE domain_id = ? AND level = ?",
                 (domain_id, level)
             )
             row = cursor.fetchone()
@@ -123,7 +123,7 @@ class TestingMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM levels WHERE domain_id = ? ORDER BY level",
+                "SELECT domain_id, level, system_prompt, system_prompt_mode, path, updated_at, tool_ids FROM levels WHERE domain_id = ? ORDER BY level",
                 (domain_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -145,21 +145,21 @@ class TestingMixin:
 
             if domain_id and level:
                 cursor.execute(
-                    "SELECT * FROM tests WHERE domain_id = ? AND level = ? ORDER BY name",
+                    "SELECT id, domain_id, level, name, description, system_prompt, system_prompt_mode, prompt, expected, evaluator_id, timeout_ms, weight, enabled, path, created_at, updated_at, tool_ids FROM tests WHERE domain_id = ? AND level = ? ORDER BY name",
                     (domain_id, level)
                 )
             elif domain_id:
                 cursor.execute(
-                    "SELECT * FROM tests WHERE domain_id = ? ORDER BY level, name",
+                    "SELECT id, domain_id, level, name, description, system_prompt, system_prompt_mode, prompt, expected, evaluator_id, timeout_ms, weight, enabled, path, created_at, updated_at, tool_ids FROM tests WHERE domain_id = ? ORDER BY level, name",
                     (domain_id,)
                 )
             elif level:
                 cursor.execute(
-                    "SELECT * FROM tests WHERE level = ? ORDER BY domain_id, name",
+                    "SELECT id, domain_id, level, name, description, system_prompt, system_prompt_mode, prompt, expected, evaluator_id, timeout_ms, weight, enabled, path, created_at, updated_at, tool_ids FROM tests WHERE level = ? ORDER BY domain_id, name",
                     (level,)
                 )
             else:
-                cursor.execute("SELECT * FROM tests ORDER BY domain_id, level, name")
+                cursor.execute("SELECT id, domain_id, level, name, description, system_prompt, system_prompt_mode, prompt, expected, evaluator_id, timeout_ms, weight, enabled, path, created_at, updated_at, tool_ids FROM tests ORDER BY domain_id, level, name")
 
             return [dict(row) for row in cursor.fetchall()]
 
@@ -168,7 +168,7 @@ class TestingMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tests WHERE id = ?", (test_id,))
+            cursor.execute("SELECT id, domain_id, level, name, description, system_prompt, system_prompt_mode, prompt, expected, evaluator_id, timeout_ms, weight, enabled, path, created_at, updated_at, tool_ids FROM tests WHERE id = ?", (test_id,))
             row = cursor.fetchone()
             result = dict(row) if row else None
             if result and result.get('expected'):
@@ -228,7 +228,7 @@ class TestingMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM evaluators ORDER BY name")
+            cursor.execute("SELECT id, name, type, description, eval_prompt, extraction_regex, uses_pass2, config, path, created_at, updated_at FROM evaluators ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_evaluator(self, evaluator_id: str) -> Optional[Dict[str, Any]]:
@@ -236,7 +236,7 @@ class TestingMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM evaluators WHERE id = ?", (evaluator_id,))
+            cursor.execute("SELECT id, name, type, description, eval_prompt, extraction_regex, uses_pass2, config, path, created_at, updated_at FROM evaluators WHERE id = ?", (evaluator_id,))
             row = cursor.fetchone()
             result = dict(row) if row else None
             if result and result.get('config'):
@@ -297,7 +297,7 @@ class TestingMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM level_scores WHERE run_id = ? ORDER BY domain, level",
+                "SELECT id, run_id, domain, level, average_score, total_tests, passed_tests, created_at FROM level_scores WHERE run_id = ? ORDER BY domain, level",
                 (run_id,)
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -378,7 +378,7 @@ class TestingMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM evaluation_runs
+                SELECT run_id, started_at, completed_at, model_name, summary, overall_score, total_tokens, total_duration_ms, notes, status, selected_domains FROM evaluation_runs
                 ORDER BY started_at DESC
                 LIMIT 1
             """)

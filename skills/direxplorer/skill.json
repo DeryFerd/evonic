@@ -1,10 +1,11 @@
 {
-  "id": "fastcontext",
-  "name": "FastContext",
+  "id": "direxplorer",
+  "name": "DirExplorer",
   "version": "1.0.0",
-  "description": "Ultra-fast codebase exploration tools (Grep, Glob, Read) optimized for the FastContext language model. Provides regex search, file pattern matching, and file reading with workspace-aware path resolution.",
+  "description": "Directory & codebase exploration tools (Grep, Glob, Read) for rapid file discovery, regex search, and content inspection with workspace-aware path resolution.",
   "brief": "You can explore any codebase with the `Grep` (regex search), `Glob` (file pattern matching), and `Read` (text file reading) tools. These tools are workspace-aware — relative paths resolve against the current project directory.",
   "author": "Evonic",
   "tools_file": "tools.json",
-  "lazy_tools": false
+  "lazy_tools": false,
+  "default_enabled": true
 }

@@ -5,14 +5,7 @@ Returns a list of matching file paths. Supports ** for recursive matching.
 """
 import os
 import glob as _glob
-from ._utils import _auto_correct_path, _validate_workspace_boundary
-
-
-def _resolve_workspace(agent, path: str) -> str:
-    workspace = (agent or {}).get('workspace', '')
-    if workspace and not os.path.isabs(path):
-        return os.path.join(os.path.abspath(workspace), path)
-    return os.path.abspath(path)
+from ._utils import _auto_correct_path, _validate_workspace_boundary, _resolve_workspace
 
 
 def execute(agent: dict, args: dict) -> dict:

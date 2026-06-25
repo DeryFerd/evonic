@@ -11,7 +11,7 @@ class ToolsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tools ORDER BY name")
+            cursor.execute("SELECT id, name, description, function_def, mock_response, mock_response_type, path, created_at, updated_at FROM tools ORDER BY name")
             results = []
             for row in cursor.fetchall():
                 d = dict(row)
@@ -30,7 +30,7 @@ class ToolsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tools WHERE id = ?", (tool_id,))
+            cursor.execute("SELECT id, name, description, function_def, mock_response, mock_response_type, path, created_at, updated_at FROM tools WHERE id = ?", (tool_id,))
             row = cursor.fetchone()
             if not row:
                 return None

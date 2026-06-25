@@ -53,9 +53,9 @@ def _make_test_db() -> str:
     ]
     for p in pages:
         conn.execute(
-            "INSERT INTO pages(id,slug,title,page_type,tags,updated_at,synced_at,content_hash,deleted_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?)",
-            (p[0], p[1], p[2], p[3], p[4], p[5], p[5], "hash", None),
+            "INSERT INTO pages(id,slug,title,page_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (p[0], p[1], p[2], p[3], "kb", p[4], p[5], p[5], "hash", None),
         )
 
     links = [

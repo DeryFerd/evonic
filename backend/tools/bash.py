@@ -10,8 +10,11 @@ New backends (E2B, etc.) plug in without changing this file.
 """
 
 import logging
+import re
 
 from backend.tools.lib.exec_backend import registry, validate_env_keys
+
+_VALID_ENV_KEY_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 
 try:
     from backend.tools.lib.safety_pipeline import get_safety_pipeline, should_skip_safety
@@ -137,9 +140,7 @@ def execute(agent: dict, args: dict) -> dict:
     # LLM-specified env takes priority over agent variables.
     agent_vars = (agent or {}).get('variables') or {}
     if agent_vars:
-        import re
-        _valid_key = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
-        base = {k: str(v) for k, v in agent_vars.items() if _valid_key.match(k)}
+        base = {k: str(v) for k, v in agent_vars.items() if _VALID_ENV_KEY_RE.match(k)}
         base.update(env)
         env = base
 

@@ -1,8 +1,59 @@
+import ast
 import json
+import operator
 import sqlite3
 import requests
 from typing import Dict, Any, Optional
 import config
+
+# Allowed arithmetic operators mapped to their Python functions
+_SAFE_ARITHMETIC_OPS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _safe_eval_arithmetic(expr: str):
+    """Safely evaluate arithmetic expressions using AST parsing.
+
+    Only allows numeric constants, binary operators (+, -, *, /),
+    unary operators (negation, positive), and parentheses.
+    This is a secure alternative to eval() for arithmetic evaluation.
+    """
+    try:
+        tree = ast.parse(expr.strip(), mode='eval')
+    except SyntaxError:
+        raise ValueError("Invalid arithmetic expression")
+
+    def _eval_node(node):
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        elif isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return node.value
+            raise ValueError("Unsupported literal type")
+        elif isinstance(node, ast.BinOp):
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            op_type = type(node.op)
+            if op_type not in _SAFE_ARITHMETIC_OPS:
+                raise ValueError(f"Unsupported operator: {op_type.__name__}")
+            return _SAFE_ARITHMETIC_OPS[op_type](left, right)
+        elif isinstance(node, ast.UnaryOp):
+            operand = _eval_node(node.operand)
+            op_type = type(node.op)
+            if op_type not in _SAFE_ARITHMETIC_OPS:
+                raise ValueError(f"Unsupported operator: {op_type.__name__}")
+            return _SAFE_ARITHMETIC_OPS[op_type](operand)
+        else:
+            raise ValueError(f"Unsupported expression: {type(node).__name__}")
+
+    return _eval_node(tree)
+
 
 class ToolFramework:
     def __init__(self):
@@ -176,7 +227,32 @@ class ToolFramework:
                     }
                 }
             },
-
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Write content to a file on the filesystem",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {
+                                "type": "string",
+                                "description": "Name or path of the file to write"
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content to write to the file"
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["write", "append"],
+                                "description": "Write mode: 'write' (overwrite) or 'append'"
+                            }
+                        },
+                        "required": ["filename", "content"]
+                    }
+                }
+            },
         ]
     
     def execute_tool(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,6 +277,8 @@ class ToolFramework:
                 result = self._get_order(arguments)
             elif function_name == "send_notification":
                 result = self._send_notification(arguments)
+            elif function_name == "write_file":
+                result = self._write_file(arguments)
             else:
                 result = {"error": f"Unknown tool: {function_name}"}
             
@@ -229,7 +307,7 @@ class ToolFramework:
             return {"error": "Invalid characters in expression"}
         
         try:
-            result = eval(expression, {"__builtins__": {}})
+            result = _safe_eval_arithmetic(expression)
             return {"result": result, "expression": expression}
         except Exception as e:
             return {"error": f"Calculation error: {str(e)}"}
@@ -362,6 +440,20 @@ class ToolFramework:
         
         # Mock: just return success
         return {"email": email, "message_preview": message[:50], "status": "sent", "notification_id": "NOTIF-12345"}
+
+    def _write_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Mock file write — simulates success without touching the real filesystem"""
+        import datetime
+        filename = args.get("filename", "output.txt")
+        content = args.get("content", "")
+        mode = args.get("mode", "write")
+        timestamp = datetime.datetime.now().isoformat()
+        return {
+            "status": "created" if mode == "write" else "appended",
+            "filename": filename,
+            "bytes_written": len(content.encode()),
+            "timestamp": timestamp,
+        }
 
 # Global tool framework instance
 tool_framework = ToolFramework()

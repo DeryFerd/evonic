@@ -20,7 +20,7 @@ class KeywordEvaluator(BaseEvaluator):
     # Domain-specific keywords per level
     KEYWORDS = {
         "conversation": {
-            1: ["ai", "assistant", "membantu", "help", "asisten", "saya", "i am", "qwen", "alibaba", "llm", "model"],
+            1: ["ai", "asisten", "assistant", "membantu", "help", "saya", "bantuan", "model", "bahasa", "kecerdasan buatan", "llm"],
             2: ["jakarta", "ibu kota", "indonesia", "pusat", "pemerintahan", "nusantara", "ikn"],
             3: ["startup", "teknologi", "bisnis", "inovasi", "perusahaan", "skala", "pertumbuhan"],
             4: ["e-commerce", "tokopedia", "shopee", "pemasaran", "digital", "marketplace", "strategi"],
@@ -127,7 +127,7 @@ class KeywordEvaluator(BaseEvaluator):
 
         # Fallback to hardcoded rules
         correctness_rules = {
-            1: (["ai", "assistant", "membantu", "bot", "qwen", "alibaba", "llm", "model"], 0.9, 0.5),
+            1: (["ai", "asisten", "assistant", "membantu", "bot", "bantuan", "llm", "model", "kecerdasan buatan"], 0.9, 0.5),
             2: (["jakarta", "nusantara", "ikn", "kalimantan"], 0.9, 0.3),
             3: (["teknologi", "inovasi", "perusahaan", "muda", "skala", "startup"], 0.85, 0.5),
             4: (["tokopedia", "shopee", "bukalapak", "pemasaran", "marketplace", "platform"], 0.8, 0.4),

@@ -53,7 +53,7 @@ class AttachmentsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM attachments WHERE id = ?", (attachment_id,))
+            cursor.execute("SELECT id, agent_id, session_id, external_user_id, channel_id, channel_type, filename, original_filename, mime_type, file_type, size_bytes, file_path, telegram_file_id, created_at FROM attachments WHERE id = ?", (attachment_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -63,7 +63,7 @@ class AttachmentsMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM attachments WHERE session_id = ? AND agent_id = ? "
+                "SELECT id, agent_id, session_id, external_user_id, channel_id, channel_type, filename, original_filename, mime_type, file_type, size_bytes, file_path, telegram_file_id, created_at FROM attachments WHERE session_id = ? AND agent_id = ? "
                 "ORDER BY created_at DESC, id DESC",
                 (session_id, agent_id),
             )

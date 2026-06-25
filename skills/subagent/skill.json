@@ -2,7 +2,7 @@
   "id": "subagent",
   "name": "Sub-Agent Spawner",
   "version": "1.0.0",
-  "description": "Spawn ad-hoc sub-agents that inherit your capabilities for parallel work. Sub-agents communicate via the agent messaging protocol and are auto-destroyed after 10 minutes of idle.",
+  "description": "Spawn ad-hoc sub-agents that inherit your capabilities for parallel work. Sub-agents communicate via the agent messaging protocol and are auto-destroyed after 30 minutes of idle.",
   "brief": "You can spawn sub-agents for parallel work using the `subagent` skill. Load it with `use_skill('subagent')` to delegate independent tasks to temporary helper agents that inherit your capabilities and report results back automatically.",
   "author": "Evonic",
   "tools_file": "tools.json",

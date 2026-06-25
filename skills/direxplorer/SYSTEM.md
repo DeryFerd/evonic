@@ -1,4 +1,4 @@
-# FastContext Skill
+# DirExplorer Skill
 
 ## Overview
 

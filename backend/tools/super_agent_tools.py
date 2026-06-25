@@ -675,9 +675,6 @@ def _exec_set_owner_name(args: dict) -> dict:
 
 def _exec_restart(args: dict, agent_context: dict = None) -> dict:
     """Restart the Evonic server. Same mechanism as /restart slash command."""
-    import sys as _sys
-    import threading
-    import time
     import json as _json
     import logging
 
@@ -798,33 +795,83 @@ def _exec_restart(args: dict, agent_context: dict = None) -> dict:
         'context': recent_context,
     }))
 
-    def _do_restart():
-        time.sleep(1.5)
-        from backend.channels.registry import channel_manager
-        channel_manager.stop_all()
-        time.sleep(1.0)
-        # `resource` is POSIX-only; skip FD cleanup on Windows.
-        if _sys.platform != 'win32':
-            try:
-                import resource
-                maxfd = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
-                if maxfd == resource.RLIM_INFINITY or maxfd > 65535:
-                    maxfd = 4096
-                os.closerange(3, maxfd)
-            except Exception:
-                pass
-        # Flat-repo architecture: project root IS the live directory.
-        import config as _config
-        _target = os.path.realpath(_config.BASE_DIR)
-        _app_py = os.path.join(_target, 'app.py')
-        _venv_python = os.path.join(_target, '.venv', 'bin', 'python')
-        _python = _venv_python if os.path.exists(_venv_python) else _sys.executable
-        os.chdir(_target)
-        os.execv(_python, [_python, _app_py])
-
-    t = threading.Thread(target=_do_restart, daemon=True)
-    t.start()
+    from backend.restart import schedule_restart
+    schedule_restart()
     return {'result': 'Restarting...'}
+
+
+def _sync_skill_tools(agent_id: str, final_skill_ids: list) -> dict:
+    """Sync skills and auto-manage tools for the given agent.
+
+    For each newly-added non-lazy skill, auto-assign its tools as
+    ``skill:<skill_id>:<fn_name>``.  For each removed skill, strip all
+    ``skill:<skill_id>:*`` tool IDs from the agent's tool list.
+    Persists both the final skill list and updated tool list.
+
+    Returns a dict with:
+      - added_skills, removed_skills (list[str])
+      - tools_added, tools_removed (int)
+      - final_skills, final_tools (list[str])
+    """
+    from backend.skills_manager import skills_manager
+
+    current_skills = db.get_agent_skills(agent_id)
+    current_tools = db.get_agent_tools(agent_id)
+
+    added = [s for s in final_skill_ids if s not in current_skills]
+    removed = [s for s in current_skills if s not in final_skill_ids]
+
+    tools_changed = False
+
+    # ---- auto-assign tools for newly-added non-lazy skills ----
+    total_added = 0
+    for skill_id in added:
+        skill = skills_manager.get_skill(skill_id)
+        if not skill:
+            continue
+        if skill.get('lazy_tools', False):
+            continue
+        # Use _load_tool_defs with _dir to bypass is_skill_enabled guard.
+        # Admin explicitly assigning a skill wants its tools regardless of
+        # global enable/disable status.  Fall back to get_skill_tool_defs
+        # when _dir is missing (e.g. mocked skills in tests).
+        skill_dir = skill.get('_dir', '')
+        if skill_dir:
+            tool_defs = skills_manager._load_tool_defs(skill_dir, skill)
+        else:
+            tool_defs = skills_manager.get_skill_tool_defs(skill_id)
+        for td in tool_defs:
+            fn_name = td['function']['name'] if isinstance(td, dict) and 'function' in td else td.get('name', '')
+            tool_id = f"skill:{skill_id}:{fn_name}" if fn_name else ''
+            if tool_id and tool_id not in current_tools:
+                current_tools.append(tool_id)
+                total_added += 1
+    if total_added > 0:
+        tools_changed = True
+
+    # ---- strip tools for removed skills ----
+    total_removed = 0
+    if removed:
+        before = len(current_tools)
+        current_tools = [t for t in current_tools
+                         if not any(t.startswith(f"skill:{s}:") for s in removed)]
+        total_removed = before - len(current_tools)
+        if total_removed > 0:
+            tools_changed = True
+
+    # ---- persist ----
+    db.set_agent_skills(agent_id, final_skill_ids)
+    if tools_changed:
+        db.set_agent_tools(agent_id, current_tools)
+
+    return {
+        'added_skills': added,
+        'removed_skills': removed,
+        'tools_added': total_added,
+        'tools_removed': total_removed,
+        'final_skills': final_skill_ids,
+        'final_tools': current_tools,
+    }
 
 
 def _exec_assign_skills(args: dict) -> dict:
@@ -841,39 +888,12 @@ def _exec_assign_skills(args: dict) -> dict:
     if not new_skills:
         return {'message': f"All {len(skill_ids)} skill(s) are already assigned to agent '{agent_id}'. No changes made."}
     merged = current_skills + new_skills
-    db.set_agent_skills(agent_id, merged)
 
-    # Auto-assign tools for non-lazy skills
-    from backend.skills_manager import skills_manager
-    current_tools = db.get_agent_tools(agent_id)
-    total_tools_added = 0
-    for skill_id in new_skills:
-        skill = skills_manager.get_skill(skill_id)
-        if not skill:
-            continue
-        if skill.get('lazy_tools', False):
-            continue  # skip lazy skills — tools loaded on demand via use_skill
-        # Use _load_tool_defs with _dir to bypass is_skill_enabled guard.
-        # Admin explicitly assigning a skill wants its tools regardless of
-        # global enable/disable status.  Fall back to get_skill_tool_defs
-        # when _dir is missing (e.g. mocked skills in tests).
-        skill_dir = skill.get('_dir', '')
-        if skill_dir:
-            tool_defs = skills_manager._load_tool_defs(skill_dir, skill)
-        else:
-            tool_defs = skills_manager.get_skill_tool_defs(skill_id)
-        for td in tool_defs:
-            fn_name = td['function']['name'] if isinstance(td, dict) and 'function' in td else td.get('name', '')
-            tool_id = f"skill:{skill_id}:{fn_name}" if fn_name else ''
-            if tool_id and tool_id not in current_tools:
-                current_tools.append(tool_id)
-                total_tools_added += 1
-    if total_tools_added > 0:
-        db.set_agent_tools(agent_id, current_tools)
+    result = _sync_skill_tools(agent_id, merged)
 
     msg = f"Added {len(new_skills)} new skill(s) to agent '{agent_id}' ({len(skill_ids)} requested, {len(skill_ids) - len(new_skills)} already assigned). Total: {len(merged)} skill(s)."
-    if total_tools_added > 0:
-        msg += f" Auto-assigned {total_tools_added} tool(s) from non-lazy skills."
+    if result['tools_added'] > 0:
+        msg += f" Auto-assigned {result['tools_added']} tool(s) from non-lazy skills."
     return {'success': True, 'message': msg}
 
 
@@ -890,8 +910,13 @@ def _exec_unassign_skill(args: dict) -> dict:
     if skill_id not in current_skills:
         return {'message': f"Skill '{skill_id}' was not assigned to agent '{agent_id}'. No changes made."}
     updated_skills = [s for s in current_skills if s != skill_id]
-    db.set_agent_skills(agent_id, updated_skills)
-    return {'success': True, 'message': f"Removed skill '{skill_id}' from agent '{agent_id}'. {len(updated_skills)} skill(s) remaining."}
+
+    result = _sync_skill_tools(agent_id, updated_skills)
+
+    msg = f"Removed skill '{skill_id}' from agent '{agent_id}'. {len(updated_skills)} skill(s) remaining."
+    if result['tools_removed'] > 0:
+        msg += f" Cleaned up {result['tools_removed']} orphaned tool(s)."
+    return {'success': True, 'message': msg}
 
 
 def _exec_agent_info(args: dict) -> dict:

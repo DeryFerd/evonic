@@ -532,6 +532,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                 <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
                 <div class="flex gap-2">
                     <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
+                    <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
                     <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors">
                         Upload
                         <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
@@ -546,6 +547,18 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                 <!-- Files loaded dynamically -->
             </div>
             <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
+            <div id="kb-graph-container" class="hidden" style="height: 70vh; min-height: 400px;">
+                <div id="kb-graph-svg" class="w-full h-full border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800"></div>
+                <div id="kb-graph-legend" class="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500 dark:text-gray-400">
+                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 bg-gray-400 dark:bg-gray-500"></span> Link</span>
+                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 border-t-2 border-dashed border-red-400"></span> Dangling</span>
+                    <label class="flex items-center gap-1 cursor-pointer">
+                        <input type="checkbox" id="kb-graph-show-orphans" checked onchange="toggleOrphans()">
+                        <span>Show orphans</span>
+                    </label>
+                </div>
+                <div id="kb-graph-tooltip" class="absolute hidden bg-gray-900 text-white text-xs px-2 py-1 rounded shadow pointer-events-none dark:bg-gray-700"></div>
+            </div>
         </div>
 
     </div>
@@ -876,7 +889,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
         <div class="p-5">
             <div class="mb-4">
                 <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Filename</label>
-                <input type="text" id="new-file-name" placeholder="e.g., facilities.md" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
+                <input type="text" id="new-file-name" placeholder="e.g., subdir/notes.md" class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100">
             </div>
             <div class="flex gap-3 justify-end">
                 <button onclick="closeNewFileModal()" class="px-4 py-2 border border-gray-300 rounded-md text-sm text-gray-600 hover:bg-gray-50">Cancel</button>
@@ -1260,6 +1273,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 
 <script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=53" defer></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4" defer></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
 function showToast(message, type = 'success') {
     const container = document.getElementById('toast-container');
@@ -1852,12 +1866,13 @@ async function savePluginSetting(pluginId, name, value) {
 }
 
 // ==================== Knowledge Tab ====================
-let kbFiles = [];
+let kbTree = [];
+let kbTreeState = {};
 
 async function loadKBFiles() {
     const res = await fetch(`/api/agents/${AGENT_ID}/kb`);
     const data = await res.json();
-    kbFiles = data.files || [];
+    kbTree = data.tree || [];
     document.getElementById('kb-filter').value = '';
     renderKBFiles();
 }
@@ -1866,32 +1881,98 @@ function filterKBFiles() {
     renderKBFiles();
 }
 
+function escapeJsPath(path) {
+    return path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function toggleKBDir(path) {
+    kbTreeState[path] = kbTreeState[path] === false ? true : false;
+    renderKBFiles();
+}
+
 function renderKBFiles() {
     const query = (document.getElementById('kb-filter').value || '').toLowerCase().trim();
-    const filtered = query ? kbFiles.filter(f => f.filename.toLowerCase().includes(query)) : kbFiles;
     const list = document.getElementById('kb-list');
     const empty = document.getElementById('kb-empty');
-    if (filtered.length === 0) {
+    const filtering = query.length > 0;
+
+    function nodeHasMatch(node) {
+        if (node.name.toLowerCase().includes(query)) return true;
+        if (node.type === 'dir' && node.children) {
+            return node.children.some(c => nodeHasMatch(c));
+        }
+        return false;
+    }
+
+    if (kbTree.length === 0) {
         list.innerHTML = '';
         empty.classList.remove('hidden');
-        empty.textContent = query ? 'No files match your search' : 'No knowledge files yet.';
+        empty.textContent = 'No knowledge files yet.';
         return;
     }
     empty.classList.add('hidden');
-    list.innerHTML = filtered.map(f => `
-        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-md border border-gray-200 cursor-pointer hover:bg-gray-100 transition-colors dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-300" onclick="editFile('${f.filename}')">
-            <div class="flex flex-col min-w-0">
-                <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${f.filename}">${f.filename}</span>
-                <span class="text-xs text-gray-400">${(f.size / 1024).toFixed(1)} KB</span>
-            </div>
-            <div class="flex gap-1">
-                <button onclick="event.stopPropagation(); editFile('${f.filename}')" title="Edit" class="p-1.5 rounded text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="m5.433 13.917 1.262-3.155A4 4 0 0 1 7.58 9.42l6.92-6.918a2.121 2.121 0 0 1 3 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 0 1-.65-.65Z"/><path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0 0 10 3H4.75A2.75 2.75 0 0 0 2 5.75v9.5A2.75 2.75 0 0 0 4.75 18h9.5A2.75 2.75 0 0 0 17 15.25V10a.75.75 0 0 0-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5Z"/></svg>
-                </button>
-                <button onclick="event.stopPropagation(); deleteFile('${f.filename}')" title="Delete" class="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd"/></svg></button>
-            </div>
-        </div>
-    `).join('');
+
+    function renderNode(node, depth) {
+        const indent = depth * 20;
+        const isDir = node.type === 'dir';
+        const isExpanded = filtering ? true : (kbTreeState[node.path] !== false);
+
+        if (isDir) {
+            const children = node.children || [];
+            const visibleChildren = filtering
+                ? children.filter(c => nodeHasMatch(c))
+                : children;
+            const hasVisible = visibleChildren.length > 0;
+
+            let html = `<div class="flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-gray-100 transition-colors dark:hover:bg-gray-700 dark:text-gray-300"
+                     style="padding-left: ${indent + 12}px"
+                     onclick="toggleKBDir('${escapeJsPath(node.path)}')">
+                    <div class="flex items-center gap-2 min-w-0">
+                        <span class="text-xs transition-transform inline-block" style="${isExpanded ? 'transform:rotate(90deg)' : ''}">▶</span>
+                        <span class="text-base">📁</span>
+                        <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${node.name}">${node.name}/</span>
+                    </div>
+                </div>`;
+
+            if (isExpanded && hasVisible) {
+                html += visibleChildren.map(c => renderNode(c, depth + 1)).join('');
+            }
+            return html;
+        } else {
+            const ep = escapeJsPath(node.path);
+            const sizeStr = (node.size != null) ? `<span class="text-xs text-gray-400">${(node.size / 1024).toFixed(1)} KB</span>` : '';
+            return `<div class="flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-gray-100 transition-colors dark:hover:bg-gray-700 dark:text-gray-300"
+                     style="padding-left: ${indent + 12}px"
+                     onclick="editFile('${ep}')">
+                    <div class="flex items-center gap-2 min-w-0 flex-1">
+                        <span class="text-base">📄</span>
+                        <div class="flex flex-col min-w-0">
+                            <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${node.path}">${node.name}</span>
+                            ${sizeStr}
+                        </div>
+                    </div>
+                    <div class="flex gap-1 flex-shrink-0">
+                        <button onclick="event.stopPropagation(); editFile('${ep}')" title="Edit" class="p-1.5 rounded text-indigo-500 hover:text-indigo-700 hover:bg-indigo-50 transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path d="m5.433 13.917 1.262-3.155A4 4 0 0 1 7.58 9.42l6.92-6.918a2.121 2.121 0 0 1 3 3l-6.92 6.918c-.383.383-.84.685-1.343.886l-3.154 1.262a.5.5 0 0 1-.65-.65Z"/><path d="M3.5 5.75c0-.69.56-1.25 1.25-1.25H10A.75.75 0 0 0 10 3H4.75A2.75 2.75 0 0 0 2 5.75v9.5A2.75 2.75 0 0 0 4.75 18h9.5A2.75 2.75 0 0 0 17 15.25V10a.75.75 0 0 0-1.5 0v5.25c0 .69-.56 1.25-1.25 1.25h-9.5c-.69 0-1.25-.56-1.25-1.25v-9.5Z"/></svg>
+                        </button>
+                        <button onclick="event.stopPropagation(); deleteFile('${ep}')" title="Delete" class="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd"/></svg></button>
+                    </div>
+                </div>`;
+        }
+    }
+
+    const visible = filtering
+        ? kbTree.filter(n => nodeHasMatch(n))
+        : kbTree;
+
+    if (visible.length === 0 && filtering) {
+        list.innerHTML = '';
+        empty.classList.remove('hidden');
+        empty.textContent = 'No files match your search';
+        return;
+    }
+
+    list.innerHTML = visible.map(n => renderNode(n, 0)).join('');
 }
 
 async function editFile(filename) {
@@ -1994,6 +2075,293 @@ async function createNewFile() {
     editFile(fname);
 }
 
+
+// ==================== KB Graph View ====================
+let kbGraphMode = 'list';
+let kbGraphData = null;
+let kbGraphSimulation = null;
+let kbGraphShowOrphans = true;
+
+async function loadKBGraph() {
+    try {
+        const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
+        if (res.status === 401) { showToast('Authentication required for graph view', 'error'); return; }
+        kbGraphData = await res.json();
+        if (kbGraphMode === 'graph') renderKBGraph();
+    } catch(e) {
+        console.error('Failed to load KB graph:', e);
+        showToast('Failed to load graph data', 'error');
+    }
+}
+
+function toggleKBGraphView() {
+    const toggleBtn = document.getElementById('kb-graph-toggle');
+    const kbList = document.getElementById('kb-list');
+    const kbEmpty = document.getElementById('kb-empty');
+    const kbFilter = document.getElementById('kb-filter');
+    const graphContainer = document.getElementById('kb-graph-container');
+
+    if (kbGraphMode === 'list') {
+        kbGraphMode = 'graph';
+        if (toggleBtn) toggleBtn.textContent = 'List View';
+        if (kbList) kbList.classList.add('hidden');
+        if (kbEmpty) kbEmpty.classList.add('hidden');
+        if (kbFilter) kbFilter.classList.add('hidden');
+        if (graphContainer) graphContainer.classList.remove('hidden');
+
+        if (kbGraphData) {
+            renderKBGraph();
+        } else {
+            loadKBGraph();
+        }
+    } else {
+        kbGraphMode = 'list';
+        if (toggleBtn) toggleBtn.textContent = 'Graph View';
+        if (kbList) kbList.classList.remove('hidden');
+        if (kbFilter) kbFilter.classList.remove('hidden');
+        if (graphContainer) graphContainer.classList.add('hidden');
+        loadKBFiles();
+    }
+}
+
+function toggleOrphans() {
+    kbGraphShowOrphans = document.getElementById('kb-graph-show-orphans').checked;
+    if (kbGraphMode === 'graph' && kbGraphData) renderKBGraph();
+}
+
+function renderKBGraph() {
+    if (!kbGraphData || !kbGraphData.pages) {
+        document.getElementById('kb-graph-svg').innerHTML =
+            '<div class="flex items-center justify-center h-full text-gray-400 text-sm">No graph data available.</div>';
+        return;
+    }
+
+    const data = kbGraphData;
+    const svgEl = document.getElementById('kb-graph-svg');
+    svgEl.innerHTML = '';
+
+    // Get container dimensions
+    const container = document.getElementById('kb-graph-container');
+    const width = container.clientWidth;
+    const height = container.clientHeight;
+
+    // --- Build graph nodes and links ---
+    const nodes = [];
+    const nodeMap = {};
+    const links = [];
+
+    // Determine connected node set (for orphan filtering)
+    const connected = new Set();
+    for (const link of data.links || []) {
+        connected.add(link.source);
+        connected.add(link.target);
+    }
+
+    for (const [slug, page] of Object.entries(data.pages)) {
+        if (!kbGraphShowOrphans && !connected.has(slug) && !data.links.some(l => l.source === slug || l.target === slug)) {
+            continue; // skip orphans if hidden
+        }
+        const title = (page.title || slug).substring(0, 20);
+        const tags = page.tags || [];
+        nodes.push({
+            id: slug,
+            label: title,
+            fullTitle: page.title || slug,
+            tags: tags,
+            incoming: page.incoming_count || 0,
+            outgoing: page.outgoing_count || 0
+        });
+        nodeMap[slug] = true;
+    }
+
+    // Add links (only for nodes that are in the graph)
+    for (const link of data.links || []) {
+        if (nodeMap[link.source] && nodeMap[link.target]) {
+            links.push({ source: link.source, target: link.target, dangling: false });
+        }
+    }
+
+    // Add dangling links (source must be in graph, target does not exist)
+    for (const link of data.dangling_links || []) {
+        if (nodeMap[link.source]) {
+            links.push({ source: link.source, target: link.target + ' (missing)', dangling: true });
+            // Add a lightweight target node if not present
+            if (!nodeMap[link.target + ' (missing)']) {
+                nodes.push({
+                    id: link.target + ' (missing)',
+                    label: (link.target).substring(0, 20),
+                    fullTitle: link.target,
+                    tags: [],
+                    incoming: 0,
+                    outgoing: 0,
+                    isDangling: true
+                });
+                nodeMap[link.target + ' (missing)'] = true;
+            }
+        }
+    }
+
+    if (nodes.length === 0) {
+        svgEl.innerHTML = '<div class="flex items-center justify-center h-full text-gray-400 text-sm">No graph data available.</div>';
+        return;
+    }
+
+    // --- Color scale by top tag ---
+    const tagColors = [
+        '#6366f1', '#ec4899', '#14b8a6', '#f59e0b', '#8b5cf6',
+        '#06b6d4', '#ef4444', '#22c55e', '#3b82f6', '#a855f7'
+    ];
+    function getNodeColor(node) {
+        if (node.isDangling) return '#ef4444';
+        if (node.tags.length === 0) return '#9ca3af';
+        const h = node.tags[0].split('').reduce((acc, c) => acc + c.charCodeAt(0), 0);
+        return tagColors[h % tagColors.length];
+    }
+
+    // --- D3 setup ---
+    const svg = d3.select('#kb-graph-svg')
+        .append('svg')
+        .attr('width', width)
+        .attr('height', height);
+
+    const g = svg.append('g');
+
+    // Zoom
+    const zoom = d3.zoom()
+        .scaleExtent([0.1, 4])
+        .on('zoom', (event) => {
+            g.attr('transform', event.transform);
+        });
+    svg.call(zoom);
+
+    // Dark mode detection
+    const isDark = document.documentElement.classList.contains('dark');
+    const linkColor = isDark ? '#6b7280' : '#d1d5db';
+    const textColor = isDark ? '#e5e7eb' : '#374151';
+
+    // --- Force simulation ---
+    const simulation = d3.forceSimulation(nodes)
+        .force('link', d3.forceLink(links).id(d => d.id).distance(80))
+        .force('charge', d3.forceManyBody().strength(-300))
+        .force('center', d3.forceCenter(width / 2, height / 2))
+        .force('collide', d3.forceCollide().radius(30));
+
+    kbGraphSimulation = simulation;
+
+    // --- Draw links ---
+    const link = g.append('g')
+        .selectAll('line')
+        .data(links)
+        .join('line')
+        .attr('stroke', d => d.dangling ? '#ef4444' : linkColor)
+        .attr('stroke-width', d => d.dangling ? 1.5 : 1)
+        .attr('stroke-dasharray', d => d.dangling ? '5,5' : null)
+        .attr('opacity', 0.6);
+
+    // --- Draw nodes ---
+    const node = g.append('g')
+        .selectAll('g')
+        .data(nodes)
+        .join('g')
+        .call(d3.drag()
+            .on('start', (event, d) => {
+                if (!event.active) simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            })
+            .on('drag', (event, d) => {
+                d.fx = event.x;
+                d.fy = event.y;
+            })
+            .on('end', (event, d) => {
+                if (!event.active) simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+            })
+        );
+
+    // Node circles
+    node.append('circle')
+        .attr('r', d => d.isDangling ? 5 : 8)
+        .attr('fill', d => getNodeColor(d))
+        .attr('stroke', d => d.isDangling ? '#dc2626' : '#fff')
+        .attr('stroke-width', 1.5)
+        .attr('cursor', 'pointer');
+
+    // Node labels
+    node.append('text')
+        .text(d => d.label)
+        .attr('x', 12)
+        .attr('y', 4)
+        .attr('font-size', '10px')
+        .attr('fill', textColor)
+        .attr('font-family', 'monospace');
+
+    // Tooltip
+    const tooltip = document.getElementById('kb-graph-tooltip');
+    node.on('mouseenter', function(event, d) {
+        const title = d.fullTitle;
+        const info = [title];
+        if (d.tags.length > 0) info.push('Tags: ' + d.tags.join(', '));
+        info.push('In: ' + d.incoming + ' | Out: ' + d.outgoing);
+        if (d.isDangling) info.push('(dangling)');
+
+        tooltip.innerHTML = info.join('<br>');
+        tooltip.classList.remove('hidden');
+
+        const rect = container.getBoundingClientRect();
+        // Position relative to the container
+        tooltip.style.left = (event.clientX - rect.left + 10) + 'px';
+        tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
+        tooltip.style.position = 'absolute';
+    });
+    node.on('mousemove', function(event) {
+        const rect = container.getBoundingClientRect();
+        tooltip.style.left = (event.clientX - rect.left + 10) + 'px';
+        tooltip.style.top = (event.clientY - rect.top - 10) + 'px';
+    });
+    node.on('mouseleave', function() {
+        tooltip.classList.add('hidden');
+    });
+
+    // Click to open file editor
+    node.on('click', function(event, d) {
+        if (d.isDangling) return;
+        editFile(d.id + '.md');
+    });
+
+    // --- Tick ---
+    simulation.on('tick', () => {
+        link
+            .attr('x1', d => d.source.x)
+            .attr('y1', d => d.source.y)
+            .attr('x2', d => d.target.x)
+            .attr('y2', d => d.target.y);
+
+        node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    });
+}
+
+// Initialize on tab switch
+const _origShowTab = showTab;
+showTab = function(name) {
+    _origShowTab(name);
+    if (name === 'knowledge' && kbGraphMode === 'graph') {
+        if (kbGraphData) renderKBGraph();
+        else loadKBGraph();
+    }
+};
+
+// Debounced resize handler for graph
+let _kbGraphResizeTimer = null;
+window.addEventListener('resize', function() {
+    clearTimeout(_kbGraphResizeTimer);
+    _kbGraphResizeTimer = setTimeout(function() {
+        if (kbGraphMode === 'graph' && kbGraphData) {
+            renderKBGraph();
+        }
+    }, 300);
+});
 // ==================== Tools Tab ====================
 let allToolsDefs = [];
 let assignedToolIds = [];

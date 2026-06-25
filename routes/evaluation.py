@@ -309,7 +309,9 @@ def api_replay_test():
         db.delete_individual_test_result(run_id, test_id)
 
         # Run the test using the global engine (reuses global llm_client)
-        result = evaluation_engine._run_single_configurable_test(test, domain, level, model_name, run_id)
+        from backend.llm_usage_events import usage_context
+        with usage_context('evaluator', session_id=str(run_id)):
+            result = evaluation_engine._run_single_configurable_test(test, domain, level, model_name, run_id)
 
         # Fetch the saved result to return the full object the modal expects
         results = db.get_individual_test_results(run_id, domain=domain, level=level)

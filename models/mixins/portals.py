@@ -12,7 +12,7 @@ class PortalMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM portals ORDER BY name")
+            cursor.execute("SELECT id, agent_id, name, virtual_path, backend_type, backend_config, real_path, status, error_msg, created_at, updated_at FROM portals ORDER BY name")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_agent_portals(self, agent_id: str) -> List[Dict[str, Any]]:
@@ -20,7 +20,7 @@ class PortalMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM portals WHERE agent_id = ? ORDER BY virtual_path",
+                "SELECT id, agent_id, name, virtual_path, backend_type, backend_config, real_path, status, error_msg, created_at, updated_at FROM portals WHERE agent_id = ? ORDER BY virtual_path",
                 (agent_id,),
             )
             return [dict(row) for row in cursor.fetchall()]
@@ -29,7 +29,7 @@ class PortalMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM portals WHERE id = ?", (portal_id,))
+            cursor.execute("SELECT id, agent_id, name, virtual_path, backend_type, backend_config, real_path, status, error_msg, created_at, updated_at FROM portals WHERE id = ?", (portal_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 

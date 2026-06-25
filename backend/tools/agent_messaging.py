@@ -20,6 +20,9 @@ Guard rails:
 import json
 import time
 import uuid
+import atexit
+import threading
+from queue import Queue, Empty
 from collections import defaultdict
 from typing import Any, Callable, Dict, List
 
@@ -50,6 +53,16 @@ _global_rate_limit_buckets: Dict[str, list] = defaultdict(list)
 
 # Fan-out state: maps sender_id → list of (timestamp, target_id) tuples
 _fanout_buckets: Dict[str, list] = defaultdict(list)
+
+# Wait registry: maps reply_to_id → Queue for blocking wait_for_reply
+# Access protected by _WAIT_REGISTRY_LOCK for thread safety.
+_WAIT_REGISTRY: Dict[str, Queue] = {}
+_WAIT_REGISTRY_LOCK = threading.Lock()
+
+# Wait timeout constants (seconds)
+_WAIT_TIMEOUT_DEFAULT = 300
+_WAIT_TIMEOUT_MIN = 10
+_WAIT_TIMEOUT_MAX = 600
 
 
 def _check_rate_limit(sender_id: str, target_id: str) -> bool:
@@ -420,6 +433,76 @@ def _exec_send_agent_message(args: dict, agent_context: dict) -> dict:
             'detail': result,
         }
 
+    # ---- wait_for_reply (internal-only, NOT in tool definition) ----
+    wait_for_reply = args.get('wait_for_reply', False)
+    if wait_for_reply:
+        wait_timeout = int(args.get('wait_timeout', _WAIT_TIMEOUT_DEFAULT))
+        wait_timeout = max(_WAIT_TIMEOUT_MIN, min(wait_timeout, _WAIT_TIMEOUT_MAX))
+        reply_queue: Queue = Queue()
+
+        with _WAIT_REGISTRY_LOCK:
+            _WAIT_REGISTRY[reply_to_id] = reply_queue
+
+        _logger.info(
+            "Agent '%s' waiting for reply from '%s' (reply_to=%s, timeout=%ds).",
+            sender_id, target_id, reply_to_id, wait_timeout,
+        )
+
+        wait_start = time.time()
+        try:
+            answer = reply_queue.get(timeout=wait_timeout)
+            elapsed = time.time() - wait_start
+            _logger.info(
+                "Agent '%s' received reply from '%s' after %.1fs (reply_to=%s).",
+                sender_id, target_id, elapsed, reply_to_id,
+            )
+            return {
+                'success': True,
+                'wait_for_reply': True,
+                'reply': answer,
+                'reply_from': target_agent.get('name', target_id),
+                'reply_agent_id': target_id,
+                'waited_seconds': round(elapsed, 1),
+                'tip': (
+                    f"Reply received from {target_agent.get('name', target_id)} "
+                    f"({elapsed:.1f}s). Use result['reply'] to access it."
+                ),
+            }
+        except Empty:
+            _logger.info(
+                "Agent '%s' wait_for_reply timed out after %ds for '%s' (reply_to=%s).",
+                sender_id, wait_timeout, target_id, reply_to_id,
+            )
+            with _WAIT_REGISTRY_LOCK:
+                _WAIT_REGISTRY.pop(reply_to_id, None)
+            return {
+                'success': True,
+                'wait_for_reply': True,
+                'timed_out': True,
+                'waited_seconds': wait_timeout,
+                'tip': (
+                    f"Wait timed out after {wait_timeout}s. "
+                    f"The reply from {target_agent.get('name', target_id)} will arrive "
+                    f"in your next turn automatically."
+                ),
+            }
+        except Exception as e:
+            _logger.error(
+                "Agent '%s' wait_for_reply error for '%s': %s",
+                sender_id, target_id, e,
+            )
+            with _WAIT_REGISTRY_LOCK:
+                _WAIT_REGISTRY.pop(reply_to_id, None)
+            return {
+                'success': True,
+                'wait_for_reply': True,
+                'error': f"Internal wait error: {e}",
+                'tip': (
+                    "The message was sent successfully but waiting failed. "
+                    "The reply will arrive in your next turn."
+                ),
+            }
+
     return {
         'success': True,
         'message': f"Message sent to {target_agent.get('name', target_id)}.",
@@ -570,6 +653,7 @@ def _on_final_answer(data: dict) -> None:
     report_to_channel_id = None
     original_depth = 0
     subagent_user_direct = False
+    reply_to_id = None
     for msg in reversed(messages):
         meta = msg.get('metadata') or {}
         if isinstance(meta, str):
@@ -583,6 +667,7 @@ def _on_final_answer(data: dict) -> None:
             report_to_channel_id = meta.get('report_to_channel_id') or None
             original_depth = meta.get('agent_message_depth', 0)
             subagent_user_direct = meta.get('subagent_user_direct', False)
+            reply_to_id = meta.get('reply_to_id')
             break
 
     if not report_to_id:
@@ -606,6 +691,7 @@ def _on_final_answer(data: dict) -> None:
             report_to_channel_id = latest_meta.get('report_to_channel_id') or None
             original_depth = latest_meta.get('agent_message_depth', 0)
             subagent_user_direct = latest_meta.get('subagent_user_direct', False)
+            reply_to_id = latest_meta.get('reply_to_id')
 
     if not report_to_id:
         _logger.warning(
@@ -685,6 +771,22 @@ def _on_final_answer(data: dict) -> None:
             "Auto-forward failed for '%s' → '%s': %s", agent_b_id, sender_id, e,
         )
 
+    # ---- wake-up: signal any waiting send_agent_message(wait_for_reply=true) ----
+    if reply_to_id:
+        with _WAIT_REGISTRY_LOCK:
+            q = _WAIT_REGISTRY.pop(reply_to_id, None)
+        if q is not None:
+            try:
+                q.put(answer, timeout=1)
+                _logger.info(
+                    "Wait registry: woke up waiter for reply_to=%s (sender=%s, agent_b=%s).",
+                    reply_to_id, sender_id, agent_b_id,
+                )
+            except Exception:
+                _logger.warning(
+                    "Wait registry: failed to wake waiter for reply_to=%s (full queue?).",
+                    reply_to_id,
+                )
 
 # NOTE: _on_final_answer listener is registered in
 # backend/agent_runtime/__init__.py at startup, not here,
@@ -715,3 +817,43 @@ def get_agent_messaging_executor(agent_context: dict) -> Callable:
                 return {'error': f"Agent messaging tool error: {str(e)}"}
         return None  # not an agent messaging tool — fall through
     return executor
+
+
+# ==================== Periodic bucket cleanup ====================
+
+def _cleanup_buckets() -> None:
+    """Remove defaultdict keys whose timestamp lists have been fully pruned.
+
+    The rate-limit check functions prune expired timestamps inline on every
+    call, but defaultdict keys accumulate over time if a sender/target pair
+    becomes inactive. This periodic sweep removes empty-list entries to
+    prevent unbounded dict growth.
+
+    Non-blocking: iterates the dict under no lock (stale reads are harmless —
+    the check functions will re-create keys as needed on next message).
+    """
+    for key in list(_rate_limit_buckets.keys()):
+        if not _rate_limit_buckets[key]:
+            _rate_limit_buckets.pop(key, None)
+    for key in list(_global_rate_limit_buckets.keys()):
+        if not _global_rate_limit_buckets[key]:
+            _global_rate_limit_buckets.pop(key, None)
+    for key in list(_fanout_buckets.keys()):
+        if not _fanout_buckets[key]:
+            _fanout_buckets.pop(key, None)
+
+
+def _start_bucket_cleanup(interval: int = 300):
+    """Launch a daemon thread that periodically cleans stale bucket keys."""
+    def _loop():
+        while True:
+            time.sleep(interval)
+            try:
+                _cleanup_buckets()
+            except Exception:
+                pass
+    threading.Thread(target=_loop, daemon=True, name='rate-limit-cleanup').start()
+
+
+atexit.register(_cleanup_buckets)
+_start_bucket_cleanup()

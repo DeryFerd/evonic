@@ -1,6 +1,6 @@
-# FastContext — Codebase Exploration Tools
+# DirExplorer — Codebase Exploration Tools
 
-FastContext provides three read-only tools for exploring a codebase: **Read**, **Grep**, and **Glob**. These tools are designed for agents that need to inspect project files, search for patterns, and discover file structures without write access.
+DirExplorer provides three read-only tools for exploring a codebase: **Read**, **Grep**, and **Glob**. These tools are designed for agents that need to inspect project files, search for patterns, and discover file structures without write access.
 
 ## Tools
 

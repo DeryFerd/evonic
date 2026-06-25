@@ -32,7 +32,7 @@ class ScheduleMixin:
     def get_schedule(self, schedule_id: str) -> Optional[Dict]:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM schedules WHERE id = ?",
+            row = conn.execute("SELECT id, name, owner_type, owner_id, trigger_type, trigger_config, action_type, action_config, enabled, created_at, next_run_at, last_run_at, run_count, max_runs, metadata FROM schedules WHERE id = ?",
                                (schedule_id,)).fetchone()
             if not row:
                 return None
@@ -45,18 +45,20 @@ class ScheduleMixin:
 
     def get_schedules(self, owner_type: str = None, owner_id: str = None,
                       enabled_only: bool = False) -> List[Dict]:
-        clauses, params = [], []
+        clauses = ["1=1"]
+        params = []
         if owner_type:
             clauses.append("owner_type = ?"); params.append(owner_type)
         if owner_id:
             clauses.append("owner_id = ?"); params.append(owner_id)
         if enabled_only:
             clauses.append("enabled = 1")
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # Column names are compile-time constants; values use ? placeholders.
+        where = " AND ".join(clauses)
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                f"SELECT * FROM schedules {where} ORDER BY created_at DESC", params
+                "SELECT id, name, owner_type, owner_id, trigger_type, trigger_config, action_type, action_config, enabled, created_at, next_run_at, last_run_at, run_count, max_runs, metadata FROM schedules WHERE " + where + " ORDER BY created_at DESC", params
             ).fetchall()
             result = []
             for row in rows:
@@ -137,7 +139,7 @@ class ScheduleMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT * FROM schedule_logs WHERE schedule_id = ? "
+                "SELECT id, schedule_id, executed_at, duration_ms, status, error_message, action_type, action_summary, action_output FROM schedule_logs WHERE schedule_id = ? "
                 "ORDER BY executed_at DESC LIMIT ? OFFSET ?",
                 (schedule_id, limit, offset)
             ).fetchall()

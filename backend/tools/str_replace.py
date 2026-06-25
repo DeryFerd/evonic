@@ -213,6 +213,13 @@ def execute(agent, args: dict) -> dict:
         result = str_replace(local_path, old_str, new_str, count=count)
         if 'error' in result and display_path != local_path:
             result['error'] = result['error'].replace(local_path, display_path)
+        if '/kb/' in local_path and result.get('result') == 'success':
+            try:
+                from backend.agent_runtime.evomem_writer import mark_dirty
+                mark_dirty(agent_id)
+                logger.info("str_replace[%s]: kb edit detected, evomem sync scheduled", agent_id)
+            except Exception as e:
+                logger.warning("str_replace[%s]: failed to schedule evomem sync: %s", agent_id, e)
         return result
 
     # Hint when path starts with _self/ but missing leading slash

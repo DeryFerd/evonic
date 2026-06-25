@@ -1,0 +1,26 @@
+{
+  "id": "tool_code_fix_bug_5",
+  "name": "Agentic Coding: Fix Bug End-to-End",
+  "description": "Full agentic coding flow - explore, read, edit, verify a bug fix",
+  "prompt": "Ada bug pada fungsi penghitungan diskon di project ini. Selesaikan secara menyeluruh dengan urutan berikut: (1) telusuri source code untuk menemukan fungsi penghitungan diskon menggunakan tool bash (grep), (2) baca isi file tersebut dengan tool read_file, (3) perbaiki bug-nya menggunakan tool str_replace, lalu (4) verifikasi perbaikan dengan menjalankan kode pengujian menggunakan tool runpy.",
+  "expected": {
+    "chain": [
+      "bash",
+      "read_file",
+      "str_replace",
+      "runpy"
+    ]
+  },
+  "evaluator_id": "tool_call",
+  "timeout_ms": 60000,
+  "weight": 1.0,
+  "enabled": true,
+  "tool_ids": [
+    "bash",
+    "read_file",
+    "str_replace",
+    "runpy"
+  ],
+  "created_at": "2026-06-20T00:00:00.000000",
+  "updated_at": "2026-06-20T00:00:00.000000"
+}

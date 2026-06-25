@@ -1,0 +1,40 @@
+{
+  "id": "send_file",
+  "name": "Send File",
+  "description": "Send a file directly as an attachment to the user via the active channel (Telegram, WhatsApp, etc.). Use this to deliver PDFs, images, documents, spreadsheets, or any output file the user has requested.",
+  "system_prompt": "## Send File\n\nYou can send files directly to the user as attachments through the active messaging channel (Telegram, WhatsApp, etc.). Use the **send_file** tool when:\n- The user has requested a file (PDF, image, spreadsheet, document, etc.)\n- You have generated output that is best delivered as a file attachment rather than inline text\n- You want to share a screenshot, diagram, chart, or visual result\n- The file is too large or complex to embed in a text message\n\n**How to use:**\n- `file_path`: provide the absolute or relative path to the file you want to send. The file must exist and be readable.\n- `caption`: optionally add a text caption that accompanies the file (e.g. a brief description of what the file contains).\n- `mime_type`: optionally specify the MIME type (e.g. 'application/pdf', 'image/png', 'text/csv'). If omitted, the MIME type will be auto-detected from the file extension.\n\n**After sending:** The file will be delivered as an attachment in the current channel. After a successful send, briefly inform the user what file was sent and what it contains. Do NOT describe the file content in full detail unless asked — the user can open the attachment directly.\n\n**Important:**\n- Always verify that the file exists at the given path before calling this tool (use read_file or a file listing tool if needed).\n- Supported file types and size limits depend on the channel (Telegram supports files up to 50MB; common formats include PDF, images, documents, spreadsheets, archives, and media files).\n- Large files may take longer to upload — consider informing the user if the file is particularly large.\n- This tool is the primary way to deliver final output files to the user. For saving files within the agent's workspace, use the save_artifact tool instead.",
+  "function": {
+    "name": "send_file",
+    "description": "Send a file as an attachment to the user via the active messaging channel. Use this to deliver output files (PDFs, images, documents, spreadsheets, etc.) directly to the user.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Absolute or relative path to the file to send. The file must exist and be readable."
+        },
+        "caption": {
+          "type": "string",
+          "description": "Optional text caption to send alongside the file (e.g. a brief description of what the file contains)."
+        },
+        "mime_type": {
+          "type": "string",
+          "description": "Optional MIME type of the file (e.g. 'application/pdf', 'image/png', 'text/csv'). If omitted, the MIME type will be auto-detected from the file extension."
+        }
+      },
+      "required": ["file_path"]
+    }
+  },
+  "mock_response": {
+    "result": "success",
+    "message": "File sent successfully",
+    "file_path": "/workspace/output/report.pdf",
+    "file_name": "report.pdf",
+    "file_size": 245760,
+    "mime_type": "application/pdf",
+    "channel": "telegram"
+  },
+  "mock_response_type": "json",
+  "created_at": "2026-06-20T18:15:00.000000",
+  "updated_at": "2026-06-20T18:15:00.000000"
+}

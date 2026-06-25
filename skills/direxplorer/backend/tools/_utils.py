@@ -33,6 +33,27 @@ def _auto_correct_path(requested_path: str, workspace: str, path_is_dir: bool = 
     return sorted(matches)[0] if matches else requested_path
 
 
+def _resolve_workspace(agent: dict, path: str) -> str:
+    """Resolve a file path against the agent's workspace.
+
+    Handles three cases:
+    1. /workspace sandbox prefix → maps to agent's host workspace
+       (e.g. /workspace/skills → /home/robin/dev/evonic/skills)
+    2. Relative paths → joins with agent's workspace
+    3. Absolute paths → returns os.path.abspath (boundary check done separately)
+    """
+    if path.startswith('/workspace'):
+        workspace_root = (agent or {}).get('workspace', '')
+        rel = path[len('/workspace'):].lstrip('/')
+        resolved = os.path.join(os.path.abspath(workspace_root), rel)
+        return resolved
+
+    workspace = (agent or {}).get('workspace', '')
+    if workspace and not os.path.isabs(path):
+        return os.path.join(os.path.abspath(workspace), path)
+    return os.path.abspath(path)
+
+
 def _validate_workspace_boundary(resolved_path: str, workspace: str) -> str:
     """Validate that resolved_path stays within the workspace boundary.
 

@@ -6,16 +6,16 @@
   "expected": {
     "keywords": [
       "ai",
+      "asisten",
       "assistant",
       "membantu",
       "help",
-      "asisten",
       "saya",
-      "i am",
-      "qwen",
-      "alibaba",
-      "llm",
-      "model"
+      "bantuan",
+      "model",
+      "bahasa",
+      "kecerdasan buatan",
+      "llm"
     ],
     "type": "introduction"
   },

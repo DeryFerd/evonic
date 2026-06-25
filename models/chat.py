@@ -340,7 +340,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM chat_messages WHERE session_id = ?
+                SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ?
                 ORDER BY created_at DESC LIMIT ?
             """, (session_id, limit))
             rows = [dict(r) for r in cursor.fetchall()]
@@ -537,7 +537,7 @@ class AgentChatDB:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM chat_summaries WHERE session_id = ?", (session_id,))
+            cursor.execute("SELECT id, session_id, summary, last_message_id, message_count, created_at, updated_at, last_message_ts FROM chat_summaries WHERE session_id = ?", (session_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -617,7 +617,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM chat_messages WHERE session_id = ? AND id > ?
+                SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ? AND id > ?
                 ORDER BY created_at ASC
             """, (session_id, after_id))
             rows = [dict(r) for r in cursor.fetchall()]
@@ -640,7 +640,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM chat_messages WHERE session_id = ? AND id > ? AND id <= ?
+                SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ? AND id > ? AND id <= ?
                 ORDER BY created_at ASC
             """, (session_id, after_id, up_to_id))
             rows = [dict(r) for r in cursor.fetchall()]
@@ -712,7 +712,7 @@ class AgentChatDB:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,))
+            cursor.execute("SELECT id, agent_id, channel_id, external_user_id, bot_enabled, archived, created_at, updated_at FROM chat_sessions WHERE id = ?", (session_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -836,7 +836,7 @@ class AgentChatDB:
             cursor = conn.cursor()
             # Priority 1: find a session with a real channel (Telegram, etc.)
             cursor.execute("""
-                SELECT * FROM chat_sessions
+                SELECT id, agent_id, channel_id, external_user_id, bot_enabled, archived, created_at, updated_at FROM chat_sessions
                 WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
                   AND external_user_id NOT LIKE '__agent__%'
                   AND external_user_id != '__scheduler__'
@@ -849,7 +849,7 @@ class AgentChatDB:
             # Priority 2: fallback to web session (no channel), exclude system-only IDs.
             # web_test IS a valid web session — intentionally NOT excluded here.
             cursor.execute("""
-                SELECT * FROM chat_sessions
+                SELECT id, agent_id, channel_id, external_user_id, bot_enabled, archived, created_at, updated_at FROM chat_sessions
                 WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
                   AND external_user_id NOT LIKE '__agent__%'
                   AND external_user_id != '__scheduler__'
@@ -914,7 +914,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             query = """
-                SELECT * FROM chat_sessions
+                SELECT id, agent_id, channel_id, external_user_id, bot_enabled, archived, created_at, updated_at FROM chat_sessions
                 WHERE agent_id = ? AND (archived IS NULL OR archived = 0)
                   AND external_user_id NOT LIKE '__agent__%'
                   AND external_user_id != '__scheduler__'
@@ -984,9 +984,9 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             if include_expired:
-                cursor.execute("SELECT * FROM memories ORDER BY updated_at DESC")
+                cursor.execute("SELECT id, content, category, source_session_id, created_at, updated_at, expired, dimension, superseded_by FROM memories ORDER BY updated_at DESC LIMIT 10000")
             else:
-                cursor.execute("SELECT * FROM memories WHERE expired=0 ORDER BY updated_at DESC")
+                cursor.execute("SELECT id, content, category, source_session_id, created_at, updated_at, expired, dimension, superseded_by FROM memories WHERE expired=0 ORDER BY updated_at DESC LIMIT 10000")
             return [dict(r) for r in cursor.fetchall()]
 
     def get_recent_memories(self, limit: int = 20) -> List[Dict[str, Any]]:
@@ -994,7 +994,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM memories WHERE expired=0 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT ?",
+                "SELECT id, content, category, source_session_id, created_at, updated_at, expired, dimension, superseded_by FROM memories WHERE expired=0 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT ?",
                 (limit,))
             return [dict(r) for r in cursor.fetchall()]
 
@@ -1004,8 +1004,9 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM memories WHERE dimension = ? AND expired = 0 AND superseded_by IS NULL ORDER BY updated_at DESC",
-                (dimension,))
+                "SELECT id, content, category, source_session_id, created_at, updated_at, expired, dimension, superseded_by FROM memories WHERE dimension = ? AND expired = 0 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT 10000",
+                (dimension,)
+            )
             return [dict(r) for r in cursor.fetchall()]
 
     def get_null_dimension_memories(self) -> List[Dict[str, Any]]:
@@ -1014,7 +1015,7 @@ class AgentChatDB:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM memories WHERE dimension IS NULL AND expired = 0 AND superseded_by IS NULL ORDER BY updated_at DESC")
+                "SELECT id, content, category, source_session_id, created_at, updated_at, expired, dimension, superseded_by FROM memories WHERE dimension IS NULL AND expired = 0 AND superseded_by IS NULL ORDER BY updated_at DESC LIMIT 10000")
             return [dict(r) for r in cursor.fetchall()]
 
     def supersede_memory(self, old_memory_id: int, new_memory_id: int):

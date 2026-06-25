@@ -165,8 +165,9 @@ class SessionArchiver:
         try:
             with chat_db._connect() as conn:
                 conn.row_factory = sqlite3.Row
+                # No LIMIT: archiving requires all messages for this session
                 raw = conn.execute(
-                    "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
+                    "SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
                     (session_id,),
                 ).fetchall()
                 for r in raw:

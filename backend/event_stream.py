@@ -55,10 +55,10 @@ class EventStream:
         self._listeners: Dict[str, List[Callable]] = {}
         self._lock = threading.Lock()
         self._log_lock = threading.Lock()
-        self._log_buffer: List[str] = []
+        self._log_buffer: collections.deque = collections.deque(maxlen=1000)
         self._log_timer: Optional[threading.Timer] = None
         self._LOG_FLUSH_INTERVAL = 2.0
-        self._LOG_BUFFER_LIMIT = 50
+        self._LOG_BUFFER_LIMIT = 50  # soft flush trigger; deque maxlen=1000 is hard cap
         self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='event')
         self._log_file: str = None  # resolved lazily to avoid import-time circular deps
         # Sequence numbering and ring buffers for gap-fill recovery
@@ -100,7 +100,7 @@ class EventStream:
         """Flush buffered lines to disk. Caller must hold _log_lock."""
         if not self._log_buffer:
             return
-        lines = self._log_buffer[:]
+        lines = list(self._log_buffer)
         self._log_buffer.clear()
         if self._log_timer:
             self._log_timer.cancel()

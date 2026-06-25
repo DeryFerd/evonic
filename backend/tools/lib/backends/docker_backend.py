@@ -296,8 +296,9 @@ def _get_or_create_container(session_id: str, agent_id: str = '', workspace: str
         '-v', f'{effective_workspace}:/workspace:rw',
         '-v', f'{_HELPERS_DIR}:{_HELPERS_MOUNT}:ro',
         '-w', '/workspace',
+        '-e', 'SCRATCH=/workspace/.scratch',
         SANDBOX_IMAGE,
-        'sleep', 'infinity',
+        'sh', '-c', 'mkdir -p /workspace/.scratch && exec sleep infinity',
     ]
 
     result = _docker(*cmd)
@@ -391,10 +392,14 @@ def _get_available_helpers(container_id: str) -> dict:
 class DockerBackend(ExecutionBackend):
     """Executes bash/python inside a persistent Docker container."""
 
-    def __init__(self, session_id: str, agent_id: str = '', workspace: str = None):
+    def __init__(self, session_id: str, agent_id: str = '', workspace: str = None,
+                 is_subagent: bool = False):
         self._session_id = session_id
         self._agent_id = agent_id
         self._workspace = workspace
+        # Sub-agents run with cwd = /workspace/.scratch so their relative-path
+        # writes stay out of the project root (the container's mounted workspace).
+        self._workdir = '/workspace/.scratch' if is_subagent else None
 
     # ------------------------------------------------------------------
     # Path resolution — translate host paths to /workspace mount point
@@ -422,7 +427,8 @@ class DockerBackend(ExecutionBackend):
         for k, v in env.items():
             env_args.extend(['-e', f'{k}={v}'])
 
-        cmd = ['exec', '-i'] + env_args + [container_id, 'bash', '-s']
+        workdir_args = ['-w', self._workdir] if self._workdir else []
+        cmd = ['exec', '-i'] + workdir_args + env_args + [container_id, 'bash', '-s']
         t0 = time.time()
         proc = _docker_popen(*cmd)
         process_tracker.register(self._session_id, proc, proc.pid, container_id=container_id)
@@ -534,7 +540,8 @@ class DockerBackend(ExecutionBackend):
         for k, v in env.items():
             env_args.extend(['-e', f'{k}={v}'])
 
-        cmd = ['exec', '-i'] + env_args + [container_id, 'python3', '-']
+        workdir_args = ['-w', self._workdir] if self._workdir else []
+        cmd = ['exec', '-i'] + workdir_args + env_args + [container_id, 'python3', '-']
         t0 = time.time()
         proc = _docker_popen(*cmd)
         process_tracker.register(self._session_id, proc, proc.pid, container_id=container_id)

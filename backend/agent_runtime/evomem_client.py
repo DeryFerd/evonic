@@ -26,19 +26,15 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 def _resolve_binary() -> str:
     """Locate the evomem binary.
 
-    Honours EVOMEM_BINARY (or the legacy EVOBRAIN_BINARY) env override. Otherwise
-    prefers the new `shared/bin/evomem` name but falls back to the legacy
-    `shared/bin/evobrain` so the rename doesn't silently disable the engine while
-    the binary is still shipped under its old name. Paths are resolved against the
-    repo root, not the process working directory.
+    Honours EVOMEM_BINARY env override. Paths are resolved against the repo root,
+    not the process working directory.
     """
-    env = os.environ.get("EVOMEM_BINARY") or os.environ.get("EVOBRAIN_BINARY")
+    env = os.environ.get("EVOMEM_BINARY")
     if env:
         return env
-    for name in ("evomem", "evobrain"):
-        path = os.path.join(_BASE_DIR, "shared", "bin", name)
-        if os.path.isfile(path):
-            return path
+    path = os.path.join(_BASE_DIR, "shared", "bin", "evomem")
+    if os.path.isfile(path):
+        return path
     return os.path.join(_BASE_DIR, "shared", "bin", "evomem")
 
 
@@ -48,7 +44,7 @@ _EVOMEM_TIMEOUT = int(os.environ.get("EVOMEM_TIMEOUT", "5"))
 # Operational tracing for evomem internals, shared by all evomem modules.
 # Set EVOMEM_VERBOSE=1 to emit these traces at INFO level (so they appear in
 # normal logs); otherwise they go to DEBUG.
-vlogger = logging.getLogger("evomem")
+vlogger = logging.getLogger(__name__)
 _EVOMEM_VERBOSE = os.environ.get("EVOMEM_VERBOSE", "").strip().lower() in (
     "1", "true", "yes", "on")
 if _EVOMEM_VERBOSE and vlogger.level == logging.NOTSET:
@@ -82,12 +78,9 @@ def get_engine() -> str:
     Evomem is the default. It transparently downgrades to FTS5 when the
     binary is missing/not executable, so binary-less deployments keep working.
     EVONIC_MEMORY_ENGINE overrides the default; an unknown value is treated as
-    'evomem'.  Backward compatibility: 'evobrain' is accepted as a synonym.
+    'evomem'.
     """
     engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
-    # Backward compatibility: accept "evobrain" as a synonym for "evomem"
-    if engine == "evobrain":
-        engine = "evomem"
     if engine not in ("evomem", "fts5"):
         engine = "evomem"
     if engine == "evomem" and not is_available():
@@ -168,6 +161,10 @@ def _mirror_kb_files(agent_id: str) -> dict:
     Copies new/changed files, removes stale ones (deleted from kb/ source),
     and returns a stats dict: {copied, removed, unchanged}.
 
+    Walks the KB source directory recursively so files in subdirectories
+    are mirrored with their relative paths preserved. Only .md files are
+    copied.
+
     The evomem binary scans all .md files under the brain directory, so
     mirroring KB files into brain/kb/ makes them visible to the sync engine.
     Content hash comparison avoids unnecessary writes.
@@ -184,55 +181,77 @@ def _mirror_kb_files(agent_id: str) -> dict:
     # ---- No KB source directory: clean up any stale brain/kb/ copies ----
     if not os.path.isdir(kb_dir):
         if os.path.isdir(brain_kb_dir):
-            for filename in list(os.listdir(brain_kb_dir)):
-                if filename.endswith(".md"):
-                    os.remove(os.path.join(brain_kb_dir, filename))
-                    stats["removed"] += 1
-            try:
-                os.rmdir(brain_kb_dir)
-            except OSError:
-                pass
+            # Walk brain/kb/ bottom-up to remove all .md files and empty dirs
+            for dirpath, _dirnames, filenames in os.walk(brain_kb_dir, topdown=False):
+                for filename in filenames:
+                    if filename.endswith(".md"):
+                        os.remove(os.path.join(dirpath, filename))
+                        stats["removed"] += 1
+                # Remove directory if empty (bottom-up ensures children first)
+                try:
+                    os.rmdir(dirpath)
+                except OSError:
+                    pass
         return stats
 
     # ---- Ensure brain/kb/ directory exists ----
     os.makedirs(brain_kb_dir, exist_ok=True)
 
-    # Collect existing brain/kb/ files
+    # Collect existing brain/kb/ files as relative paths
     brain_kb_files: set = set()
     if os.path.isdir(brain_kb_dir):
-        brain_kb_files = {f for f in os.listdir(brain_kb_dir) if f.endswith(".md")}
+        for dirpath, _dirnames, filenames in os.walk(brain_kb_dir):
+            for filename in filenames:
+                if filename.endswith(".md"):
+                    rel_path = os.path.relpath(
+                        os.path.join(dirpath, filename), brain_kb_dir)
+                    brain_kb_files.add(rel_path)
 
-    # ---- Copy new or changed KB files ----
+    # ---- Copy new or changed KB files (recursively) ----
     kb_files: set = set()
-    for filename in sorted(os.listdir(kb_dir)):
-        if not filename.endswith(".md"):
-            continue
-        kb_files.add(filename)
-        src = os.path.join(kb_dir, filename)
-        dst = os.path.join(brain_kb_dir, filename)
+    for dirpath, _dirnames, filenames in os.walk(kb_dir):
+        for filename in sorted(filenames):
+            if not filename.endswith(".md"):
+                continue
+            src = os.path.join(dirpath, filename)
+            rel_path = os.path.relpath(src, kb_dir)
+            kb_files.add(rel_path)
+            dst = os.path.join(brain_kb_dir, rel_path)
 
-        if os.path.exists(dst):
-            # Compare content to avoid unnecessary writes
-            try:
-                with open(src, "rb") as f:
-                    src_content = f.read()
-                with open(dst, "rb") as f:
-                    dst_content = f.read()
-                if src_content == dst_content:
-                    stats["unchanged"] += 1
-                    continue
-            except OSError:
-                pass  # fall through to copy
+            if os.path.exists(dst):
+                # Compare content to avoid unnecessary writes
+                try:
+                    with open(src, "rb") as f:
+                        src_content = f.read()
+                    with open(dst, "rb") as f:
+                        dst_content = f.read()
+                    if src_content == dst_content:
+                        stats["unchanged"] += 1
+                        continue
+                except OSError:
+                    pass  # fall through to copy
 
-        shutil.copy2(src, dst)
-        stats["copied"] += 1
-        vlog("kb_mirror[%s]: copied %s", agent_id, filename)
+            # Ensure parent directory exists for nested files
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            stats["copied"] += 1
+            vlog("kb_mirror[%s]: copied %s", agent_id, rel_path)
 
     # ---- Remove stale files (deleted from kb/ source) ----
-    for filename in sorted(brain_kb_files - kb_files):
-        os.remove(os.path.join(brain_kb_dir, filename))
+    for rel_path in sorted(brain_kb_files - kb_files):
+        os.remove(os.path.join(brain_kb_dir, rel_path))
         stats["removed"] += 1
-        vlog("kb_mirror[%s]: removed stale %s", agent_id, filename)
+        vlog("kb_mirror[%s]: removed stale %s", agent_id, rel_path)
+
+    # ---- Remove empty subdirectories from brain/kb/ ----
+    if os.path.isdir(brain_kb_dir):
+        for dirpath, _dirnames, _filenames in os.walk(brain_kb_dir, topdown=False):
+            if dirpath == brain_kb_dir:
+                continue  # keep the root kb/ directory
+            try:
+                os.rmdir(dirpath)
+            except OSError:
+                pass  # directory not empty, skip
 
     if stats["copied"] or stats["removed"]:
         vlog("kb_mirror[%s]: copied=%d removed=%d unchanged=%d",
@@ -241,19 +260,41 @@ def _mirror_kb_files(agent_id: str) -> dict:
     return stats
 
 
-def init_brain(agent_id: str) -> bool:
+def _brain_db_exists(brain_dir: str) -> bool:
+    """Check whether the evomem database exists (either .evomem.db or .evobrain.db).
+
+    The evomem binary internally creates .evobrain.db, but the Python code
+    references .evomem.db. This helper checks for both so the brain is
+    considered initialised when either file is present.
+    """
+    return (
+        os.path.isfile(os.path.join(brain_dir, ".evomem.db")) or
+        os.path.isfile(os.path.join(brain_dir, ".evobrain.db"))
+    )
+
+
+def init_evomem(agent_id: str) -> bool:
     """Initialize a new evomem directory for the agent. Returns True on success."""
     brain_dir = _get_brain_dir(agent_id)
     if not is_available():
         return False
-    db_path = os.path.join(brain_dir, ".evomem.db")
-    if os.path.isdir(brain_dir) and os.path.exists(db_path):
+    if os.path.isdir(brain_dir) and _brain_db_exists(brain_dir):
         return True
     os.makedirs(brain_dir, exist_ok=True)
     # `init` prints a plain-text confirmation even with --json, so verify success
     # by the presence of the database file rather than a parsed JSON result.
     _run(brain_dir, ["init"], expect_json=False)
-    return os.path.exists(db_path)
+
+    # The evomem binary internally creates .evobrain.db, but the Python code
+    # references .evomem.db after commit ead2b69. Create a symlink to bridge
+    # the mismatch without rebuilding the binary or reverting the rename.
+    evobrain_db = os.path.join(brain_dir, ".evobrain.db")
+    evomem_db = os.path.join(brain_dir, ".evomem.db")
+    if os.path.isfile(evobrain_db) and not os.path.isfile(evomem_db):
+        os.symlink(evobrain_db, evomem_db)
+        vlog("created symlink .evomem.db -> .evobrain.db in %s", brain_dir)
+
+    return _brain_db_exists(brain_dir)
 
 
 def capture(agent_id: str, text: str, category: str = "general") -> dict:
@@ -263,7 +304,7 @@ def capture(agent_id: str, text: str, category: str = "general") -> dict:
     """
     brain_dir = _get_brain_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
-        if not init_brain(agent_id):
+        if not init_evomem(agent_id):
             return None
     # Build a safe title: strip YAML-breaking characters (brackets, quotes, colons)
     safe_title = (f"{category}: {text[:80]}"
@@ -370,7 +411,7 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
                    (SELECT COUNT(*) FROM links WHERE dst_slug = p.slug AND dst_page_id IS NOT NULL) as incoming_count,
                    (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN pages src ON l.src_page_id = src.id WHERE l.dst_slug = p.slug) as incoming_slugs,
                    (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN pages dst ON l.dst_page_id = dst.id WHERE l.src_page_id = p.id) as outgoing_slugs
-            FROM pages p WHERE p.page_type = 'kb' AND p.deleted_at IS NULL
+            FROM pages p WHERE p.source_dir = 'kb' AND p.deleted_at IS NULL
             ORDER BY p.slug
         """).fetchall()
 
@@ -456,7 +497,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         # Look up the source page
         page_row = conn.execute(
             "SELECT id, slug, title, tags, updated_at FROM pages "
-            "WHERE slug = ? AND page_type = 'kb' AND deleted_at IS NULL",
+            "WHERE slug = ? AND source_dir = 'kb' AND deleted_at IS NULL",
             (filename,),
         ).fetchone()
 
@@ -484,7 +525,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         out_rows = conn.execute(
             "SELECT dst.slug, dst.title, dst.updated_at FROM links l "
             "JOIN pages dst ON l.dst_page_id = dst.id "
-            "WHERE l.src_page_id = ? AND dst.page_type = 'kb' AND dst.deleted_at IS NULL "
+            "WHERE l.src_page_id = ? AND dst.source_dir = 'kb' AND dst.deleted_at IS NULL "
             "ORDER BY dst.slug",
             (page_id,),
         ).fetchall()
@@ -507,7 +548,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             "SELECT src.slug, src.title FROM links l "
             "JOIN pages src ON l.src_page_id = src.id "
             "WHERE l.dst_slug = ? AND l.dst_page_id IS NOT NULL "
-            "AND src.page_type = 'kb' AND src.deleted_at IS NULL "
+            "AND src.source_dir = 'kb' AND src.deleted_at IS NULL "
             "ORDER BY src.slug",
             (filename,),
         ).fetchall()
@@ -520,7 +561,7 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             placeholders = ",".join("?" for _ in source_tags)
             tag_rows = conn.execute(
                 f"SELECT slug, title, tags FROM pages "
-                f"WHERE page_type = 'kb' AND deleted_at IS NULL AND slug != ? "
+                f"WHERE source_dir = 'kb' AND deleted_at IS NULL AND slug != ? "
                 f"AND ({' OR '.join('tags LIKE ?' for _ in source_tags)}) "
                 f"ORDER BY slug",
                 [filename] + [f"%{t}%" for t in source_tags],

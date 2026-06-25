@@ -13,6 +13,8 @@ from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
 from backend.tools import tool_registry
+from backend.tools.super_agent_tools import _sync_skill_tools
+from backend.agent_runtime.evomem_client import get_kb_graph_metadata
 
 agents_bp = Blueprint('agents', __name__)
 
@@ -118,6 +120,21 @@ def _ensure_kb_dir(agent_id: str) -> str:
     d = _kb_dir(agent_id)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _sanitize_kb_path(filename: str) -> str:
+    """Sanitize a KB file path: reject '..' traversal, allow subdirectory paths."""
+    if not filename or '..' in filename or '\\' in filename:
+        raise ValueError('Invalid filename')
+    filename = filename.strip().lstrip('/')
+    if not filename:
+        raise ValueError('Invalid filename')
+    if os.path.isabs(filename):
+        raise ValueError('Invalid filename')
+    normalized = os.path.normpath(filename)
+    if normalized.startswith('..') or os.path.isabs(normalized):
+        raise ValueError('Invalid filename')
+    return normalized
 
 
 def _system_prompt_path(agent_id: str) -> str:
@@ -446,8 +463,13 @@ def api_get_agent_skills(agent_id):
 def api_set_agent_skills(agent_id):
     data = request.get_json()
     skill_ids = data.get('skills', [])
-    db.set_agent_skills(agent_id, skill_ids)
-    return jsonify({'success': True, 'skills': skill_ids})
+    result = _sync_skill_tools(agent_id, skill_ids)
+    return jsonify({
+        'success': True,
+        'skills': skill_ids,
+        'tools_added': result['tools_added'],
+        'tools_removed': result['tools_removed'],
+    })
 
 
 # ==================== Agent Variables API ====================
@@ -491,27 +513,52 @@ def api_delete_agent_variable(agent_id, key):
 
 # ==================== Knowledge Base API ====================
 
+def _build_kb_tree(kb_dir: str, rel_path: str = '') -> list:
+    """Recursively build a tree of KB files and directories."""
+    items = []
+    current_dir = os.path.join(kb_dir, rel_path) if rel_path else kb_dir
+    try:
+        entries = sorted(os.listdir(current_dir))
+    except OSError:
+        return items
+
+    for entry in entries:
+        full_path = os.path.join(current_dir, entry)
+        rel = os.path.join(rel_path, entry).replace('\\', '/') if rel_path else entry
+        if os.path.isdir(full_path):
+            children = _build_kb_tree(kb_dir, rel)
+            items.append({
+                'name': entry,
+                'type': 'dir',
+                'path': rel,
+                'children': children
+            })
+        elif os.path.isfile(full_path):
+            stat = os.stat(full_path)
+            items.append({
+                'name': entry,
+                'type': 'file',
+                'path': rel,
+                'size': stat.st_size,
+                'modified': stat.st_mtime
+            })
+    return items
+
+
 @agents_bp.route('/api/agents/<agent_id>/kb', methods=['GET'])
 def api_list_kb(agent_id):
     kb = _kb_dir(agent_id)
     if not os.path.isdir(kb):
-        return jsonify({'files': []})
-    files = []
-    for fname in sorted(os.listdir(kb)):
-        fpath = os.path.join(kb, fname)
-        if os.path.isfile(fpath):
-            stat = os.stat(fpath)
-            files.append({
-                'filename': fname,
-                'size': stat.st_size,
-                'modified': stat.st_mtime
-            })
-    return jsonify({'files': files})
+        return jsonify({'tree': []})
+    tree = _build_kb_tree(kb)
+    return jsonify({'tree': tree})
 
 
 @agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['GET'])
 def api_get_kb_file(agent_id, filename):
-    if '/' in filename or '\\' in filename or '..' in filename:
+    try:
+        filename = _sanitize_kb_path(filename)
+    except ValueError:
         return jsonify({'error': 'Invalid filename'}), 400
     fpath = os.path.join(_kb_dir(agent_id), filename)
     if not os.path.isfile(fpath):
@@ -531,9 +578,12 @@ def api_upload_kb(agent_id):
             return jsonify({'error': 'No file provided'}), 400
         f = request.files['file']
         fname = f.filename or 'untitled.md'
-        if '/' in fname or '\\' in fname or '..' in fname:
+        try:
+            fname = _sanitize_kb_path(fname)
+        except ValueError:
             return jsonify({'error': 'Invalid filename'}), 400
         fpath = os.path.join(kb, fname)
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
         f.save(fpath)
         return jsonify({'success': True, 'filename': fname})
     else:
@@ -542,9 +592,12 @@ def api_upload_kb(agent_id):
         content = data.get('content', '')
         if not fname:
             return jsonify({'error': 'filename is required'}), 400
-        if '/' in fname or '\\' in fname or '..' in fname:
+        try:
+            fname = _sanitize_kb_path(fname)
+        except ValueError:
             return jsonify({'error': 'Invalid filename'}), 400
         fpath = os.path.join(kb, fname)
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
         with open(fpath, 'w', encoding='utf-8') as f:
             f.write(content)
         return jsonify({'success': True, 'filename': fname})
@@ -552,7 +605,9 @@ def api_upload_kb(agent_id):
 
 @agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['PUT'])
 def api_update_kb_file(agent_id, filename):
-    if '/' in filename or '\\' in filename or '..' in filename:
+    try:
+        filename = _sanitize_kb_path(filename)
+    except ValueError:
         return jsonify({'error': 'Invalid filename'}), 400
     fpath = os.path.join(_kb_dir(agent_id), filename)
     if not os.path.isfile(fpath):
@@ -566,13 +621,62 @@ def api_update_kb_file(agent_id, filename):
 
 @agents_bp.route('/api/agents/<agent_id>/kb/<filename>', methods=['DELETE'])
 def api_delete_kb_file(agent_id, filename):
-    if '/' in filename or '\\' in filename or '..' in filename:
+    try:
+        filename = _sanitize_kb_path(filename)
+    except ValueError:
         return jsonify({'error': 'Invalid filename'}), 400
     fpath = os.path.join(_kb_dir(agent_id), filename)
     if not os.path.isfile(fpath):
         return jsonify({'error': 'File not found'}), 404
     os.remove(fpath)
     return jsonify({'success': True})
+
+
+
+
+
+# ==================== KB Graph API ====================
+
+
+@agents_bp.route('/api/agents/<agent_id>/kb-graph', methods=['GET'])
+def api_kb_graph(agent_id):
+    """Return the KB link graph for force-directed visualization."""
+    if not session.get('authenticated'):
+        return jsonify({'error': 'Authentication required'}), 401
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return jsonify({'error': 'Agent not found'}), 404
+
+    graph = get_kb_graph_metadata(agent_id)
+
+    if graph is None or not graph.get('pages'):
+        return jsonify({
+            'pages': {},
+            'links': [],
+            'dangling_links': []
+        })
+
+    pages = graph['pages']
+    links = []
+    dangling_links = []
+
+    for slug, page in pages.items():
+        outgoing_slugs = page.get('outgoing_slugs', [])
+        page['outgoing_count'] = len(outgoing_slugs)
+        if not page.get('title'):
+            page['title'] = slug
+
+        for target in outgoing_slugs:
+            if target in pages:
+                links.append({'source': slug, 'target': target})
+            else:
+                dangling_links.append({'source': slug, 'target': target})
+
+    return jsonify({
+        'pages': pages,
+        'links': links,
+        'dangling_links': dangling_links
+    })
 
 
 def _artifacts_dir(agent_id: str) -> str:
@@ -1443,37 +1547,38 @@ def api_chat_agent_state(agent_id):
     else:
         merged = agent_data
 
-    if merged:
-        state = AgentState.deserialize(_json.dumps(merged))
-        # Resolve active model badge
-        active_model = None
+    # Explorer sub-agents have no DB row — resolve their config from the manager
+    # so the model badge reflects the explorer's own (configured) model.
+    from backend.subagent_manager import subagent_manager
+    from backend.agent_runtime import explorer as _explorer
+    _sub_cfg = subagent_manager.get(agent_id)
+    _is_explorer = _sub_cfg is not None and _explorer.is_explorer(_sub_cfg)
+
+    def _resolve_active_model():
         fb_id = agent_data.get('active_fallback_model_id')
         if fb_id:
             fb_model = db.get_model_by_id(fb_id)
-            if fb_model:
-                active_model = {
-                    'name': fb_model.get('name', fb_id),
-                    'model_name': fb_model.get('model_name', fb_id),
-                    'is_fallback': True,
-                    'id': fb_id,
-                }
-            else:
-                active_model = {
-                    'name': fb_id,
-                    'model_name': fb_id,
-                    'is_fallback': True,
-                    'id': fb_id,
-                }
+            return {
+                'name': (fb_model or {}).get('name', fb_id),
+                'model_name': (fb_model or {}).get('model_name', fb_id),
+                'is_fallback': True,
+                'id': fb_id,
+            }
+        if _is_explorer:
+            prim_model = _explorer.primary_model(_sub_cfg) or db.get_agent_model(agent_id)
         else:
-            # Show primary model
             prim_model = db.get_agent_model(agent_id)
-            if prim_model:
-                active_model = {
-                    'name': prim_model.get('name', 'unknown'),
-                    'model_name': prim_model.get('model_name', 'unknown'),
-                    'is_fallback': False,
-                    'id': prim_model.get('id', ''),
-                }
+        if prim_model:
+            return {
+                'name': prim_model.get('name', 'unknown'),
+                'model_name': prim_model.get('model_name', 'unknown'),
+                'is_fallback': False,
+                'id': prim_model.get('id', ''),
+            }
+        return None
+
+    if merged:
+        state = AgentState.deserialize(_json.dumps(merged))
         payload = {
             'mode': state.mode,
             'tasks': state.tasks,
@@ -1481,7 +1586,14 @@ def api_chat_agent_state(agent_id):
             'states': state.states,
             'focus': state.focus,
             'focus_reason': state.focus_reason,
-            'active_model': active_model,
+            'active_model': _resolve_active_model(),
+            'loaded_skills': loaded_skills,
+        }
+    elif _is_explorer:
+        # Minimal state, but still surface the explorer's model badge.
+        payload = {
+            'mode': 'execute',
+            'active_model': _resolve_active_model(),
             'loaded_skills': loaded_skills,
         }
     else:

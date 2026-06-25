@@ -1575,6 +1575,10 @@ class AgentRuntime:
         # _should_wrap_user_message is defined at module level (also used by handle_message).
         # Keep this alias so the rest of _do_process_inner reads naturally.
 
+        # Will be set to True if describe_image is in the agent's assigned_tool_ids.
+        # Must exist before _apply_multimodal so the closure can capture it.
+        _has_describe_image = False
+
         def _apply_multimodal(msg: dict) -> dict:
             """Apply multimodal formatting for user messages with audio/video if agent supports it.
 
@@ -1603,7 +1607,7 @@ class AgentRuntime:
                     f"\n\n[Attachment: {fn} ({mt}, {sz})]"
                     f"\nFile path: {fp}"
                 )
-                if is_img:
+                if is_img and _has_describe_image:
                     note += "\nUse the `describe_image` tool to view and analyze this image."
                 content = msg.get('content', '') or ''
                 msg['content'] = content.rstrip() + note
@@ -1636,6 +1640,19 @@ class AgentRuntime:
 
         summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
         chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
+
+        # Compute whether describe_image is assigned so the _apply_multimodal
+        # closure can conditionally inject the hint.  Done early because
+        # _apply_multimodal is called during message building below.
+        # Describes whether the agent has (or will receive — via auto-assign
+        # below) access to the describe_image tool.
+        if _used_prefetch:
+            _has_describe_image = 'describe_image' in _agent_ctx_prebuilt.get('assigned_tool_ids', [])
+        else:
+            _has_describe_image = (
+                'describe_image' in db.get_agent_tools(db_agent_id)
+                or bool(agent.get('vision_enabled', 1))
+            )
 
         if _used_prefetch:
             # Prefetch already contains the full conversation history (system prompt +
@@ -1719,12 +1736,12 @@ class AgentRuntime:
                         tail_start += 1
                     for msg in raw_tail[tail_start:]:
                         if not _is_legacy_agent_state_msg(msg) and not _is_ui_only_msg(msg) and not _is_slash_command_msg(msg):
-                            messages.append(_ctx.build_message_entry(msg, agent))
+                            messages.append(_ctx.build_message_entry(msg, agent, _has_describe_image))
                 else:
                     history = db.get_session_messages(ctx.session_id, limit=50, agent_id=db_agent_id)
                     for msg in history:
                         if not _is_legacy_agent_state_msg(msg) and not _is_ui_only_msg(msg) and not _is_slash_command_msg(msg):
-                            messages.append(_ctx.build_message_entry(msg, agent))
+                            messages.append(_ctx.build_message_entry(msg, agent, _has_describe_image))
 
         # Ensure messages don't end with assistant role (causes prefill error with some APIs)
         while len(messages) > 1 and messages[-1].get('role') == 'assistant':
@@ -1795,8 +1812,13 @@ class AgentRuntime:
         else:
             tools = _ctx.build_tools(agent)
 
-            # Build agent context for tool backends
-            assigned_tool_ids = db.get_agent_tools(db_agent_id)
+            # Build agent context for tool backends. Explorers use their own
+            # configured tool set; everyone else inherits from the DB.
+            if agent.get('is_explorer'):
+                from backend.agent_runtime import explorer as _explorer
+                assigned_tool_ids = list(_explorer.tool_ids(agent))
+            else:
+                assigned_tool_ids = db.get_agent_tools(db_agent_id)
 
             # Super agent gets all skill tool IDs automatically — authorization guard
             # must allow execution of all skill tools without per-skill assignment.
@@ -1820,6 +1842,16 @@ class AgentRuntime:
                 if 'fetch_artifact' not in assigned_tool_ids:
                     assigned_tool_ids.append('fetch_artifact')
 
+            # Auto-assign send_file to all agents so they can send files via channels.
+            # No DB assignment needed — every agent can send file attachments.
+            if 'send_file' not in assigned_tool_ids:
+                assigned_tool_ids.append('send_file')
+
+            # Agents with vision_enabled automatically get describe_image.
+            # No DB assignment needed — every vision-capable agent can analyze images.
+            if agent.get('vision_enabled', 1) and 'describe_image' not in assigned_tool_ids:
+                assigned_tool_ids.append('describe_image')
+
             # Resolve workspace: workplace config takes priority over agent.workspace.
             # For tunnel workplaces, never fall back to the agent's /workspace path —
             # Evonet runs on the remote device and has its own working directory.
@@ -1840,6 +1872,7 @@ class AgentRuntime:
 
             agent_context = {
                 'id': agent_id,
+                '_db_agent_id': agent.get('_db_agent_id', agent_id),
                 'name': agent.get('name', ''),
                 'agent_name': agent.get('name', ''),
                 'agent_model': None,
@@ -2007,7 +2040,8 @@ class AgentRuntime:
 
         try:
             from backend.llm_usage_events import usage_context
-            with usage_context('agent_turn', agent_id, agent.get('name'), ctx.session_id):
+            _usage_source = 'explorer' if agent.get('is_explorer') else 'agent_turn'
+            with usage_context(_usage_source, agent_id, agent.get('name'), ctx.session_id):
                 response_raw, tool_trace, timeline = _loop.run_tool_loop(
                     agent=agent,
                     agent_context=agent_context,
@@ -2409,14 +2443,18 @@ class AgentRuntime:
         }
 
         # 3. Write chat entry
-        if caption:
+        if is_image:
+            content = f"![{filename}](/api/attachments/{attachment_id}/view)"
+            if caption:
+                content = f"{caption}\n" + content
+        elif caption:
             content = f"{caption}\n[File: {filename}]"
         else:
             content = f"[File: {filename}]"
 
         chatlog = chatlog_manager.get(agent_id, session_id)
         chatlog.append({
-            'type': 'user',
+            'type': 'final',
             'session_id': session_id,
             'content': content,
             'metadata': {'attachment_info': attachment_info, 'channel': channel_type},
@@ -2516,6 +2554,23 @@ class AgentRuntime:
             'audio_url': audio_url,
             'video_url': video_url,
         })
+
+        # Mid-loop injection: if session is currently processing, inject message
+        # into the active loop instead of queuing a new task.
+        if agent and self._is_busy(session_id):
+            self._get_inject_queue(session_id).put({
+                'role': 'user',
+                'content': text,
+            })
+            event_stream.emit('message_injected', {
+                'agent_id': agent_id,
+                'agent_name': agent.get('name', ''),
+                'session_id': session_id,
+                'external_user_id': external_user_id,
+                'channel_id': channel_id,
+                'message': text,
+            })
+            return True
 
         # Enqueue for agent processing (fire-and-forget)
         if agent and agent.get('enabled', True):

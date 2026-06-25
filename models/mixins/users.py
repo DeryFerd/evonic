@@ -263,9 +263,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if include_deleted:
-                cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+                cursor.execute("SELECT id, name, notes, metadata, avatar_url, is_approved, blocked_at, blocked_reason, erp_sync_enabled, merged_into_id, deleted_at, last_synced_at, sync_status, sync_error, first_seen_at, last_active_at, created_at, updated_at FROM users WHERE id = ?", (user_id,))
             else:
-                cursor.execute("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,))
+                cursor.execute("SELECT id, name, notes, metadata, avatar_url, is_approved, blocked_at, blocked_reason, erp_sync_enabled, merged_into_id, deleted_at, last_synced_at, sync_status, sync_error, first_seen_at, last_active_at, created_at, updated_at FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,))
             return self._row_to_dict(cursor.fetchone())
 
     def update_user(self, user_id: str, updates: dict, actor_type: str = None,
@@ -395,7 +395,7 @@ class UserMixin:
             cursor.execute("UPDATE user_agents SET user_id = ? WHERE user_id = ?", (target_id, source_id))
 
             # Reassign tags to target
-            for row in cursor.execute("SELECT tag FROM user_tags WHERE user_id = ? AND removed_at IS NULL", (source_id,)):
+            for row in cursor.execute("SELECT tag FROM user_tags WHERE user_id = ? AND removed_at IS NULL LIMIT 1000", (source_id,)):
                 cursor.execute("UPDATE user_tags SET removed_at = datetime('now') WHERE user_id = ? AND tag = ? AND removed_at IS NULL",
                                (target_id, row['tag']))
             cursor.execute("UPDATE user_tags SET user_id = ? WHERE user_id = ?", (target_id, source_id))
@@ -439,7 +439,9 @@ class UserMixin:
 
         if tags:
             placeholders = ",".join("?" for _ in tags)
-            joins += f" JOIN user_tags ut ON ut.user_id = u.id AND ut.tag IN ({placeholders}) AND ut.removed_at IS NULL"
+            # Build parameterized IN (...); table/column names are compile-time constants.
+            joins += (" JOIN user_tags ut ON ut.user_id = u.id AND ut.tag IN ("
+                      + placeholders + ") AND ut.removed_at IS NULL")
             params.extend(tags)
 
         if group_id:
@@ -451,7 +453,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             cursor.execute(
-                f"SELECT DISTINCT u.* {base} {joins} WHERE {where} ORDER BY u.last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
+                # All table/column names in base, joins, where are compile-time constants.
+                "SELECT DISTINCT u.* " + base + joins + " WHERE " + where
+                + " ORDER BY u.last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
                 params + [limit, offset]
             )
             return self._rows_to_list(cursor.fetchall())
@@ -463,10 +467,10 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if include_deleted:
-                cursor.execute("SELECT * FROM users ORDER BY last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
+                cursor.execute("SELECT id, name, notes, metadata, avatar_url, is_approved, blocked_at, blocked_reason, erp_sync_enabled, merged_into_id, deleted_at, last_synced_at, sync_status, sync_error, first_seen_at, last_active_at, created_at, updated_at FROM users ORDER BY last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
                                (limit, offset))
             else:
-                cursor.execute("SELECT * FROM users WHERE deleted_at IS NULL ORDER BY last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
+                cursor.execute("SELECT id, name, notes, metadata, avatar_url, is_approved, blocked_at, blocked_reason, erp_sync_enabled, merged_into_id, deleted_at, last_synced_at, sync_status, sync_error, first_seen_at, last_active_at, created_at, updated_at FROM users WHERE deleted_at IS NULL ORDER BY last_active_at DESC NULLS LAST LIMIT ? OFFSET ?",
                                (limit, offset))
             return self._rows_to_list(cursor.fetchall())
 
@@ -504,9 +508,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if include_deleted:
-                cursor.execute("SELECT * FROM user_contacts WHERE id = ?", (contact_id,))
+                cursor.execute("SELECT id, user_id, channel_type, channel_id, external_user_id, value, label, is_primary, is_verified, is_active, replaced_by, sync_source, sync_id, deleted_at, created_at, updated_at FROM user_contacts WHERE id = ?", (contact_id,))
             else:
-                cursor.execute("SELECT * FROM user_contacts WHERE id = ? AND deleted_at IS NULL", (contact_id,))
+                cursor.execute("SELECT id, user_id, channel_type, channel_id, external_user_id, value, label, is_primary, is_verified, is_active, replaced_by, sync_source, sync_id, deleted_at, created_at, updated_at FROM user_contacts WHERE id = ? AND deleted_at IS NULL", (contact_id,))
             return self._row_to_dict(cursor.fetchone())
 
     def get_contacts(self, user_id: str, include_deleted: bool = False) -> List[Dict[str, Any]]:
@@ -515,9 +519,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if include_deleted:
-                cursor.execute("SELECT * FROM user_contacts WHERE user_id = ? ORDER BY is_primary DESC, created_at", (user_id,))
+                cursor.execute("SELECT id, user_id, channel_type, channel_id, external_user_id, value, label, is_primary, is_verified, is_active, replaced_by, sync_source, sync_id, deleted_at, created_at, updated_at FROM user_contacts WHERE user_id = ? ORDER BY is_primary DESC, created_at LIMIT 1000", (user_id,))
             else:
-                cursor.execute("SELECT * FROM user_contacts WHERE user_id = ? AND deleted_at IS NULL ORDER BY is_primary DESC, created_at", (user_id,))
+                cursor.execute("SELECT id, user_id, channel_type, channel_id, external_user_id, value, label, is_primary, is_verified, is_active, replaced_by, sync_source, sync_id, deleted_at, created_at, updated_at FROM user_contacts WHERE user_id = ? AND deleted_at IS NULL ORDER BY is_primary DESC, created_at LIMIT 1000", (user_id,))
             return self._rows_to_list(cursor.fetchall())
 
     def find_user_by_contact(self, channel_type: str, external_user_id: str) -> Optional[Dict[str, Any]]:
@@ -735,9 +739,9 @@ class UserMixin:
         with self._connect() as conn:
             cursor = conn.cursor()
             if include_removed:
-                cursor.execute("SELECT tag FROM user_tags WHERE user_id = ?", (user_id,))
+                cursor.execute("SELECT tag FROM user_tags WHERE user_id = ? LIMIT 1000", (user_id,))
             else:
-                cursor.execute("SELECT tag FROM user_tags WHERE user_id = ? AND removed_at IS NULL", (user_id,))
+                cursor.execute("SELECT tag FROM user_tags WHERE user_id = ? AND removed_at IS NULL LIMIT 1000", (user_id,))
             return [row[0] for row in cursor.fetchall()]
 
     def search_by_tag(self, tag: str, limit: int = 20, offset: int = 0) -> List[Dict[str, Any]]:
@@ -803,7 +807,7 @@ class UserMixin:
         with self._connect() as conn:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM groups WHERE id = ? AND deleted_at IS NULL", (group_id,))
+            cursor.execute("SELECT id, name, normalized_name, description, created_by, deleted_at, created_at, updated_at FROM groups WHERE id = ? AND deleted_at IS NULL", (group_id,))
             return self._row_to_dict(cursor.fetchone())
 
     def delete_group(self, group_id: str, actor_type: str = None,
@@ -822,9 +826,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if include_deleted:
-                cursor.execute("SELECT * FROM groups ORDER BY name")
+                cursor.execute("SELECT id, name, normalized_name, description, created_by, deleted_at, created_at, updated_at FROM groups ORDER BY name LIMIT 10000")
             else:
-                cursor.execute("SELECT * FROM groups WHERE deleted_at IS NULL ORDER BY name")
+                cursor.execute("SELECT id, name, normalized_name, description, created_by, deleted_at, created_at, updated_at FROM groups WHERE deleted_at IS NULL ORDER BY name LIMIT 10000")
             return self._rows_to_list(cursor.fetchall())
 
     def search_groups(self, query: str) -> List[Dict[str, Any]]:
@@ -832,7 +836,7 @@ class UserMixin:
         with self._connect() as conn:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM groups WHERE deleted_at IS NULL AND (name LIKE ? OR normalized_name LIKE ?) ORDER BY name",
+            cursor.execute("SELECT id, name, normalized_name, description, created_by, deleted_at, created_at, updated_at FROM groups WHERE deleted_at IS NULL AND (name LIKE ? OR normalized_name LIKE ?) ORDER BY name LIMIT 100",
                            (f"%{query}%", f"%{query}%"))
             return self._rows_to_list(cursor.fetchall())
 
@@ -875,13 +879,13 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM group_members
+                SELECT group_id, member_type, member_id, joined_by, removed_at, created_at, updated_at FROM group_members
                 WHERE group_id = ? AND removed_at IS NULL AND member_type = 'user'
                 ORDER BY created_at
             """, (group_id,))
             users = self._rows_to_list(cursor.fetchall())
             cursor.execute("""
-                SELECT * FROM group_members
+                SELECT group_id, member_type, member_id, joined_by, removed_at, created_at, updated_at FROM group_members
                 WHERE group_id = ? AND removed_at IS NULL AND member_type = 'agent'
                 ORDER BY created_at
             """, (group_id,))
@@ -1058,9 +1062,9 @@ class UserMixin:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
             if enabled_only:
-                cursor.execute("SELECT * FROM tag_rules WHERE enabled = 1 ORDER BY priority DESC")
+                cursor.execute("SELECT id, tag_pattern, effect, priority, config, description, enabled, created_at, updated_at FROM tag_rules WHERE enabled = 1 ORDER BY priority DESC")
             else:
-                cursor.execute("SELECT * FROM tag_rules ORDER BY priority DESC")
+                cursor.execute("SELECT id, tag_pattern, effect, priority, config, description, enabled, created_at, updated_at FROM tag_rules ORDER BY priority DESC")
             return self._rows_to_list(cursor.fetchall())
 
     def get_tag_rule(self, rule_id: str) -> Optional[Dict[str, Any]]:
@@ -1068,7 +1072,7 @@ class UserMixin:
         with self._connect() as conn:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM tag_rules WHERE id = ?", (rule_id,))
+            cursor.execute("SELECT id, tag_pattern, effect, priority, config, description, enabled, created_at, updated_at FROM tag_rules WHERE id = ?", (rule_id,))
             return self._row_to_dict(cursor.fetchone())
 
     def create_tag_rule(self, rule_id: str, tag_pattern: str, effect: str,
@@ -1254,8 +1258,10 @@ class UserMixin:
         with self._connect() as conn:
             conn.row_factory = self._row_factory
             cursor = conn.cursor()
+            # All column names are compile-time constants; values use ? placeholders.
             cursor.execute(
-                f"SELECT * FROM user_audit_log WHERE {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                "SELECT id, user_id, action, actor_type, actor_id, details, created_at FROM user_audit_log WHERE " + where
+                + " ORDER BY created_at DESC LIMIT ? OFFSET ?",
                 params + [limit, offset]
             )
             return self._rows_to_list(cursor.fetchall())

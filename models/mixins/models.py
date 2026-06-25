@@ -10,7 +10,7 @@ class ModelsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM llm_models ORDER BY name")
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models ORDER BY name LIMIT 1000")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_enabled_llm_models(self) -> List[Dict[str, Any]]:
@@ -18,7 +18,7 @@ class ModelsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM llm_models WHERE enabled = 1 ORDER BY name")
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE enabled = 1 ORDER BY name LIMIT 1000")
             return [dict(row) for row in cursor.fetchall()]
 
     def save_llm_models(self, models_list: List[Dict[str, Any]]) -> None:
@@ -61,7 +61,7 @@ class ModelsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM llm_models WHERE is_default = 1 LIMIT 1")
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE is_default = 1 LIMIT 1")
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -70,7 +70,7 @@ class ModelsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM llm_models WHERE id = ?", (model_id,))
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE id = ?", (model_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -79,7 +79,7 @@ class ModelsMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM llm_models WHERE model_name = ? LIMIT 1", (model_name,))
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE model_name = ? LIMIT 1", (model_name,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -92,12 +92,12 @@ class ModelsMixin:
             cursor.execute("SELECT model_id FROM agents WHERE id = ?", (agent_id,))
             row = cursor.fetchone()
             if row and row['model_id']:
-                cursor.execute("SELECT * FROM llm_models WHERE id = ?", (row['model_id'],))
+                cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE id = ?", (row['model_id'],))
                 model_row = cursor.fetchone()
                 if model_row:
                     return dict(model_row)
             # Fallback to global default
-            cursor.execute("SELECT * FROM llm_models WHERE is_default = 1 LIMIT 1")
+            cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE is_default = 1 LIMIT 1")
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -137,7 +137,7 @@ class ModelsMixin:
             cursor.execute("SELECT fallback_model_id FROM agents WHERE id = ?", (agent_id,))
             row = cursor.fetchone()
             if row and row["fallback_model_id"]:
-                cursor.execute("SELECT * FROM llm_models WHERE id = ?", (row["fallback_model_id"],))
+                cursor.execute("SELECT id, name, type, provider, base_url, api_key, model_name, max_tokens, timeout, thinking, thinking_budget, temperature, enabled, is_default, created_at, updated_at, model_max_concurrent, api_format, vision_supported, attachments_supported FROM llm_models WHERE id = ?", (row["fallback_model_id"],))
                 model_row = cursor.fetchone()
                 if model_row:
                     return dict(model_row)

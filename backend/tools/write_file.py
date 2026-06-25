@@ -242,7 +242,15 @@ def execute(agent, args: dict) -> dict:
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
-        return write_file(local_path, content, overwrite=overwrite, create_dirs=create_dirs, edit_suggestion=edit_suggestion)
+        result = write_file(local_path, content, overwrite=overwrite, create_dirs=create_dirs, edit_suggestion=edit_suggestion)
+        if '/kb/' in local_path and result.get('result') == 'success':
+            try:
+                from backend.agent_runtime.evomem_writer import mark_dirty
+                mark_dirty(agent_id)
+                logger.info("write_file[%s]: kb edit detected, evomem sync scheduled", agent_id)
+            except Exception as e:
+                logger.warning("write_file[%s]: failed to schedule evomem sync: %s", agent_id, e)
+        return result
 
     # Hint when path starts with _self/ but missing leading slash
     if agent_id and file_path and (file_path.startswith('_self/') or file_path == '_self'):
@@ -287,6 +295,15 @@ def execute(agent, args: dict) -> dict:
             'bytes_written': len(content.encode('utf-8')),
             'created': not already_exists,
         }
+
+    # Root-pollution guard: refuse NEW scratch/script files dropped directly in
+    # the project root.  Reaches the super agent and its sub-agents (whose
+    # workspace == project root); a no-op for agents with their own workspace.
+    # Runs as its own check, NOT via safety_pipeline (which is skipped for is_super).
+    from backend.tools._workspace import root_pollution_nudge
+    nudge = root_pollution_nudge(agent, resolve_workspace_path(agent, file_path, _WORKSPACE_ROOT))
+    if nudge:
+        return {'error': nudge, 'isError': True}
 
     # When sandbox is enabled or the agent has a workplace, route file I/O
     # through the execution backend (Docker container, SSH remote, etc.)

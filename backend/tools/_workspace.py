@@ -104,7 +104,14 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
     if not os.path.isabs(file_path):
         workspace = (agent or {}).get('workspace')
         if workspace:
-            resolved = os.path.join(os.path.abspath(workspace), file_path)
+            # Sub-agents are delegated, throwaway tasks — contain their
+            # relative-path writes inside the gitignored .scratch/ dir so they
+            # never clutter the project root.  Absolute paths pass through
+            # unchanged (mirrors the shell cwd redirect for sub-agents).
+            base = os.path.abspath(workspace)
+            if (agent or {}).get('is_subagent'):
+                base = os.path.join(base, '.scratch')
+            resolved = os.path.join(base, file_path)
             # Boundary check for relative path traversal (e.g. ../../etc/passwd)
             try:
                 workspace_real = os.path.realpath(workspace)
@@ -129,3 +136,43 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
         return file_path
 
     return file_path
+
+
+# Extensions treated as "scratch" — agent-authored one-off scripts / temp output.
+_SCRATCH_EXTENSIONS = ('.py', '.sh', '.txt', '.json', '.log', '.tmp', '.md', '.csv')
+
+
+def root_pollution_nudge(agent, host_path: Optional[str]) -> Optional[str]:
+    """Return a corrective message if writing host_path would drop a NEW
+    scratch-like file directly into the evonic project root.
+
+    Fires only when the agent's effective workspace IS the project root (the
+    super agent, its sub-agents, or any empty-workspace agent).  Never blocks
+    edits to existing files, files inside a subdirectory, or non-scratch
+    extensions.  This is the only enforcing layer that reaches the super agent,
+    whose cwd legitimately stays at the project root.
+    """
+    if not host_path:
+        return None
+    workspace = (agent or {}).get('workspace') or _BASE_DIR
+    base = os.path.realpath(_BASE_DIR)
+    try:
+        if os.path.realpath(workspace) != base:
+            return None  # agent has its own workspace — already isolated
+        parent = os.path.realpath(os.path.dirname(os.path.abspath(host_path)))
+    except (OSError, PermissionError):
+        return None
+    if parent != base:
+        return None  # not a direct child of the project root
+    if os.path.exists(host_path):
+        return None  # editing an existing root file is fine
+    _, ext = os.path.splitext(host_path)
+    if ext.lower() not in _SCRATCH_EXTENSIONS:
+        return None
+    name = os.path.basename(host_path)
+    return (
+        f"Refused: '{name}' would be written to the project root, which must stay clean. "
+        f"Write throwaway scripts and temp files to /workspace/.scratch (gitignored, "
+        f"available as the $SCRATCH env var). Durable project scripts belong in scripts/ "
+        f"(migrations in scripts/migrations/). Re-issue the write with one of those paths."
+    )

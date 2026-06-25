@@ -34,7 +34,7 @@ class TransferJobMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM transfer_jobs WHERE id = ?", (job_id,))
+            cursor.execute("SELECT id, agent_id, session_id, source_path, dest_path, source_backend_type, dest_backend_type, status, total_bytes, bytes_transferred, error_msg, created_at, completed_at FROM transfer_jobs WHERE id = ?", (job_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -59,7 +59,7 @@ class TransferJobMixin:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT * FROM transfer_jobs WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
+                "SELECT id, agent_id, session_id, source_path, dest_path, source_backend_type, dest_backend_type, status, total_bytes, bytes_transferred, error_msg, created_at, completed_at FROM transfer_jobs WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?",
                 (agent_id, limit),
             )
             return [dict(row) for row in cursor.fetchall()]

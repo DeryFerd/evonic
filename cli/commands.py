@@ -2318,7 +2318,7 @@ def update_server(
     # Nightly channel: track origin/main instead of release tags.
     if nightly:
         print("Fetching origin/main (nightly)...")
-        rc, _, err = _git(["fetch", "origin", "main"])
+        rc, _, err = _git(["fetch", "origin", "main", "--tags"])
         if rc != 0:
             print(f"Git fetch failed: {err}")
             sys.exit(1)

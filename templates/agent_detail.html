@@ -1084,7 +1084,20 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
             <h3 class="text-gray-800 font-semibold dark:text-gray-100">Editing: <span id="kb-editor-filename" class="font-mono text-indigo-600"></span></h3>
             <button onclick="closeEditor()" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800">&times;</button>
         </div>
-        <div class="p-5 flex-1 overflow-y-auto flex flex-col">
+        <div class="flex border-b border-gray-200 dark:border-gray-700">
+            <button id="kb-tab-preview" onclick="switchKBTab('preview')" 
+                    class="px-4 py-2 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600 transition-colors">
+                Preview
+            </button>
+            <button id="kb-tab-edit" onclick="switchKBTab('edit')" 
+                    class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors">
+                Edit
+            </button>
+        </div>
+        <div id="kb-editor-preview" class="prose text-sm max-w-none p-5 flex-1 overflow-y-auto" 
+             style="max-height: 65vh;">
+        </div>
+        <div id="kb-editor-edit-panel" class="p-5 flex-1 overflow-y-auto flex flex-col hidden">
             <textarea id="kb-editor-content" class="w-full p-3 border border-gray-300 rounded-md text-sm font-mono resize-none focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600" style="min-height: 300px; max-height: 65vh; overflow-y: auto;" oninput="autoGrowKBTextarea(this)"></textarea>
         </div>
         <div class="flex gap-3 justify-end p-5 border-t border-gray-200">
@@ -2011,6 +2024,32 @@ function renderKBFiles() {
     list.innerHTML = visible.map(n => renderNode(n, 0)).join('');
 }
 
+function switchKBTab(tab) {
+    const previewPanel = document.getElementById('kb-editor-preview');
+    const editPanel = document.getElementById('kb-editor-edit-panel');
+    const previewBtn = document.getElementById('kb-tab-preview');
+    const editBtn = document.getElementById('kb-tab-edit');
+
+    const activeClass = 'border-b-2 border-indigo-500 text-indigo-600';
+    const inactiveClass = 'border-b-2 border-transparent text-gray-500 hover:text-gray-700';
+
+    if (tab === 'edit') {
+        previewPanel.classList.add('hidden');
+        editPanel.classList.remove('hidden');
+        previewBtn.className = previewBtn.className.replace(activeClass, inactiveClass);
+        editBtn.className = editBtn.className.replace(inactiveClass, activeClass);
+        autoGrowKBTextarea(document.getElementById('kb-editor-content'));
+    } else {
+        // Re-render preview from current textarea content
+        const textarea = document.getElementById('kb-editor-content');
+        document.getElementById('kb-editor-preview').innerHTML = marked.parse(textarea.value);
+        editPanel.classList.add('hidden');
+        previewPanel.classList.remove('hidden');
+        editBtn.className = editBtn.className.replace(activeClass, inactiveClass);
+        previewBtn.className = previewBtn.className.replace(inactiveClass, activeClass);
+    }
+}
+
 async function editFile(filename) {
     const res = await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`);
     const data = await res.json();
@@ -2020,6 +2059,12 @@ async function editFile(filename) {
     document.getElementById('kb-editor-content').value = data.content;
     window.kbEditorOriginalContent = data.content;
     document.getElementById('kb-editor-modal').classList.remove('hidden');
+    // Render preview and show Preview tab by default
+    document.getElementById('kb-editor-preview').innerHTML = marked.parse(data.content);
+    document.getElementById('kb-editor-preview').classList.remove('hidden');
+    document.getElementById('kb-editor-edit-panel').classList.add('hidden');
+    document.getElementById('kb-tab-preview').className = 'px-4 py-2 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600 transition-colors';
+    document.getElementById('kb-tab-edit').className = 'px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 transition-colors';
     autoGrowKBTextarea(document.getElementById('kb-editor-content'));
 }
 
@@ -2057,11 +2102,17 @@ async function saveFile() {
     }
 }
 
-// ESC key to close KB editor modal (with dirty-check)
+// ESC key to close KB editor modal (with dirty-check only when Edit tab is active)
 document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
     var modal = document.getElementById('kb-editor-modal');
     if (!modal || modal.classList.contains('hidden')) return;
+    var editPanel = document.getElementById('kb-editor-edit-panel');
+    // If Preview tab is active (edit panel hidden), just close — no dirty-check needed
+    if (editPanel && editPanel.classList.contains('hidden')) {
+        closeEditor();
+        return;
+    }
     var textarea = document.getElementById('kb-editor-content');
     if (!textarea) return;
     if (textarea.value === (window.kbEditorOriginalContent || '')) {

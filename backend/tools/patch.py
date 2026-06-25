@@ -566,13 +566,28 @@ def execute(agent, args: dict) -> dict:
 
     # /_self/ path: always route to the agent's local directory on the evonic server.
     # Sub-agents inherit their parent's directory — use effective agent ID.
-    from backend.tools._workspace import is_self_path, resolve_self_path
+    from backend.tools._workspace import is_self_path, resolve_self_path, _self_fuzzy_suggestion
     agent_id = ((agent or {}).get("parent_id") if (agent or {}).get("is_subagent")
                 else (agent or {}).get("id", ""))
     if agent_id and is_self_path(file_path):
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
+        # If the file doesn't exist (and patch isn't creating a new file),
+        # check for similar names (typos).
+        if not os.path.exists(local_path):
+            # Check if this patch is creating a new file
+            creating_new = False
+            try:
+                hunks_temp = parse_hunks(patch_text)
+                creating_new = all(h['old_start'] == 0 and h['old_count'] == 0 for h in hunks_temp)
+            except Exception:
+                pass
+            if not creating_new:
+                suggestion = _self_fuzzy_suggestion(agent_id, file_path)
+                if suggestion:
+                    return {'error': f"File not found: {file_path}. Did you mean: {suggestion}"}
+                return {'error': f"File not found: {file_path}."}
         result = apply_patch(local_path, patch_text)
         if '/kb/' in local_path and result.get('result') == 'success':
             try:

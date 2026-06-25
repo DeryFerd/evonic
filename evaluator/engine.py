@@ -1282,6 +1282,9 @@ class EvaluationEngine:
                 capture_output=True, text=True, timeout=5
             )
             output = result.stdout.strip()
+            if not output:
+                stderr_info = (result.stderr or "").strip()[:500]
+                return {"error": "JS script produced no output", "stderr": stderr_info}
             return json.loads(output)
         except subprocess.TimeoutExpired:
             return {"error": "timed out"}

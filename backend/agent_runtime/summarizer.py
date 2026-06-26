@@ -85,12 +85,29 @@ Messages to summarize:
 Write the updated factual summary. Remember: the current date is {current_datetime}. Use this date — do NOT use dates from the messages or existing summary."""
 
 
-# Appended to every summarizer prompt (custom or default) so named entities the
-# user mentions survive into the summary — the knowledge/graph extractor only
-# ever sees the summary, so anything dropped here is lost downstream.
+# Appended to every summarizer prompt (custom or default). The knowledge/graph
+# extractor only ever sees the summary, so anything dropped here is lost
+# downstream. This mandates a dedicated, always-regenerated entities section so
+# named entities survive compaction even under a strong domain-specific prompt.
 _ENTITY_PRESERVATION_CLAUSE = """
 
-IMPORTANT — Named entities: Always preserve the specific named people, places, organizations, venues, products, and brands the user mentions — even casually or in passing (e.g. a café, a city, a district, a company). Record each as a concrete fact (e.g. "User visited Djournal Coffee in Thamrin, Jakarta") and note how named entities relate (who/what is located in, works at, visited, or belongs to what). Do NOT drop these as small talk."""
+============================================================
+MANDATORY — this overrides any conflicting instruction above.
+You MUST end the summary with a section titled exactly:
+
+## Entities & Relationships
+
+In it, list EVERY specific named person, place, organization, venue, product, or brand the user mentioned — even casually, in passing, or as a personal anecdote (a café, a city, a district, a company, a tool). For each, give concrete details AND how it relates to other named entities (located in / works at / visited / owns / part of / uses …). Never drop a named entity as "small talk", and always carry this section forward when updating an existing summary.
+
+Format example:
+## Entities & Relationships
+- Djournal Coffee — café in Grand Indonesia, Thamrin, Jakarta; User visited (has an outdoor smoking area)
+- Thamrin — district in Jakarta; located_in Jakarta
+- Jakarta — city in Indonesia; User's current location
+
+If the user mentioned no named entities at all, write:
+## Entities & Relationships
+- (none)"""
 
 
 def maybe_summarize(agent: dict, session_id: str,

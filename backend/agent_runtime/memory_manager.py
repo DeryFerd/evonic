@@ -905,16 +905,14 @@ def store_memory(agent_id: str, session_id: str, content: str,
                  category: str = 'general') -> dict:
     """Pin a fact into the running session summary. Backs the `remember` tool.
 
-    Rather than writing to long-term memory directly, this appends the fact to
-    the session's running summary so it is (a) immediately visible in the
-    agent's context for the rest of the session and (b) later folded into
-    long-term memory + the knowledge graph by the background summarizer.
-    Summarization is incremental (it feeds the existing summary back into the
-    prompt as "Existing summary to update"), so the noted fact survives and is
-    picked up by extract_and_store_memories / _extract_and_store_graph.
-
-    No LLM call and no direct long-term write happen here — that work belongs to
-    the summarizer, the single writer to FTS5/evomem/graph.
+    Two things happen:
+    1. The fact is appended to the session's running summary so it is immediately
+       visible in the agent's context for the rest of the session.
+    2. It is filed into long-term KB + knowledge graph DIRECTLY (in the
+       background), so an explicitly-remembered fact becomes a KB page / entity
+       node regardless of whether the incremental summarizer later compacts the
+       noted bullet away. Dedup in the extractor prevents duplicates with the
+       summary-driven pass.
     """
     content = content.strip()
     if not content:
@@ -934,9 +932,38 @@ def store_memory(agent_id: str, session_id: str, content: str,
                               last_message_ts=rec.get('last_message_ts'))
         else:
             db.upsert_summary(session_id, bullet, 0, 0, agent_id=agent_id)
+        # File the explicit fact into KB/graph directly (background, best-effort).
+        _extract_from_fact_async(agent_id, session_id, content)
         return {"result": "Noted for this session.", "content": content}
     except Exception as e:
         return {"error": f"Failed to note fact: {e}"}
+
+
+def _extract_from_fact_async(agent_id: str, session_id: str, content: str) -> None:
+    """Run KB + graph extraction on a single remembered fact, in the background.
+
+    Lets an explicitly `remember`-ed fact become a KB page / entity node without
+    depending on it surviving summary compaction. Non-fatal on any error.
+    """
+    if get_engine() != "evomem":
+        return
+
+    def _run():
+        try:
+            from backend.agent_runtime.runtime import AgentRuntime
+            from backend.llm_usage_events import usage_context
+            agent = db.get_agent(agent_id)
+            if not agent:
+                return
+            with usage_context('memory', agent_id, agent.get('name'), session_id):
+                extract_and_store_kb(
+                    agent, session_id, content,
+                    AgentRuntime._llm_serializer._llm_lock)
+        except Exception as e:
+            print(f"[MemoryManager] remember-extract failed for {agent_id} "
+                  f"(non-fatal): {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:

@@ -23,6 +23,8 @@ All writes are atomic and best-effort; failures are swallowed so the FTS5 memory
 pipeline is never affected.
 """
 
+from __future__ import annotations
+
 import os
 import re
 import logging

@@ -9,6 +9,8 @@ best-effort with timeouts; callers degrade to a warning on any failure.
 Releases: https://github.com/anvie/evomem/releases
 Assets:   evomem-<version>-<target>.zip, each containing a single `evomem`.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os

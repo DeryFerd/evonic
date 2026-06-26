@@ -164,15 +164,23 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
     existing.update(global_data)
     db.upsert_agent_state(json.dumps(existing), agent_id=agent_id)
 
-    # Per-session: everything except focus/focus_reason
-    session_data = {
+    # Per-session: everything except focus/focus_reason. Merge with existing so
+    # extra keys set by other components (e.g. active_workspace) are preserved.
+    existing_session_raw = db.get_session_state(session_id, agent_id=agent_id)
+    try:
+        session_data = json.loads(existing_session_raw) if existing_session_raw else {}
+    except (ValueError, TypeError):
+        session_data = {}
+    if not isinstance(session_data, dict):
+        session_data = {}
+    session_data.update({
         'mode': data.get('mode', 'plan'),
         'tasks': data.get('tasks', []),
         'next_task_id': data.get('next_task_id', 1),
         'plan_file': data.get('plan_file'),
         'states': data.get('states', {}),
         'auto_trivial': data.get('auto_trivial', False),
-    }
+    })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
 from backend.tools import tool_registry
 from config import (AGENT_MAX_TOOL_ITERATIONS as MAX_TOOL_ITERATIONS,

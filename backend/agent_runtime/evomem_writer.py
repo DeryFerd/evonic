@@ -1,26 +1,26 @@
 """
-evomem_writer.py — write structured markdown into an agent's evomem.
+evomem_writer.py — write structured markdown docs into an agent's evomem.
 
-Evomem treats disk as the source of truth: pages are markdown files, the
-database is derived via `sync`. The CLI `capture` command only writes flat,
-unlinked notes to inbox/ — which leaves the knowledge graph empty. This module
-writes *structured* pages instead:
+Evomem treats disk as the source of truth: docs are markdown files, the database
+is derived via `sync`. This module writes *rich, inline-linked* docs (the
+Obsidian/wiki model) and schedules a debounced `sync` so the graph is built off
+the hot path.
 
-- entity pages (entities/<slug>.md) with frontmatter + a `## Relationships`
-  section of typed blockquote edges,
-- note/fact pages (notes/<slug>.md) with `[[entities/...]]` wiki-links,
+Model
+-----
+- A **doc** is one markdown file with frontmatter (`title`, `type`,
+  `description`, optional `tags`/`aliases`, `created`/`updated`) and a body of
+  rich prose. Relationships are expressed as **inline** `[[Doc Title]]`
+  wiki-links woven into the sentences — never a separate "Relations" list.
+- Docs live at the knowledge root or inside a **collection** folder, one level
+  under kb/ (e.g. `kb/riset-xyz/`), created on the user's request. Each collection
+  has an `index.md` of `type: session` or `type: group` describing it.
+- There is no `entities/` directory: an entity like "Jakarta" is just a doc with
+  `type: place`. Links resolve to a doc by title/alias anywhere in the vault, so
+  callers link by display title, not by path.
 
-then schedules a debounced `sync` so the graph (typed edges) is built off the
-hot path. All writes are atomic and best-effort; any failure is swallowed so
-the FTS5 memory pipeline is never affected.
-
-Typed edges recognised by evomem (from a page body):
-- explicit blockquote: `> **works_at:** [Acme](entities/acme)` — edge_type is
-  the lowercase label, deterministic.
-- `[[entities/slug]]` wiki-link — creates a `mentions` edge.
-
-Slugs are source_dir-prefixed (e.g. `entities/robin`, `notes/x`); link targets
-must include the prefix.
+All writes are atomic and best-effort; failures are swallowed so the FTS5 memory
+pipeline is never affected.
 """
 
 import os
@@ -39,12 +39,19 @@ logger = logging.getLogger(__name__)
 # Debounce window (seconds) for coalescing a burst of writes into one sync.
 _SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "2"))
 
-# Edge types evomem understands (others fall back to a plain mention).
-# Must stay in sync with the allowed relations in memory_manager._GRAPH_EXTRACT_PROMPT.
+# Typed edge labels evomem can carry on a link (used to populate the `recall`
+# graph-traversal edge_type filter). The engine infers these from the sentence
+# around an inline link; any other label is stored as a custom edge type.
 EDGE_TYPES = {
     "founded", "invested_in", "works_at", "advises", "attended",
     "located_in", "lives_in", "visited", "born_in", "part_of",
     "member_of", "owns", "uses", "knows", "related_to", "mentions",
+}
+
+# Doc types accepted by evomem's validator (mirrors Rust validate::VALID_TYPES).
+DOC_TYPES = {
+    "note", "session", "group", "person", "place", "venue",
+    "organization", "company", "product", "contact",
 }
 
 # Per-agent debounced-sync timers, guarded by a lock.
@@ -59,7 +66,7 @@ def _now_iso() -> str:
 def slugify(name: str) -> str:
     """Deterministic slug from a name: lowercase ascii, dashes, capped length.
 
-    Same input always yields the same slug, so an entity maps to a stable file
+    Same input always yields the same slug, so a doc maps to a stable file
     (dedup by construction). Returns '' if nothing usable remains.
     """
     if not name:
@@ -72,10 +79,14 @@ def slugify(name: str) -> str:
     return norm[:60].strip("-")
 
 
-def _brain_path(agent_id: str, source_dir: str, slug: str) -> str:
-    """Absolute path to a page file under the agent's brain dir."""
-    bare = slug.split("/", 1)[-1]  # strip any source_dir prefix
-    return os.path.abspath(os.path.join(_get_evomem_dir(agent_id), source_dir, f"{bare}.md"))
+def _doc_path(agent_id: str, rel_slug: str) -> str:
+    """Absolute path to a doc file under the agent's brain dir.
+
+    ``rel_slug`` is a knowledge-root-relative slug that may include folder
+    segments (e.g. ``riset-xyz/foo`` -> ``kb/riset-xyz/foo.md``).
+    """
+    rel = (rel_slug or "").strip("/").replace("..", "")
+    return os.path.abspath(os.path.join(_get_evomem_dir(agent_id), f"{rel}.md"))
 
 
 def _ensure_brain(agent_id: str) -> bool:
@@ -133,279 +144,160 @@ def _parse_frontmatter(text: str):
     return fm, body
 
 
-def _render_entity(fm: dict, body: str) -> str:
-    lines = ["---"]
-    lines.append(f"title: {_yaml_escape(fm.get('title', ''))}")
-    lines.append(f"type: {fm.get('type', 'entity')}")
-    lines.append(f"tags: {_yaml_list(fm.get('tags', []))}")
-    lines.append(f"aliases: {_yaml_list(fm.get('aliases', []))}")
-    lines.append(f"created: {fm.get('created', _now_iso())}")
+def _render_doc(title: str, doc_type: str, description: str, tags, aliases,
+                created: str, updated: str, body: str) -> str:
+    """Render a full doc (frontmatter + body). Body is used verbatim (its inline
+    [[wiki-links]] are the graph edges)."""
+    lines = ["---",
+             f"title: {_yaml_escape(title)}",
+             f"type: {doc_type if doc_type in DOC_TYPES else 'note'}",
+             f"description: {_yaml_escape(description)}",
+             f"tags: {_yaml_list(tags or [])}"]
+    if aliases:
+        lines.append(f"aliases: {_yaml_list(aliases)}")
+    lines.append(f"created: {created}")
+    lines.append(f"updated: {updated}")
     lines.append("---")
-    return "\n".join(lines) + "\n" + body.lstrip("\n")
+    return "\n".join(lines) + "\n\n" + (body or "").strip() + "\n"
 
 
-def upsert_entity_page(agent_id: str, name: str, entity_type: str = "entity",
-                       aliases=None, tags=None, summary=None) -> str:
-    """Create or merge an entity page. Returns its slug ('entities/<slug>') or ''.
+def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
+               description: str = None, folder: str = "", tags=None,
+               aliases=None, slug: str = None) -> str:
+    """Create or overwrite a doc. Returns its full slug (``<folder>/<slug>``) or ''.
 
-    If the page exists, aliases/tags are merged into existing frontmatter
-    (union) instead of clobbering — this is the dedup mechanism.
+    ``folder`` places the doc inside a collection (e.g. ``riset-xyz``); empty =
+    root. ``body`` is rich prose with inline ``[[Doc Title]]`` links — written
+    verbatim, with no appended link block. On an existing doc the original
+    ``created`` is kept, ``updated`` is refreshed, and tags/aliases are merged
+    (union); the caller supplies the already-merged body.
     """
-    slug = slugify(name)
-    if not slug or not _ensure_brain(agent_id):
-        return ""
-    full_slug = f"entities/{slug}"
-    path = _brain_path(agent_id, "entities", slug)
-    aliases = [a for a in (aliases or []) if a and a != name]
-    tags = list(tags or [])
-
-    try:
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                fm, body = _parse_frontmatter(f.read())
-            fm.setdefault("title", name)
-            fm["type"] = fm.get("type") or entity_type
-            fm["aliases"] = sorted(set(fm.get("aliases", []) or []) | set(aliases))
-            fm["tags"] = sorted(set(fm.get("tags", []) or []) | set(tags) | {"entity"})
-            _atomic_write(path, _render_entity(fm, body))
-            vlog("writer[%s]: entity merge %s (aliases=%d)",
-                 agent_id, full_slug, len(fm["aliases"]))
-        else:
-            fm = {
-                "title": name,
-                "type": entity_type,
-                "tags": sorted(set(tags) | {"entity"}),
-                "aliases": sorted(set(aliases)),
-                "created": _now_iso(),
-            }
-            body = f"\n{summary or name}.\n"
-            _atomic_write(path, _render_entity(fm, body))
-            vlog("writer[%s]: entity create %s", agent_id, full_slug)
-        return full_slug
-    except Exception as e:
-        logger.debug("upsert_entity_page failed for %s/%s: %s", agent_id, slug, e)
-        return ""
-
-
-def add_edge(agent_id: str, subject_slug: str, edge_type: str,
-             object_slug: str, anchor: str = None) -> bool:
-    """Append a typed blockquote edge to the subject entity page (idempotent).
-
-    `subject_slug`/`object_slug` are full slugs ('entities/...'). Unknown edge
-    types fall back to 'mentions'. Returns True if the edge is present after the
-    call.
-    """
-    edge_type = edge_type if edge_type in EDGE_TYPES else "mentions"
-    subj_bare = subject_slug.split("/", 1)[-1]
-    path = _brain_path(agent_id, "entities", subj_bare)
-    if not os.path.exists(path):
-        # Subject must exist as an entity page to host the edge.
-        if not upsert_entity_page(agent_id, subj_bare.replace("-", " ")):
-            return False
-    anchor = anchor or object_slug.split("/", 1)[-1].replace("-", " ")
-    edge_line = f"> **{edge_type}:** [{anchor}]({object_slug})"
-    try:
-        with open(path, encoding="utf-8") as f:
-            content = f.read()
-        if edge_line in content:
-            vlog("writer[%s]: edge exists %s --%s--> %s",
-                 agent_id, subject_slug, edge_type, object_slug)
-            return True
-        if "## Relationships" in content:
-            content = content.rstrip() + "\n" + edge_line + "\n"
-        else:
-            content = content.rstrip() + "\n\n## Relationships\n" + edge_line + "\n"
-        _atomic_write(path, content)
-        vlog("writer[%s]: edge add %s --%s--> %s",
-             agent_id, subject_slug, edge_type, object_slug)
-        return True
-    except Exception as e:
-        logger.debug("add_edge failed for %s (%s): %s", agent_id, subject_slug, e)
-        return False
-
-
-def write_note(agent_id: str, title: str, body: str, tags=None,
-               mentions=None, memory_id=None, source: str = None) -> str:
-    """Write a note/fact page with [[wiki-link]] mentions. Returns slug or ''.
-
-    `memory_id` is recorded in frontmatter so re-runs upsert the same file
-    (idempotent backfill). `mentions` is a list of full entity slugs appended
-    as `[[entities/...]]` so the note wires `mentions` edges and is graph-adjacent.
-    """
-    # Stable slug: prefer memory id for idempotency, else derive from title.
-    base = f"mem-{memory_id}" if memory_id is not None else slugify(title)
+    base = (slug or slugify(title)).strip("/")
     if not base or not _ensure_brain(agent_id):
         return ""
-    path = _brain_path(agent_id, "notes", base)
-
-    mention_links = ""
-    for m in (mentions or []):
-        if m:
-            mention_links += f"\n[[{m}]]"
-
-    fm = ["---", f"title: {_yaml_escape(title)}", "type: note",
-          f"tags: {_yaml_list(tags or [])}", f"created: {_now_iso()}"]
-    if memory_id is not None:
-        fm.append(f"memory_id: {int(memory_id)}")
-    if source:
-        fm.append(f"source: {_yaml_escape(source)}")
-    fm.append("---")
-    doc = "\n".join(fm) + "\n\n" + body.strip() + mention_links + "\n"
-    try:
-        _atomic_write(path, doc)
-        vlog("writer[%s]: note write notes/%s (mentions=%d)",
-             agent_id, base, len(mentions or []))
-        return f"notes/{base}"
-    except Exception as e:
-        logger.debug("write_note failed for %s: %s", agent_id, e)
-        return ""
-
-
-def upsert_kb_page(agent_id: str, title: str, body: str, description: str = None,
-                   tags=None, mentions=None, slug: str = None) -> str:
-    """Create or overwrite a top-level KB page (kb/<slug>.md). Returns slug or ''.
-
-    KB pages are the top-level pages of the evomem knowledge root, so the slug
-    is the bare filename stem (no source-dir prefix) and links to them use
-    `[[<slug>]]`. Frontmatter satisfies KB validation (title, description,
-    type: note). `mentions` are appended as bare `[[<slug>]]` wiki-links so the
-    page wires into the KB graph. On an existing page the original `created`
-    timestamp is kept and tags are merged (union) — the caller supplies the
-    already-merged body.
-    """
-    base = slug or slugify(title)
-    if not base or not _ensure_brain(agent_id):
-        return ""
-    path = _brain_path(agent_id, "", base)
+    folder = (folder or "").strip("/")
+    rel = f"{folder}/{base}" if folder else base
+    path = _doc_path(agent_id, rel)
     tags = list(tags or [])
+    aliases = [a for a in (aliases or []) if a and a != title]
     created = _now_iso()
 
     if os.path.exists(path):
         try:
             with open(path, encoding="utf-8") as f:
-                fm, _old_body = _parse_frontmatter(f.read())
+                fm, _old = _parse_frontmatter(f.read())
             created = fm.get("created") or created
             tags = sorted(set(tags) | set(fm.get("tags", []) or []))
+            aliases = sorted(set(aliases) | set(fm.get("aliases", []) or []))
             if description is None:
                 description = fm.get("description")
+            # Don't downgrade a typed doc to a plain note on re-write.
+            if (not doc_type or doc_type == "note") and fm.get("type"):
+                doc_type = fm["type"]
         except Exception:
             pass
     description = (description or title).strip()
 
-    mention_links = ""
-    for m in (mentions or []):
-        m = (m or "").strip()
-        if m and m != base:
-            mention_links += f"\n[[{m}]]"
-
-    fm_lines = ["---",
-                f"title: {_yaml_escape(title)}",
-                f"description: {_yaml_escape(description)}",
-                "type: note",
-                f"tags: {_yaml_list(tags)}",
-                f"created: {created}",
-                "---"]
-    doc = "\n".join(fm_lines) + "\n\n" + body.strip() + mention_links + "\n"
     try:
-        _atomic_write(path, doc)
-        vlog("writer[%s]: kb page %s (mentions=%d)",
-             agent_id, base, len(mentions or []))
-        return base
+        _atomic_write(path, _render_doc(title, doc_type, description, tags,
+                                        aliases, created, _now_iso(), body))
+        vlog("writer[%s]: upsert_doc %s (type=%s)", agent_id, rel, doc_type)
+        return rel
     except Exception as e:
-        logger.debug("upsert_kb_page failed for %s/%s: %s", agent_id, base, e)
+        logger.debug("upsert_doc failed for %s/%s: %s", agent_id, rel, e)
         return ""
 
 
-def delete_note(agent_id: str, memory_id) -> bool:
-    """Remove a note page (by memory id) from disk so the next sync soft-deletes
-    it in evomem. Returns True if a file was actually removed.
-
-    Pure (does not schedule a sync) — mirror of write_note; the caller marks
-    the brain dirty. Entity pages and edges are left intact (they are shared
-    across facts).
+def append_to_doc(agent_id: str, slug: str, delta_prose: str) -> bool:
+    """Append a new inline-linked paragraph to an existing doc, preserving the
+    body and refreshing ``updated``. Returns True if written.
     """
-    if memory_id is None:
+    delta = (delta_prose or "").strip()
+    if not delta:
         return False
-    path = _brain_path(agent_id, "notes", f"mem-{memory_id}")
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
     try:
-        if os.path.exists(path):
-            os.remove(path)
-            vlog("writer[%s]: note delete notes/mem-%s", agent_id, memory_id)
-            return True
-        return False
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        new_body = body.rstrip() + "\n\n" + delta
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body))
+        vlog("writer[%s]: append_to_doc %s (+%d chars)", agent_id, slug, len(delta))
+        return True
     except Exception as e:
-        logger.debug("delete_note failed for %s mem-%s: %s", agent_id, memory_id, e)
+        logger.debug("append_to_doc failed for %s/%s: %s", agent_id, slug, e)
         return False
 
 
-def _replace_with_wikilink(content: str, target_text: str, wikilink_text: str) -> str:
-    """Replace all non-wiki-linked occurrences of *target_text* with *wikilink_text*.
-
-    Case-insensitive matching. Skips occurrences already wrapped in ``[[...]]``
-    (including ``[[entities/slug|Display Name]]`` syntax). Returns modified
-    content, or the original if no unlinked occurrences are found.
+def create_collection(agent_id: str, folder: str, title: str,
+                     kind: str = "session", description: str = None) -> str:
+    """Create a collection folder (one level under kb/) with an ``index.md`` of
+    ``type: session|group``. Idempotent. Returns the folder slug or ''.
     """
-    if not target_text or not wikilink_text:
-        return content
-    pattern = re.compile(re.escape(target_text), re.IGNORECASE)
-    result = []
-    pos = 0
-
-    for m in pattern.finditer(content):
-        start, end = m.start(), m.end()
-
-        # --- word-boundary check ---
-        non_alnum = lambda ch: not (ch.isalnum() or ch == '_')
-        if start > 0 and not non_alnum(content[start - 1]):
-            # preceded by word character → partial match (e.g. "User" in "Username")
-            continue
-        if end < len(content) and not non_alnum(content[end]):
-            # followed by word character → partial match
-            continue
-
-        # --- already-wiki-linked check ---
-        before = content[max(0, start - 500):start]
-        last_open = before.rfind('[[')
-        last_close = before.rfind(']]')
-        if last_open > last_close:
-            # inside [[...]] → skip (already linked)
-            continue
-        # preceded by |  → inside [[...|...]] syntax
-        if start > 0 and content[start - 1] == '|':
-            continue
-
-        # Not already linked → replace
-        result.append(content[pos:start])
-        result.append(wikilink_text)
-        pos = end
-
-    result.append(content[pos:])
-    return ''.join(result)
-
-
-def inline_wikilink_in_file(agent_id: str, slug: str,
-                            target_text: str, wikilink_text: str) -> int:
-    """Insert inline wiki-link into a KB document, replacing entity mentions.
-
-    Reads the file at ``kb/<slug>.md``, replaces all non-linked occurrences of
-    *target_text* with *wikilink_text* (e.g. ``[[entities/reza|Reza]]``), and
-    writes back atomically. Returns the number of replacements made (0 = no
-    change).
-    """
-    path = _brain_path(agent_id, '', slug)
+    folder = slugify(folder)
+    if not folder or kind not in ("session", "group") or not _ensure_brain(agent_id):
+        return ""
+    path = _doc_path(agent_id, f"{folder}/index")
+    description = (description or title).strip()
+    if os.path.exists(path):
+        return folder  # idempotent: keep existing index
+    body = f"{description}\n\n## Contents\n"
     try:
-        with open(path, encoding='utf-8') as f:
+        _atomic_write(path, _render_doc(title, kind, description, [kind], [],
+                                        _now_iso(), _now_iso(), body))
+        vlog("writer[%s]: create_collection %s (%s)", agent_id, folder, kind)
+        return folder
+    except Exception as e:
+        logger.debug("create_collection failed for %s/%s: %s", agent_id, folder, e)
+        return ""
+
+
+def add_to_collection_index(agent_id: str, folder: str, doc_title: str) -> bool:
+    """Append ``- [[doc_title]]`` under the collection index's ``## Contents``
+    section (idempotent — skips if the link is already present)."""
+    folder = (folder or "").strip("/")
+    doc_title = (doc_title or "").strip()
+    if not folder or not doc_title:
+        return False
+    path = _doc_path(agent_id, f"{folder}/index")
+    if not os.path.exists(path):
+        return False
+    link = f"[[{doc_title}]]"
+    try:
+        with open(path, encoding="utf-8") as f:
             content = f.read()
-    except FileNotFoundError:
-        return 0
-    new_content = _replace_with_wikilink(content, target_text, wikilink_text)
-    if new_content != content:
-        _atomic_write(path, new_content)
-        count = (len(content) - len(new_content)) // max(len(wikilink_text) - len(target_text), 1)
-        vlog("writer[%s]: inline wikilink %d replacement(s) in %s (%r -> %r)",
-             agent_id, count, slug, target_text, wikilink_text)
-        return count
-    return 0
+        if link in content:
+            return False
+        if "## Contents" in content:
+            content = content.rstrip() + f"\n- {link}\n"
+        else:
+            content = content.rstrip() + f"\n\n## Contents\n- {link}\n"
+        _atomic_write(path, content)
+        return True
+    except Exception as e:
+        logger.debug("add_to_collection_index failed for %s/%s: %s", agent_id, folder, e)
+        return False
+
+
+def read_doc(agent_id: str, slug: str) -> dict | None:
+    """Read a doc: returns ``{title, body, frontmatter}`` or None if missing.
+    Used by the authoring pipeline for dedupe/merge decisions."""
+    path = _doc_path(agent_id, slug)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except (FileNotFoundError, OSError):
+        return None
+    fm, body = _parse_frontmatter(raw)
+    return {"title": fm.get("title", ""), "body": body.strip(), "frontmatter": fm}
 
 
 def _do_sync(agent_id: str) -> None:

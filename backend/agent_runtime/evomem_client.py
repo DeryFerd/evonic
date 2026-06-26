@@ -63,7 +63,7 @@ def _summarize(parsed) -> str:
         if isinstance(parsed.get(key), list):
             return f"{len(parsed[key])} {key}"
     if "links" in parsed:  # stats
-        return f"pages={parsed.get('pages')} links={parsed.get('links')} " \
+        return f"docs={parsed.get('docs')} links={parsed.get('links')} " \
                f"dangling={parsed.get('dangling_links')}"
     if "links_resolved" in parsed:  # sync
         return f"sync added={parsed.get('added')} updated={parsed.get('updated')} " \
@@ -143,10 +143,10 @@ def _run(brain_dir: str, args: list, timeout: int = None,
 def _get_evomem_dir(agent_id: str) -> str:
     """Return the evomem knowledge-root directory for a given agent.
 
-    The agent's KB dir *is* the evomem knowledge root: markdown files in
+    The agent's KB dir *is* the evomem knowledge root: markdown docs in
     agents/<id>/kb/ are scanned in place (no mirror) and the index lives at
-    agents/<id>/kb/.evomem.db. Top-level files are KB pages (slug = filename
-    stem); entities/ and notes/ subdirs hold auto-generated memory pages.
+    agents/<id>/kb/.evomem.db. Docs live at the root or inside user-created
+    workspace folders (each with an index.md); slug = relative path stem.
     """
     return f"agents/{agent_id}/kb"
 
@@ -245,8 +245,8 @@ def sync(agent_id: str) -> bool:
     """Re-sync markdown files into the database. Returns True on success.
 
     The agent's kb/ dir is the evomem knowledge root, so files are scanned in
-    place — no mirror step. Top-level kb/*.md become KB pages; entities/ and
-    notes/ subdirs hold auto-generated memory pages.
+    place — no mirror step. Every kb/**/*.md is a doc; the graph is built from
+    the inline [[wiki-links]] in their bodies.
     """
     brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
@@ -269,16 +269,18 @@ def sync(agent_id: str) -> bool:
 
 
 def get_kb_graph_metadata(agent_id: str) -> dict | None:
-    """Query evomem for KB pages with link-graph metadata.
+    """Query evomem for every doc with link-graph metadata.
 
     Returns a dict with:
-      pages: {slug: {slug, title, tags, updated_at, incoming_slugs, outgoing_slugs}}
+      pages: {slug: {slug, title, type, source_dir, tags, updated_at,
+                     incoming_count, incoming_slugs, outgoing_slugs}}
       target_updated_at: {slug: updated_at_str} for all outgoing link targets
     Returns None if the brain DB does not exist.
 
-    KB pages are the top-level pages of the knowledge root (slug has no '/').
-    The entities/ and notes/ subdir pages (slug like 'entities/x') are
-    auto-generated memory and excluded here, including as link endpoints.
+    Every live doc is included (root docs and workspace-folder docs alike), keyed
+    by slug; ``source_dir`` lets callers group by workspace. Links are matched by
+    resolved ``dst_doc_id`` (not raw slug) so Obsidian title/alias links count.
+    The ``inbox/`` source dir (raw captures) is excluded.
     """
     import sqlite3
     brain_dir = _get_evomem_dir(agent_id)
@@ -294,11 +296,11 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
         all_outgoing = set()
 
         rows = conn.execute("""
-            SELECT p.slug, p.title, p.tags, p.updated_at,
-                   (SELECT COUNT(*) FROM links l JOIN pages src ON l.src_page_id = src.id WHERE l.dst_slug = p.slug AND l.dst_page_id IS NOT NULL AND instr(src.slug, '/') = 0) as incoming_count,
-                   (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN pages src ON l.src_page_id = src.id WHERE l.dst_slug = p.slug AND instr(src.slug, '/') = 0) as incoming_slugs,
-                   (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN pages dst ON l.dst_page_id = dst.id WHERE l.src_page_id = p.id AND instr(dst.slug, '/') = 0) as outgoing_slugs
-            FROM pages p WHERE instr(p.slug, '/') = 0 AND p.deleted_at IS NULL
+            SELECT p.slug, p.title, p.tags, p.updated_at, p.source_dir, p.doc_type,
+                   (SELECT COUNT(*) FROM links l WHERE l.dst_doc_id = p.id) as incoming_count,
+                   (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN docs src ON l.src_doc_id = src.id WHERE l.dst_doc_id = p.id AND src.deleted_at IS NULL) as incoming_slugs,
+                   (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN docs dst ON l.dst_doc_id = dst.id WHERE l.src_doc_id = p.id AND dst.deleted_at IS NULL) as outgoing_slugs
+            FROM docs p WHERE p.deleted_at IS NULL AND p.source_dir != 'inbox'
             ORDER BY p.slug
         """).fetchall()
 
@@ -317,6 +319,8 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
             pages[slug] = {
                 "slug": slug,
                 "title": row["title"],
+                "type": row["doc_type"],
+                "source_dir": row["source_dir"],
                 "tags": tags,
                 "updated_at": row["updated_at"],
                 "incoming_count": row["incoming_count"],
@@ -330,14 +334,14 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
         if all_outgoing:
             placeholders = ",".join("?" for _ in all_outgoing)
             target_rows = conn.execute(
-                f"SELECT slug, updated_at FROM pages WHERE slug IN ({placeholders}) AND deleted_at IS NULL",
+                f"SELECT slug, updated_at FROM docs WHERE slug IN ({placeholders}) AND deleted_at IS NULL",
                 list(all_outgoing),
             ).fetchall()
             for tr in target_rows:
                 target_updated_at[tr["slug"]] = tr["updated_at"]
 
         conn.close()
-        vlog("get_kb_graph_metadata: %d KB pages, %d link targets", len(pages), len(target_updated_at))
+        vlog("get_kb_graph_metadata: %d docs, %d link targets", len(pages), len(target_updated_at))
         return {"pages": pages, "target_updated_at": target_updated_at}
 
     except Exception:
@@ -348,27 +352,26 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
 def get_graph_for_viz(agent_id: str) -> dict | None:
     """Full knowledge graph for the force-directed view.
 
-    Includes both top-level KB pages (slug without '/') AND entity pages
-    (entities/*), plus every resolved link between nodes in that set, carrying
-    the typed edge_type (located_in, visited, …). Returns:
+    Every live doc is a node (root docs and workspace-folder docs alike); the
+    ``type`` carries the rich doc type (place, person, …) for node colouring.
+    Resolved links carry the typed edge_type (located_in, visited, …) and point
+    at the *resolved* target's slug. Returns:
       {nodes: {slug: {slug, title, type, source_dir, tags}},
        links: [{source, target, edge_type}],
        dangling: [{source, target}]}
-    Returns None if the brain DB does not exist.
+    Returns None if the brain DB does not exist. ``inbox/`` is excluded.
     """
     import sqlite3
     db_path = os.path.join(_get_evomem_dir(agent_id), ".evomem.db")
     if not os.path.isfile(db_path):
         return None
-    # A node is a top-level KB page or an entity page.
-    node_pred = "(instr(slug, '/') = 0 OR source_dir = 'entities')"
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         nodes = {}
         for r in conn.execute(
-            f"SELECT slug, title, page_type, source_dir, tags FROM pages "
-            f"WHERE deleted_at IS NULL AND {node_pred}"
+            "SELECT slug, title, doc_type, source_dir, tags FROM docs "
+            "WHERE deleted_at IS NULL AND source_dir != 'inbox'"
         ):
             try:
                 tags = json.loads(r["tags"] or "[]")
@@ -377,21 +380,21 @@ def get_graph_for_viz(agent_id: str) -> dict | None:
                 tags = []
             nodes[r["slug"]] = {
                 "slug": r["slug"], "title": r["title"],
-                "type": r["page_type"], "source_dir": r["source_dir"], "tags": tags,
+                "type": r["doc_type"], "source_dir": r["source_dir"], "tags": tags,
             }
 
         links, dangling = [], []
         for r in conn.execute(
             "SELECT src.slug AS s, l.edge_type AS e, l.dst_slug AS d, "
-            "l.dst_page_id AS dpid, dst.deleted_at AS ddel "
-            "FROM links l JOIN pages src ON l.src_page_id = src.id "
-            "LEFT JOIN pages dst ON l.dst_page_id = dst.id "
+            "dst.slug AS dslug, l.dst_doc_id AS dpid, dst.deleted_at AS ddel "
+            "FROM links l JOIN docs src ON l.src_doc_id = src.id "
+            "LEFT JOIN docs dst ON l.dst_doc_id = dst.id "
             "WHERE src.deleted_at IS NULL"
         ):
             if r["s"] not in nodes:
                 continue
-            if r["d"] in nodes and r["dpid"] is not None and r["ddel"] is None:
-                links.append({"source": r["s"], "target": r["d"],
+            if r["dpid"] is not None and r["ddel"] is None and r["dslug"] in nodes:
+                links.append({"source": r["s"], "target": r["dslug"],
                               "edge_type": r["e"]})
             elif r["dpid"] is None:
                 dangling.append({"source": r["s"], "target": r["d"]})
@@ -419,7 +422,7 @@ def get_evomem_db_mtime(agent_id: str) -> float:
 
 
 def query_kb_graph(agent_id: str, filename: str) -> dict | None:
-    """Query evomem for a single KB page's 1-hop link graph.
+    """Query evomem for a single doc's 1-hop link graph.
 
     Returns a dict with:
       source: {slug, title, tags, updated_at}
@@ -427,7 +430,11 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
       incoming: [{slug, title}]
       outgoing_dangling: [slug]
       same_tag_docs: [{slug, title, tags}]
-    Returns None if the brain DB does not exist or the page is not found.
+    Returns None if the brain DB does not exist or the doc is not found.
+
+    ``filename`` may be a root doc ('notes.md') or a workspace-qualified doc
+    ('xyz/foo.md'); it is normalised to the slug. Incoming links are matched by
+    resolved ``dst_doc_id`` so Obsidian title/alias links are counted.
     """
     import sqlite3
     brain_dir = _get_evomem_dir(agent_id)
@@ -436,18 +443,17 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         vlog("query_kb_graph: brain DB not found at %s", db_path)
         return None
 
-    # A KB page's slug is its filename stem (top-level page, no '/'). Callers
-    # pass the filename ('notes.md'); normalise to the slug ('notes').
+    # Normalise the filename to a slug ('notes.md' -> 'notes', 'xyz/foo.md' -> 'xyz/foo').
     slug = filename[:-3] if filename.endswith(".md") else filename
 
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Look up the source page
+        # Look up the source doc
         page_row = conn.execute(
-            "SELECT id, slug, title, tags, updated_at FROM pages "
-            "WHERE slug = ? AND instr(slug, '/') = 0 AND deleted_at IS NULL",
+            "SELECT id, slug, title, tags, updated_at FROM docs "
+            "WHERE slug = ? AND deleted_at IS NULL",
             (slug,),
         ).fetchone()
 
@@ -471,11 +477,11 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             "updated_at": page_row["updated_at"],
         }
 
-        # Outgoing resolved links (to other top-level KB pages)
+        # Outgoing resolved links (to any other doc)
         out_rows = conn.execute(
             "SELECT dst.slug, dst.title, dst.updated_at FROM links l "
-            "JOIN pages dst ON l.dst_page_id = dst.id "
-            "WHERE l.src_page_id = ? AND instr(dst.slug, '/') = 0 AND dst.deleted_at IS NULL "
+            "JOIN docs dst ON l.dst_doc_id = dst.id "
+            "WHERE l.src_doc_id = ? AND dst.deleted_at IS NULL "
             "ORDER BY dst.slug",
             (page_id,),
         ).fetchall()
@@ -487,31 +493,28 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         # Outgoing dangling links
         dangling_rows = conn.execute(
             "SELECT dst_slug FROM links "
-            "WHERE src_page_id = ? AND dst_page_id IS NULL "
+            "WHERE src_doc_id = ? AND dst_doc_id IS NULL "
             "ORDER BY dst_slug",
             (page_id,),
         ).fetchall()
         outgoing_dangling = [r["dst_slug"] for r in dangling_rows]
 
-        # Incoming links (from other top-level KB pages)
+        # Incoming links (any doc that resolves a link to this one)
         in_rows = conn.execute(
             "SELECT src.slug, src.title FROM links l "
-            "JOIN pages src ON l.src_page_id = src.id "
-            "WHERE l.dst_slug = ? AND l.dst_page_id IS NOT NULL "
-            "AND instr(src.slug, '/') = 0 AND src.deleted_at IS NULL "
+            "JOIN docs src ON l.src_doc_id = src.id "
+            "WHERE l.dst_doc_id = ? AND src.deleted_at IS NULL "
             "ORDER BY src.slug",
-            (slug,),
+            (page_id,),
         ).fetchall()
         incoming = [{"slug": r["slug"], "title": r["title"]} for r in in_rows]
 
         # Same-tag docs
         same_tag_docs = []
         if source_tags:
-            # Build OR conditions for each tag
-            placeholders = ",".join("?" for _ in source_tags)
             tag_rows = conn.execute(
-                f"SELECT slug, title, tags FROM pages "
-                f"WHERE instr(slug, '/') = 0 AND deleted_at IS NULL AND slug != ? "
+                f"SELECT slug, title, tags FROM docs "
+                f"WHERE deleted_at IS NULL AND slug != ? "
                 f"AND ({' OR '.join('tags LIKE ?' for _ in source_tags)}) "
                 f"ORDER BY slug",
                 [slug] + [f"%{t}%" for t in source_tags],

@@ -184,8 +184,10 @@ def _extract_kb_frontmatter(filepath: str) -> dict:
     return result
 
 
-# Allowed KB-file `type` frontmatter values (used for node colors in the KB graph).
-KB_VALID_TYPES = ("note", "session", "group")
+# Allowed doc `type` frontmatter values (mirrors Rust validate::VALID_TYPES and
+# evomem_writer.DOC_TYPES). Used for write-time validation + KB-graph node colors.
+KB_VALID_TYPES = ("note", "session", "group", "person", "place", "venue",
+                  "organization", "company", "product", "contact")
 
 
 def validate_kb_frontmatter(content: str) -> str | None:
@@ -285,6 +287,42 @@ def _compute_staleness_flag(
     return f" ⚠ (updated {age}, target may have changed)"
 
 
+def _list_collections(kb_dir: str) -> list:
+    """List user-created collection folders (one level under kb/ with an index.md).
+
+    Each collection is a `session` or `group` folder; its `index.md` carries the
+    title/description. Returns prompt lines (one block per collection listing its
+    member docs), or an empty list when there are no collections.
+    """
+    lines = []
+    try:
+        entries = sorted(
+            d for d in os.listdir(kb_dir)
+            if not d.startswith('.')
+            and os.path.isdir(os.path.join(kb_dir, d))
+            and os.path.isfile(os.path.join(kb_dir, d, 'index.md'))
+        )
+    except OSError:
+        return []
+    for folder in entries:
+        wdir = os.path.join(kb_dir, folder)
+        fm = _extract_kb_frontmatter(os.path.join(wdir, 'index.md'))
+        kind = fm.get('type') or 'group'
+        title = fm.get('title') or folder
+        desc = fm.get('description') or ''
+        desc_str = f" — {desc}" if desc else ""
+        lines.append(f"- **{folder}/** ({kind}): {title}{desc_str}")
+        members = sorted(
+            os.path.splitext(f)[0] for f in os.listdir(wdir)
+            if f.endswith('.md') and f != 'index.md'
+        )
+        if members:
+            shown = ', '.join(f"[[{m}]]" for m in members[:12])
+            more = f" (+{len(members) - 12} more)" if len(members) > 12 else ""
+            lines.append(f"    docs: {shown}{more}")
+    return lines
+
+
 def _build_kb_listing(effective_id: str) -> list:
     """Build the KB listing.
 
@@ -303,7 +341,8 @@ def _build_kb_listing(effective_id: str) -> list:
         if not f.startswith('.')  # hide .evomem.db, .gitignore
         and os.path.isfile(os.path.join(kb_dir, f))
     )
-    if not files:
+    collection_lines = _list_collections(kb_dir)
+    if not files and not collection_lines:
         return []
 
     lines = []
@@ -375,7 +414,9 @@ def _build_kb_listing(effective_id: str) -> list:
         # --- Fallback: graph-aware listing (no _kb_index.md) ---
         lines.append(
             "You can read these files using the `read` tool. "
-            "Use [[filename]] (without the .md extension) to link between KB docs."
+            "Link between docs with Obsidian-style `[[Doc Title]]` — written "
+            "inline in your sentences — which resolves to a doc by title anywhere "
+            "in the knowledge base."
         )
         lines.append("")
 
@@ -436,6 +477,19 @@ def _build_kb_listing(effective_id: str) -> list:
 
             lines.append("")
 
+    # --- Collections (user-created session/group folders, one level under kb/) ---
+    if collection_lines:
+        lines.append("### Collections")
+        lines.append(
+            "Collections are folders the user asked you to create for a topic "
+            "(e.g. a research session). Docs you save while a collection is active "
+            "land inside it, but a doc in any collection can still link to a doc in "
+            "another collection (or root) — `[[Doc Title]]` resolves by title across "
+            "the whole knowledge base."
+        )
+        lines.extend(collection_lines)
+        lines.append("")
+
     # --- KB Usage section (common to both paths) ---
     lines.append("### KB Usage")
     lines.append(
@@ -456,8 +510,9 @@ def _build_kb_listing(effective_id: str) -> list:
         "frontmatter block (delimited by `---` lines) containing three "
         "non-empty fields: `title` (short human title), `description` "
         "(one-line summary shown in the \"Available Knowledge Files\" listing), "
-        "and `type` — one of `note` | `session` | `group`. Files that omit any "
-        "of these are rejected when created. Template:\n"
+        "and `type` — one of `note` | `session` | `group` | `person` | `place` "
+        "| `venue` | `organization` | `company` | `product` | `contact`. Files "
+        "that omit any of these are rejected when created. Template:\n"
         "  ```\n"
         "  ---\n"
         "  title: \"<short title>\"\n"
@@ -473,20 +528,22 @@ def _build_kb_listing(effective_id: str) -> list:
         "frontmatter (title, description, type) when creating a new KB file."
     )
     lines.append(
-        "- **Wiki-links**: Use `[[filename]]` (without `.md` extension) "
-        "to link between KB documents. "
-        "Update `_kb_index.md` when adding new KB files."
+        "- **Wiki-links (Obsidian-style)**: Weave `[[Doc Title]]` links *inline "
+        "into your sentences* — the link is part of the prose, never a separate "
+        "\"Relations\" list at the bottom. Example: `User jalan ke [[Jakarta]] "
+        "makan di [[Ayam Bakar Taliwang Rinjani]].` A link resolves to a doc by "
+        "title anywhere in the knowledge base, so you don't need its folder."
     )
 
     # --- KB Coaching ---
     lines.append("")
     lines.append("### KB Coaching")
     lines.append(
-        "When creating new KB files, add `[[...]]` wiki-links to related "
-        "documents so the knowledge graph stays connected. Use "
-        "`recall(query='<file>.md', mode='links')` to explore a document's link "
-        "neighborhood. Keep `_kb_index.md` updated when you add or remove KB "
-        "documents."
+        "When writing docs, weave `[[Doc Title]]` links inline into the prose "
+        "for every other named person, place, organization, venue, product, or "
+        "topic you mention, so the knowledge graph stays connected. Use "
+        "`recall(query='<doc>.md', mode='links')` to explore a doc's link "
+        "neighborhood."
     )
 
     # Inject notes.md instructions only if notes.md exists in KB

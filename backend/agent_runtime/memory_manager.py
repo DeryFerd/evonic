@@ -110,56 +110,35 @@ Category: {category}
 
 Return only the dimension string (e.g. "user.language_preference") or null:"""
 
-_GRAPH_EXTRACT_PROMPT = """You build a knowledge graph from a conversation summary. Extract the named entities (people, places, organizations, venues, projects, products) and the typed relationships between them.
+_AUTHOR_DOCS_PROMPT = """You are the long-term memory author for an AI assistant. From the SOURCE below (a conversation summary or a single remembered fact), write or update durable knowledge DOCUMENTS for the things worth remembering across future conversations.
 
-Allowed relation types (use ONLY these): works_at, founded, invested_in, advises, attended, located_in, lives_in, visited, born_in, part_of, member_of, owns, uses, knows, related_to, mentions.
+{guidance}
 
-Rules:
-- Extract relationships stated as fact (not speculative/planned/negated), INCLUDING personal ones the user mentions in passing (e.g. a place they visited, a café in a city).
-- Use real entity names as they appear (e.g. "Djournal Coffee", "Jakarta", "Robin Syihab"). The user themselves is the entity "User".
-- Prefer the most specific relation; if none fits, use "mentions".
-- Return STRICT JSON only, no prose:
-{{"entities": [{{"name": "...", "type": "person|place|organization|venue|project|product", "aliases": ["..."]}}],
- "relations": [{{"subject": "...", "relation": "located_in", "object": "..."}}]}}
-- Example: "User visited Djournal Coffee in Thamrin, Jakarta" -> User --visited--> Djournal Coffee; Djournal Coffee --located_in--> Thamrin; Thamrin --located_in--> Jakarta.
-- If nothing to extract, return: {{"entities": [], "relations": []}}
+How to write a document:
+- Each document is rich narrative prose about ONE subject — a person, place, venue, organization, company, product, contact, or a topical note.
+- Weave Obsidian-style [[Wiki Links]] INLINE into your sentences for every OTHER named subject you mention (the link text is that subject's display name). The link is part of the prose — NEVER a separate "Relations"/"Links" list at the bottom.
+  GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
+  BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
+- Choose a `type` for each document from: note, person, place, venue, organization, company, product, contact.
+- The user is always referred to as "User".
 
-Conversation summary:
-{summary}
+Deduplication:
+- You are given EXISTING documents as `[slug] Title :: description`. If a subject is already covered by one, return action "update" with its `slug` and a `body` containing ONLY the genuinely NEW information to add (its existing prose is preserved). Otherwise return action "create" with a full `body` and a one-line `description`.
 
-Return only the JSON object:"""
+Skip ephemeral chatter, pleasantries, and transient/in-progress task status.
 
-_CANONICALIZE_PROMPT = """You resolve entity coreference for a knowledge graph.
+Return STRICT JSON only, no prose:
+{{"docs": [
+  {{"action": "create", "title": "Jakarta", "type": "place", "description": "Capital of Indonesia; User's home city.", "tags": ["place"], "body": "Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]]."}},
+  {{"action": "update", "slug": "<existing slug>", "title": "...", "type": "note", "description": "...", "tags": ["..."], "body": "<only the new prose to append, with inline [[links]]>"}}
+]}}
+If nothing is worth keeping long-term, return: {{"docs": []}}
 
-New entity name: "{name}"
-Existing entity pages (candidates): {candidates}
+EXISTING documents:
+{existing}
 
-If the new entity name refers to the SAME real-world entity as one of the candidates (e.g. a shorter name, nickname, fuller name, or alias of the same person/organization/project/place), return that candidate's name EXACTLY as written. If it is a different entity, or you are not sure, return null.
-
-Return only the candidate name or null:"""
-
-
-_SINGLE_PIPELINE_PROMPT = """You build a knowledge graph from a conversation summary.
-
-Extract:
-1. Named entities (people, places, organizations, venues, projects, products) with their types
-2. Typed relationships between entities (use ONLY: works_at, founded, invested_in, advises, attended, located_in, lives_in, visited, born_in, part_of, member_of, owns, uses, knows, related_to, mentions)
-3. For each entity, check whether that entity name literally appears in any EXISTING KB document. If YES, note the doc slug (bare filename stem, no extension) and the entity name.
-
-Rules:
-- Use real entity names as they appear; the user is always "User"
-- Prefer the most specific relation; if none fits, use "mentions"
-- For doc_links: ONLY suggest linking if the entity name occurs as actual text in the document body (case-insensitive). Do NOT suggest links to unrelated documents.
-- Return STRICT JSON only, no prose:
-{{
-  "entities": [{{"name": "...", "type": "person|place|organization|venue|project|product", "aliases": ["..."]}}],
-  "relations": [{{"subject": "...", "relation": "works_at", "object": "..."}}],
-  "doc_links": [{{"doc_slug": "...", "entity_name": "..."}}]
-}}
-- If nothing to extract, return: {{"entities": [], "relations": [], "doc_links": []}}
-
-Summary:
-{summary}
+SOURCE:
+{source}
 
 Return only the JSON object:"""
 
@@ -195,195 +174,6 @@ def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional
     return "\n".join(lines)
 
 
-def _try_evomem_store(agent_id: str, content: str, category: str,
-                        memory_id: int = None, session_id: str = None) -> bool:
-    """Dual-write a memory to evomem as a STRUCTURED note page.
-
-    Writes a `notes/` page (linked to the canonical `entities/user` for
-    user-scoped facts so it becomes graph-adjacent), then schedules a debounced
-    background sync. Returns True if the page was written.
-    """
-    engine = get_engine()
-    if engine != "evomem":
-        return False
-    try:
-        mentions = None
-        if category in _USER_SCOPED:
-            evomem_writer.upsert_entity_page(agent_id, "User",
-                                               entity_type="person", tags=["user"])
-            mentions = ["entities/user"]
-        title = f"{category}: {content[:70]}"
-        slug = evomem_writer.write_note(
-            agent_id, title=title, body=content, tags=[category],
-            mentions=mentions, memory_id=memory_id, source=session_id,
-        )
-        if slug:
-            vlog("store[%s]: %s category=%s -> %s", agent_id,
-                 ("user-linked" if mentions else "note"), category, slug)
-            evomem_writer.mark_dirty(agent_id)
-            return True
-        return False
-    except Exception:
-        logger.debug("evomem structured store exception")
-        return False
-
-
-def _canonicalize_entity(name: str, candidates: list,
-                         llm_lock: threading.Lock = None) -> Optional[str]:
-    """Ask the LLM whether `name` is the same entity as one of `candidates`.
-
-    Returns the matching candidate (exactly as given) or None when it is a
-    different entity or the model is unsure. Conservative by design — an
-    unsure answer yields a new page rather than a wrong merge.
-    """
-    if not candidates:
-        return None
-    prompt = _CANONICALIZE_PROMPT.format(name=name, candidates=json.dumps(candidates))
-    try:
-        call_kwargs = dict(
-            messages=[{"role": "user", "content": prompt}],
-            tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
-        )
-        if llm_lock:
-            with llm_lock:
-                result = llm_client.chat_completion(**call_kwargs)
-        else:
-            result = llm_client.chat_completion(**call_kwargs)
-        if not result.get('success'):
-            return None
-        raw = result['response']['choices'][0]['message']['content']
-        raw, _ = strip_thinking_tags(raw)
-        raw = raw.strip().strip('"').strip("'")
-        if raw.lower() == 'null' or not raw:
-            return None
-        # Only accept an exact (case-insensitive) match to a candidate.
-        for c in candidates:
-            if c.lower() == raw.lower():
-                return c
-        return None
-    except Exception:
-        return None
-
-
-def _resolve_existing_entity(agent_id: str, name: str,
-                             llm_lock: threading.Lock = None) -> Optional[str]:
-    """Resolve `name` to the title of an existing entity page for the SAME
-    real-world entity (cross-session coreference), or None to create a new page.
-
-    Searches the synced evomem entity pages; merges only on a strong match
-    (identical slug) or an explicit LLM confirmation for differing-slug
-    candidates. Defaults to None (new page) when uncertain.
-    """
-    try:
-        res = evomem_search(agent_id, name, limit=5, mode=_RECALL_SEARCH_MODE)
-    except Exception:
-        return None
-    if not res or not isinstance(res.get("hits"), list):
-        return None
-
-    name_slug = evomem_writer.slugify(name)
-    candidates = []
-    for h in res["hits"]:
-        if h.get("source_dir") != "entities":
-            continue
-        title = (h.get("title") or "").strip()
-        if not title:
-            continue
-        # Identical slug => upsert already lands on the same page (not a
-        # fragmentation case); adopt the existing title for stable casing.
-        if evomem_writer.slugify(title) == name_slug:
-            return title
-        candidates.append(title)
-    if not candidates or not _ENTITY_COREF_LLM:
-        # Without LLM coreference, fall back to slug dedup (exact matches already
-        # returned above); a variant name just yields a new page. Avoids one slow
-        # LLM call per extracted entity.
-        return None
-    return _canonicalize_entity(name, candidates, llm_lock)
-
-
-def _extract_and_store_graph(agent_id: str, summary: str,
-                             llm_lock: threading.Lock) -> None:
-    """Extract entities + typed relations from a summary and wire the graph.
-
-    Best-effort, runs in the background extraction thread. Any failure is
-    swallowed so flat FTS5/note storage is never affected.
-    """
-    if get_engine() != "evomem":
-        return
-    try:
-        prompt = _GRAPH_EXTRACT_PROMPT.format(summary=summary)
-        with llm_lock:
-            result = llm_client.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
-            )
-        if not result.get('success'):
-            return
-        raw = result['response'].get('choices', [{}])[0].get('message', {}).get('content', '')
-        raw, _ = strip_thinking_tags(raw)
-        raw = _strip_code_fences(raw)
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            return
-
-        # Map entity name -> slug (so relations can reference the same page).
-        name_to_slug = {}
-        for ent in data.get("entities", []):
-            if not isinstance(ent, dict):
-                continue
-            name = (ent.get("name") or "").strip()
-            if not name:
-                continue
-            entity_type = ent.get("type", "entity")
-            aliases = ent.get("aliases") or []
-            # Cross-session coreference: fold a variant name ("Robin") into the
-            # existing canonical page ("Robin Syihab") as an alias instead of
-            # creating a duplicate node.
-            canonical = _resolve_existing_entity(agent_id, name, llm_lock)
-            if canonical and evomem_writer.slugify(canonical) != evomem_writer.slugify(name):
-                slug = evomem_writer.upsert_entity_page(
-                    agent_id, canonical, entity_type=entity_type,
-                    aliases=[name, *aliases])
-                if slug:
-                    name_to_slug[name.lower()] = slug
-                    name_to_slug[canonical.lower()] = slug
-            else:
-                slug = evomem_writer.upsert_entity_page(
-                    agent_id, name, entity_type=entity_type, aliases=aliases)
-                if slug:
-                    name_to_slug[name.lower()] = slug
-
-        wrote_edge = False
-        for rel in data.get("relations", []):
-            if not isinstance(rel, dict):
-                continue
-            subj = (rel.get("subject") or "").strip()
-            obj = (rel.get("object") or "").strip()
-            relation = (rel.get("relation") or "").strip()
-            if not subj or not obj or not relation:
-                continue
-            subj_slug = name_to_slug.get(subj.lower()) or \
-                evomem_writer.upsert_entity_page(agent_id, subj)
-            obj_slug = name_to_slug.get(obj.lower()) or \
-                evomem_writer.upsert_entity_page(agent_id, obj)
-            if subj_slug and obj_slug:
-                if evomem_writer.add_edge(agent_id, subj_slug, relation, obj_slug,
-                                            anchor=obj):
-                    wrote_edge = True
-
-        logger.info("[MemoryManager] graph-extract[%s]: %d entities, %d relations%s",
-                    agent_id, len(name_to_slug), len(data.get("relations", []) or []),
-                    " (edges wired)" if wrote_edge else "")
-        if name_to_slug or wrote_edge:
-            evomem_writer.mark_dirty(agent_id)
-    except (json.JSONDecodeError, KeyError, ValueError):
-        return
-    except Exception:
-        logger.debug("evomem graph extraction exception (non-fatal)")
-        return
-
-
 def _emit_doc_updated(agent_id: str, modified_slugs: list) -> None:
     """Emit a ``doc_updated`` event so the evomem sync listener fires."""
     if not modified_slugs:
@@ -399,134 +189,227 @@ def _emit_doc_updated(agent_id: str, modified_slugs: list) -> None:
         logger.debug("_emit_doc_updated failed for %s (non-fatal)", agent_id)
 
 
-def _inline_wikilink(agent_id: str, doc_slug: str, entity_name: str, entity_slug: str) -> int:
-    """Insert an inline wiki-link into an existing KB doc.
+def _get_active_collection(agent_id: str, session_id: str) -> str:
+    """Return the active collection folder slug for a session ('' = root)."""
+    if not session_id:
+        return ""
+    try:
+        raw = db.get_session_state(session_id, agent_id=agent_id)
+        if not raw:
+            return ""
+        state = json.loads(raw)
+        if isinstance(state, dict):
+            return (state.get("active_collection") or "").strip("/")
+    except Exception:
+        pass
+    return ""
 
-    Opens ``kb/<doc_slug>.md``, finds ``entity_name`` in the body (case-insensitive,
-    word-boundary-checked, skipping already-linked occurrences), and replaces them
-    with ``[[entities/<entity_slug>|entity_name]]``.
 
-    Returns the number of replacements made, or 0 on no-op / error.
+def _set_active_collection(agent_id: str, session_id: str, folder: str) -> None:
+    """Set the active collection folder for a session (read-merge-write so other
+    session-state keys — mode/tasks/plan_file — are preserved)."""
+    if not session_id:
+        return
+    try:
+        raw = db.get_session_state(session_id, agent_id=agent_id)
+        state = {}
+        if raw:
+            try:
+                state = json.loads(raw)
+            except (ValueError, TypeError):
+                state = {}
+        if not isinstance(state, dict):
+            state = {}
+        state["active_collection"] = (folder or "").strip("/")
+        db.upsert_session_state(session_id, json.dumps(state), agent_id=agent_id)
+    except Exception:
+        logger.debug("set_active_collection failed for %s", agent_id)
+
+
+def create_collection_tool(agent_id: str, session_id: str, name: str,
+                          kind: str = "session", description: str = "") -> dict:
+    """Create a collection folder and make it active. Backs the `create_collection`
+    built-in tool."""
+    if get_engine() != "evomem":
+        return {"error": "Collections require the evomem memory engine."}
+    if not (name or "").strip():
+        return {"error": "A collection name is required."}
+    kind = kind if kind in ("session", "group") else "session"
+    folder = evomem_writer.create_collection(
+        agent_id, folder=name, title=name.strip(), kind=kind,
+        description=(description or "").strip())
+    if not folder:
+        return {"error": "Failed to create the collection."}
+    _set_active_collection(agent_id, session_id, folder)
+    evomem_writer.mark_dirty(agent_id)
+    return {
+        "result": (f"Collection '{folder}' ({kind}) is created and now active — "
+                   "durable knowledge you save will be filed inside it."),
+        "folder": folder, "kind": kind,
+    }
+
+
+def switch_collection_tool(agent_id: str, session_id: str, name: str) -> dict:
+    """Switch the active collection (or 'root'). Backs the `switch_collection` tool."""
+    name = (name or "").strip()
+    if name.lower() in ("", "root", "/"):
+        _set_active_collection(agent_id, session_id, "")
+        return {"result": "Active collection set to root (top-level knowledge base)."}
+    folder = evomem_writer.slugify(name)
+    if not folder or evomem_writer.read_doc(agent_id, f"{folder}/index") is None:
+        return {"error": f"No collection named '{name}'. Create it with create_collection first."}
+    _set_active_collection(agent_id, session_id, folder)
+    return {"result": f"Active collection is now '{folder}'.", "folder": folder}
+
+
+def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80) -> list:
+    """List existing docs as dedupe candidates: [{slug, title, description}].
+
+    Walks the agent's kb/ dir, prioritising the active collection folder and root
+    docs (the most likely merge targets). Skips inbox/ and hidden files.
     """
-    wikilink_text = f"[[entities/{entity_slug}|{entity_name}]]"
-    return evomem_writer.inline_wikilink_in_file(agent_id, doc_slug, entity_name, wikilink_text)
+    kb_dir = f"agents/{agent_id}/kb"
+    if not os.path.isdir(kb_dir):
+        return []
+    folder = (folder or "").strip("/")
+    prio, rest = [], []
+    for root, dirs, fnames in os.walk(kb_dir):
+        dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'inbox']
+        for fn in fnames:
+            if not fn.endswith('.md') or fn.startswith('.'):
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, kb_dir).replace(os.sep, '/')
+            slug = rel[:-3]
+            try:
+                with open(full, encoding='utf-8') as f:
+                    fm, _ = evomem_writer._parse_frontmatter(f.read())
+            except OSError:
+                continue
+            title = fm.get('title') or slug.rsplit('/', 1)[-1]
+            desc = (fm.get('description') or '')[:160]
+            entry = {"slug": slug, "title": title, "description": desc}
+            seg = slug.split('/', 1)[0] if '/' in slug else ''
+            if (folder and seg == folder) or '/' not in slug:
+                prio.append(entry)
+            else:
+                rest.append(entry)
+    return (prio + rest)[:limit]
 
 
-def process_knowledge(agent: dict, session_id: str, summary: str,
-                      llm_lock: threading.Lock) -> None:
-    """Single knowledge pipeline: extract entities, link existing docs, emit sync.
+def _resolve_doc_slug(agent_id: str, slug_hint: str, title: str, folder: str):
+    """Resolve to an existing doc slug to update, or None to create a new doc.
 
-    Replaces the old two-pipeline system (``extract_and_store_kb`` +
-    ``_extract_and_store_graph``). Single LLM call extracts:
+    Tries the model's slug hint, then the title-slug inside the active folder,
+    then the title-slug at root — the first that exists on disk wins.
+    """
+    folder = (folder or "").strip("/")
+    cands = []
+    if slug_hint:
+        cands.append(slug_hint.strip("/"))
+    tslug = evomem_writer.slugify(title)
+    if tslug:
+        if folder:
+            cands.append(f"{folder}/{tslug}")
+        cands.append(tslug)
+    for c in cands:
+        if c and evomem_writer.read_doc(agent_id, c) is not None:
+            return c
+    return None
 
-    1. Entities (with types and aliases) -- upserted as entity pages
-    2. Relations -- wired as typed edges via blockquotes
-    3. ``doc_links`` -- existing KB docs where the entity name appears
-       -> inline ``[[entities/slug|Name]]`` inserted in the document body
 
-    After all modifications, emits ``doc_updated`` to trigger evomem sync.
-    Best-effort, runs in background; non-fatal on any error.
+def _doc_delta(agent_id: str, slug: str, new_body: str,
+               llm_lock: threading.Lock):
+    """Return only the genuinely-new prose to append to an existing doc, or None
+    if the doc already covers it (idempotency guard)."""
+    doc = evomem_writer.read_doc(agent_id, slug)
+    if doc is None:
+        return new_body
+    snippet = _kb_llm_text(
+        _KB_MERGE_SNIPPET_PROMPT.format(existing=doc["body"], content=new_body),
+        llm_lock)
+    if not snippet or snippet.strip().upper() == "NONE":
+        return None
+    return snippet
+
+
+def _author_docs(agent: dict, session_id: str, source_text: str,
+                 llm_lock: threading.Lock) -> None:
+    """Unified knowledge authoring: turn a summary or a remembered fact into
+    rich, inline-linked docs in the active collection.
+
+    One LLM call authors/updates docs (each rich prose about one subject, with
+    inline ``[[Doc Title]]`` links). New docs are created via ``upsert_doc`` in
+    the active collection folder (root by default); existing docs are appended to
+    (delta only). Emits ``doc_updated`` so the evomem sync wires the graph from
+    the inline links. Best-effort, runs in a background thread.
     """
     agent_id = agent['id']
     if get_engine() != 'evomem':
         return
     try:
-        prompt = _SINGLE_PIPELINE_PROMPT.format(summary=summary)
-        with llm_lock:
-            result = llm_client.chat_completion(
-                messages=[{'role': 'user', 'content': prompt}],
-                tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
-            )
-        if not result.get('success'):
-            return
-        raw = result['response'].get('choices', [{}])[0].get('message', {}).get('content', '')
-        raw, _ = strip_thinking_tags(raw)
-        raw = _strip_code_fences(raw)
-        data = json.loads(raw)
+        folder = _get_active_collection(agent_id, session_id)
+        existing = _list_existing_docs(agent_id, folder)
+        existing_text = "\n".join(
+            f"[{d['slug']}] {d['title']} :: {d['description']}" for d in existing
+        ) or "(none yet)"
+        guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
+        prompt = _AUTHOR_DOCS_PROMPT.format(
+            guidance=guidance, existing=existing_text, source=source_text)
+        data = _kb_llm_json(prompt, llm_lock)
         if not isinstance(data, dict):
             return
+        docs = data.get('docs')
+        if not isinstance(docs, list) or not docs:
+            return
 
-        # --- Step 1: Create/update entity pages + typed edges ---
-        name_to_slug = {}
-        for ent in data.get('entities', []):
-            if not isinstance(ent, dict):
+        modified, created, updated = [], 0, 0
+        for d in docs[:12]:
+            if not isinstance(d, dict):
                 continue
-            name = (ent.get('name') or '').strip()
-            if not name:
+            title = (d.get('title') or '').strip()
+            body = (d.get('body') or '').strip()
+            if not title or not body:
                 continue
-            entity_type = ent.get('type', 'entity')
-            aliases = ent.get('aliases') or []
+            doc_type = (d.get('type') or 'note').strip()
+            description = (d.get('description') or '').strip()
+            tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
+            slug_hint = (d.get('slug') or '').strip()
 
-            # Cross-session coreference: fold variant names (e.g. "Robin" -> "Robin Syihab")
-            canonical = _resolve_existing_entity(agent_id, name, llm_lock)
-            if canonical and evomem_writer.slugify(canonical) != evomem_writer.slugify(name):
-                slug = evomem_writer.upsert_entity_page(
-                    agent_id, canonical, entity_type=entity_type,
-                    aliases=[name, *aliases])
-                if slug:
-                    name_to_slug[name.lower()] = slug
-                    name_to_slug[canonical.lower()] = slug
-            else:
-                slug = evomem_writer.upsert_entity_page(
-                    agent_id, name, entity_type=entity_type, aliases=aliases)
-                if slug:
-                    name_to_slug[name.lower()] = slug
+            base_slug = evomem_writer.slugify(title)
+            lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
+            with _kb_page_lock(agent_id, lock_key):
+                target = _resolve_doc_slug(agent_id, slug_hint, title, folder)
+                if target:
+                    delta = _doc_delta(agent_id, target, body, llm_lock)
+                    if delta and evomem_writer.append_to_doc(agent_id, target, delta):
+                        modified.append(target)
+                        updated += 1
+                else:
+                    rel = evomem_writer.upsert_doc(
+                        agent_id, title=title, body=body, doc_type=doc_type,
+                        description=description, folder=folder, tags=tags)
+                    if rel:
+                        modified.append(rel)
+                        created += 1
+                        if folder:
+                            evomem_writer.add_to_collection_index(agent_id, folder, title)
 
-        # --- Step 2: Wire typed edges (relations) ---
-        wrote_edge = False
-        for rel in data.get('relations', []):
-            if not isinstance(rel, dict):
-                continue
-            subj = (rel.get('subject') or '').strip()
-            obj = (rel.get('object') or '').strip()
-            relation = (rel.get('relation') or '').strip()
-            if not subj or not obj or not relation:
-                continue
-            subj_slug = name_to_slug.get(subj.lower()) or \
-                evomem_writer.upsert_entity_page(agent_id, subj)
-            obj_slug = name_to_slug.get(obj.lower()) or \
-                evomem_writer.upsert_entity_page(agent_id, obj)
-            if subj_slug and obj_slug:
-                if evomem_writer.add_edge(agent_id, subj_slug, relation, obj_slug,
-                                            anchor=obj):
-                    wrote_edge = True
-
-        needs_sync = bool(name_to_slug) or wrote_edge
-
-        # --- Step 3: Insert inline wiki-links in existing KB docs ---
-        modified_slugs = []
-        for link in data.get('doc_links', []):
-            if not isinstance(link, dict):
-                continue
-            doc_slug = (link.get('doc_slug') or '').strip()
-            entity_name = (link.get('entity_name') or '').strip()
-            if not doc_slug or not entity_name:
-                continue
-            entity_slug = evomem_writer.slugify(entity_name)
-            if not entity_slug:
-                continue
-            # Ensure entity page exists (it was created in step 1 if extracted)
-            if entity_name.lower() not in name_to_slug:
-                evomem_writer.upsert_entity_page(agent_id, entity_name)
-
-            count = _inline_wikilink(agent_id, doc_slug, entity_name, entity_slug)
-            if count > 0:
-                modified_slugs.append(doc_slug)
-                needs_sync = True
-
-        # --- Step 4: Mark dirty + emit doc_updated ---
-        if needs_sync:
+        if modified:
             evomem_writer.mark_dirty(agent_id)
-            _emit_doc_updated(agent_id, modified_slugs)
-
-        logger.info("[MemoryManager] process_knowledge[%s]: %d entities, %d relations, %d inline-links",
-                    agent_id, len(name_to_slug), len(data.get('relations', []) or []),
-                    len(modified_slugs))
-    except (json.JSONDecodeError, KeyError, ValueError):
-        return
+            _emit_doc_updated(agent_id, modified)
+        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated (folder=%s)",
+                    agent_id, created, updated, folder or 'root')
     except Exception:
-        logger.debug("process_knowledge exception (non-fatal) for %s", agent_id)
-        return
+        logger.debug("author_docs exception (non-fatal) for %s", agent_id)
+
+
+def process_knowledge(agent: dict, session_id: str, summary: str,
+                      llm_lock: threading.Lock) -> None:
+    """Author/update rich, inline-linked knowledge docs from a conversation
+    summary. Triggered on ``summary_updated``; runs in the background extraction
+    thread. Best-effort; non-fatal on any error."""
+    _author_docs(agent, session_id, summary, llm_lock)
 
 
 def _extract_dimension(content: str, category: str,
@@ -599,16 +482,6 @@ def _store_with_conflict_detection(agent_id: str, session_id: str, content: str,
     for old_id in superseded_ids:
         db.supersede_memory(agent_id, old_id, memory_id)
 
-    # Keep evomem consistent: drop superseded notes from disk so the stale
-    # fact stops surfacing via evomem. (delete_note is a no-op if absent.)
-    if superseded_ids and get_engine() == "evomem":
-        removed = False
-        for old_id in superseded_ids:
-            if evomem_writer.delete_note(agent_id, old_id):
-                removed = True
-        if removed:
-            evomem_writer.mark_dirty(agent_id)
-
     return {"id": memory_id, "dimension": dimension, "superseded": superseded_ids}
 
 
@@ -653,10 +526,6 @@ def extract_and_store_memories(agent: dict, session_id: str, summary: str,
                  if isinstance(f, dict) and f.get('content', '').strip()]
         if not facts:
             return
-
-        # Build the knowledge graph (entities + typed edges) from the summary.
-        # Independent of the flat-fact storage below; best-effort, off the hot path.
-        _extract_and_store_graph(agent_id, summary, llm_lock)
 
         # Step 2: Get existing memories for deduplication
         existing = db.get_all_memories(agent_id)
@@ -704,13 +573,6 @@ def extract_and_store_memories(agent: dict, session_id: str, summary: str,
                                 db.update_memory(agent_id, int(op['id']),
                                                  op['content'].strip(), op.get('category'),
                                                  dimension=dim)
-                                # Rewrite the evomem note so its content does
-                                # not drift from FTS5 (write_note upserts by id).
-                                if get_engine() == "evomem":
-                                    _try_evomem_store(
-                                        agent_id, op['content'].strip(),
-                                        op.get('category', 'general'),
-                                        memory_id=int(op['id']), session_id=session_id)
                         return  # dedup handled all facts
                 except (json.JSONDecodeError, KeyError, ValueError):
                     pass  # fall through to simple add
@@ -912,137 +774,16 @@ def _kb_page_lock(agent_id: str, slug: str) -> threading.RLock:
         return lk
 
 
-def _merge_into_page(agent_id: str, slug: str, new_content: str, tags: list,
-                     mentions: list, llm_lock: threading.Lock) -> bool:
-    """Non-destructively append only the NEW delta to an existing KB page.
-
-    Reads the page, asks the LLM for just the information not already present,
-    and appends it — existing content is never rewritten, so nothing is lost and
-    large pages can't be truncated. Serialised per page. Returns True if the page
-    changed; False if already covered, missing, or on error.
-    """
-    with _kb_page_lock(agent_id, slug):
-        page = _read_kb_page(agent_id, slug)
-        if page is None:
-            return False
-        snippet = _kb_llm_text(
-            _KB_MERGE_SNIPPET_PROMPT.format(existing=page["body"], content=new_content),
-            llm_lock)
-        if not snippet or snippet.strip().upper() == "NONE":
-            vlog("kb-extract[%s]: %s already covers item (no-op)", agent_id, slug)
-            return False
-        base = _strip_trailing_mentions(page["body"])
-        new_body = (base + "\n\n" + snippet).strip()
-        m = [x for x in mentions if x != slug and f"[[{x}]]" not in new_body]
-        ok = evomem_writer.upsert_kb_page(
-            agent_id, title=page["title"], body=new_body, tags=tags,
-            slug=slug, mentions=m)
-        if ok:
-            vlog("kb-extract[%s]: appended delta to %s", agent_id, slug)
-        return bool(ok)
-
-
 def extract_and_store_kb(agent: dict, session_id: str, summary: str,
                           llm_lock: threading.Lock) -> None:
-    """Extract durable knowledge from a summary and file it into the agent's KB.
+    """File durable knowledge from a remembered fact (or summary) into the KB.
 
-    For each knowledge item: find related KB pages, then skip (duplicate),
-    merge into an existing page, or create a new linked page. Pages connect via
-    bare `[[slug]]` wiki-links. Runs in a background thread; non-fatal on error.
-    Requires the evomem engine (the KB lives in the evomem knowledge root).
+    Backs the `remember` tool path (``store_memory`` → ``_extract_from_fact_async``).
+    Routes through the unified rich-doc author so an explicitly-remembered fact
+    becomes a rich, inline-linked doc — the same model the summary pipeline uses.
+    Runs in a background thread; non-fatal on error.
     """
-    agent_id = agent['id']
-    if get_engine() != "evomem":
-        return
-    try:
-        # Build the entity/typed-edge graph (entities/ pages + edges) from the
-        # summary. Independent of the KB-page extraction below; best-effort.
-        logger.info("[MemoryManager] extract[%s]: start (session=%s) — building "
-                    "entity graph…", agent_id, session_id)
-        _extract_and_store_graph(agent_id, summary, llm_lock)
-
-        logger.info("[MemoryManager] extract[%s]: extracting KB knowledge items…",
-                    agent_id)
-        guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
-        items = _kb_llm_json(
-            _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)
-        if not isinstance(items, list) or not items:
-            logger.info("[MemoryManager] KB extract[%s]: no durable knowledge "
-                        "to file from this summary", agent_id)
-            return
-        items = [it for it in items
-                 if isinstance(it, dict) and it.get('content', '').strip()
-                 and it.get('title', '').strip()][:10]
-
-        n = len(items)
-        logger.info("[MemoryManager] extract[%s]: filing %d knowledge item(s)…",
-                    agent_id, n)
-        created = appended = skipped = 0
-        for i, it in enumerate(items, 1):
-            title = it['title'].strip()
-            content = it['content'].strip()
-            tags = [t for t in (it.get('tags') or []) if isinstance(t, str) and t.strip()]
-
-            related = _find_related_kb(agent_id, title, content, limit=6)
-            decision = None
-            if related:
-                cand_text = "\n".join(
-                    f"[{r['slug']}] {r['title']} :: {r['snippet']}" for r in related)
-                decision = _kb_llm_json(
-                    _KB_DECIDE_PROMPT.format(title=title, content=content,
-                                             candidates=cand_text),
-                    llm_lock)
-            action = (decision or {}).get('action', 'create')
-            mentions = [r['slug'] for r in related][:4]
-
-            if action == 'skip':
-                logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
-                            agent_id, i, n, title[:50])
-                skipped += 1
-                continue
-
-            # Merge into the chosen page (append-only, locked).
-            if action == 'merge' and (decision or {}).get('slug'):
-                slug = decision['slug'].strip()
-                if _merge_into_page(agent_id, slug, content, tags, mentions, llm_lock):
-                    logger.info("[MemoryManager] extract[%s]: [%d/%d] appended -> %s",
-                                agent_id, i, n, slug)
-                    appended += 1
-                else:
-                    logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
-                                agent_id, i, n, title[:50])
-                    skipped += 1  # already covered (delta was NONE) or unreadable
-                continue
-
-            # Create — guard the title slug so a concurrent or colliding page is
-            # appended to rather than clobbered (atomic check-then-write).
-            cslug = evomem_writer.slugify(title)
-            if not cslug:
-                skipped += 1
-                continue
-            with _kb_page_lock(agent_id, cslug):
-                if _read_kb_page(agent_id, cslug) is None:
-                    if evomem_writer.upsert_kb_page(
-                            agent_id, title=title, body=content, tags=tags,
-                            mentions=mentions):
-                        logger.info("[MemoryManager] extract[%s]: [%d/%d] created %s",
-                                    agent_id, i, n, cslug)
-                        created += 1
-                    continue
-            # A page already exists under this slug → append-merge instead.
-            if _merge_into_page(agent_id, cslug, content, tags, mentions, llm_lock):
-                appended += 1
-            else:
-                skipped += 1
-
-        if created or appended:
-            evomem_writer.mark_dirty(agent_id)
-        logger.info("[MemoryManager] KB extract[%s]: %d item(s) -> created=%d "
-                    "appended=%d skipped=%d", agent_id, len(items),
-                    created, appended, skipped)
-
-    except Exception as e:
-        print(f"[MemoryManager] KB extraction failed for agent {agent_id} (non-fatal): {e}")
+    _author_docs(agent, session_id, summary, llm_lock)
 
 
 def get_memories_for_context(agent_id: str, messages: list,
@@ -1316,20 +1057,15 @@ def forget_memory(agent_id: str, memory_id: int, target_agent_id: str = None,
 
         db.expire_memory(effective_agent_id, memory_id)
 
-        # Keep evomem consistent: drop the structured note from disk and
-        # schedule a sync so the page is soft-deleted from the index. Without
-        # this the "forgotten" fact would still surface via evomem.
-        resp = {
+        # The FTS memories table is the source of truth for remembered facts;
+        # expiring the row stops it surfacing. Knowledge docs are durable
+        # authored content and are not auto-deleted here.
+        return {
             "result": "Memory forgotten.",
             "id": memory_id,
             "content": target_memory['content'],
             "category": target_memory['category'],
         }
-        if get_engine() == "evomem":
-            if evomem_writer.delete_note(effective_agent_id, memory_id):
-                evomem_writer.mark_dirty(effective_agent_id)
-                resp["evomem"] = "removed"
-        return resp
     except Exception as e:
         return {"error": f"Failed to forget memory: {e}"}
 

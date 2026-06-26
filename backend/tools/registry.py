@@ -50,6 +50,9 @@ class ToolRegistry:
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
         self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
+        # Knowledge collection tools (create/switch session-or-group folders).
+        self._builtins['builtin:create_collection'] = _builtin_create_collection_factory
+        self._builtins['builtin:switch_collection'] = _builtin_switch_collection_factory
         # Session recall tool
         self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
         # Tool to clear active fallback flag from agent_state (agent calls this)
@@ -728,6 +731,91 @@ def _builtin_remember_factory(agent_context: dict):
         return store_memory(agent_id, session_id,
                             args.get('content', ''),
                             args.get('category', 'general'))
+
+    return tool_def, executor
+
+
+def _builtin_create_collection_factory(agent_context: dict):
+    """Factory for the built-in 'create_collection' tool — create + activate a
+    knowledge collection folder (session or group)."""
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "create_collection",
+            "description": (
+                "Create a named collection folder to organize the knowledge for "
+                "something the user asked you to work on, and make it the ACTIVE "
+                "collection so durable knowledge you save next is filed inside it. "
+                "A collection is a session or a group. Use when the user asks for a "
+                "new session/topic space, e.g. 'buatkan sesi riset XYZ' or "
+                "'kelompokkan ini jadi grup Y'. kind='session' for a working "
+                "session, 'group' for a durable topical group. Docs in any "
+                "collection can still link to docs in other collections (links "
+                "resolve by title across the whole knowledge base). "
+                "Example: create_collection(name='Riset XYZ', kind='session')"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Display name of the collection; a folder slug is derived from it."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["session", "group"],
+                        "description": "session = a working session; group = a durable topical group. Default: session."
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "One-line description of what this collection holds."
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    }
+
+    def executor(args: dict) -> dict:
+        from backend.agent_runtime.memory_manager import create_collection_tool
+        return create_collection_tool(
+            agent_context.get('id', ''), agent_context.get('session_id', ''),
+            args.get('name', ''), args.get('kind', 'session'),
+            args.get('description', ''))
+
+    return tool_def, executor
+
+
+def _builtin_switch_collection_factory(agent_context: dict):
+    """Factory for the built-in 'switch_collection' tool — change the active
+    collection (or 'root')."""
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "switch_collection",
+            "description": (
+                "Switch the ACTIVE knowledge collection so durable knowledge you save "
+                "next lands in it. Pass an existing collection name, or 'root' to save "
+                "at the top level. Example: switch_collection(name='Riset XYZ')"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of an existing collection, or 'root' for the top level."
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    }
+
+    def executor(args: dict) -> dict:
+        from backend.agent_runtime.memory_manager import switch_collection_tool
+        return switch_collection_tool(
+            agent_context.get('id', ''), agent_context.get('session_id', ''),
+            args.get('name', ''))
 
     return tool_def, executor
 

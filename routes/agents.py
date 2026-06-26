@@ -15,7 +15,7 @@ from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
 from backend.tools import tool_registry
 from backend.tools.super_agent_tools import _sync_skill_tools
-from backend.agent_runtime.evomem_client import get_kb_graph_metadata, get_engine
+from backend.agent_runtime.evomem_client import get_graph_for_viz, get_engine
 from backend.agent_runtime.context import validate_kb_frontmatter
 
 logger = logging.getLogger(__name__)
@@ -712,60 +712,52 @@ def _extract_kb_meta(filepath: str) -> dict:
 
 @agents_bp.route('/api/agents/<agent_id>/kb-graph', methods=['GET'])
 def api_kb_graph(agent_id):
-    """Return the KB link graph for force-directed visualization."""
+    """Return the knowledge graph (KB pages + entities + typed edges) for viz."""
     if not session.get('authenticated'):
         return jsonify({'error': 'Authentication required'}), 401
     agent = db.get_agent(agent_id)
     if not agent:
         return jsonify({'error': 'Agent not found'}), 404
 
-    graph = get_kb_graph_metadata(agent_id)
+    graph = get_graph_for_viz(agent_id)
+    if not graph or not graph.get('nodes'):
+        return jsonify({'pages': {}, 'links': [], 'dangling_links': []})
 
-    if graph is None or not graph.get('pages'):
-        return jsonify({
-            'pages': {},
-            'links': [],
-            'dangling_links': []
-        })
-
-    pages = graph['pages']
-    links = []
-    dangling_links = []
-
-    # Evomem stores KB page slugs with a 'kb/' prefix (e.g. 'kb/howto-report'),
-    # but the actual files live at agents/<id>/kb/<path>.md without the prefix.
-    # Strip the prefix so the frontend gets clean slugs and file lookups work.
-    clean_pages = {}
+    nodes = graph['nodes']
+    links = graph['links']
+    dangling_links = graph['dangling']
     kb_dir = _kb_dir(agent_id)
 
-    for slug, page in pages.items():
-        clean_slug = slug[3:] if slug.startswith('kb/') else slug
-        outgoing_slugs = page.get('outgoing_slugs', [])
-        page['outgoing_count'] = len(outgoing_slugs)
+    # Incoming/outgoing degree per node, from the resolved links.
+    inc, out = {}, {}
+    for l in links:
+        out[l['source']] = out.get(l['source'], 0) + 1
+        inc[l['target']] = inc.get(l['target'], 0) + 1
 
-        # Override evomem-generated title with KB frontmatter title/heading,
-        # and surface the frontmatter `type` for graph node coloring.
-        kb_path = os.path.join(kb_dir, clean_slug + '.md')
-        meta = _extract_kb_meta(kb_path)
-        if meta['title']:
-            page['title'] = meta['title']
-        elif not page.get('title'):
-            page['title'] = clean_slug
-        page['type'] = meta['type']
-
-        clean_pages[clean_slug] = page
-
-        for target in outgoing_slugs:
-            clean_target = target[3:] if target.startswith('kb/') else target
-            if target in pages:
-                links.append({'source': clean_slug, 'target': clean_target})
-            else:
-                dangling_links.append({'source': clean_slug, 'target': clean_target})
+    pages = {}
+    for slug, node in nodes.items():
+        is_entity = node.get('source_dir') == 'entities'
+        title = node.get('title') or slug
+        node_type = node.get('type')
+        if not is_entity:
+            # Top-level KB doc: prefer the frontmatter title/type from disk.
+            meta = _extract_kb_meta(os.path.join(kb_dir, slug + '.md'))
+            if meta.get('title'):
+                title = meta['title']
+            node_type = meta.get('type') or node_type
+        pages[slug] = {
+            'title': title,
+            'type': node_type,
+            'tags': node.get('tags', []),
+            'is_entity': is_entity,
+            'incoming_count': inc.get(slug, 0),
+            'outgoing_count': out.get(slug, 0),
+        }
 
     return jsonify({
-        'pages': clean_pages,
-        'links': links,
-        'dangling_links': dangling_links
+        'pages': pages,
+        'links': links,                 # each carries source/target/edge_type
+        'dangling_links': dangling_links,
     })
 
 

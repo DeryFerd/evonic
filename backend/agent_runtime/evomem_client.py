@@ -345,6 +345,65 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
         return None
 
 
+def get_graph_for_viz(agent_id: str) -> dict | None:
+    """Full knowledge graph for the force-directed view.
+
+    Includes both top-level KB pages (slug without '/') AND entity pages
+    (entities/*), plus every resolved link between nodes in that set, carrying
+    the typed edge_type (located_in, visited, …). Returns:
+      {nodes: {slug: {slug, title, type, source_dir, tags}},
+       links: [{source, target, edge_type}],
+       dangling: [{source, target}]}
+    Returns None if the brain DB does not exist.
+    """
+    import sqlite3
+    db_path = os.path.join(_get_evomem_dir(agent_id), ".evomem.db")
+    if not os.path.isfile(db_path):
+        return None
+    # A node is a top-level KB page or an entity page.
+    node_pred = "(instr(slug, '/') = 0 OR source_dir = 'entities')"
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        nodes = {}
+        for r in conn.execute(
+            f"SELECT slug, title, page_type, source_dir, tags FROM pages "
+            f"WHERE deleted_at IS NULL AND {node_pred}"
+        ):
+            try:
+                tags = json.loads(r["tags"] or "[]")
+                tags = tags if isinstance(tags, list) else []
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            nodes[r["slug"]] = {
+                "slug": r["slug"], "title": r["title"],
+                "type": r["page_type"], "source_dir": r["source_dir"], "tags": tags,
+            }
+
+        links, dangling = [], []
+        for r in conn.execute(
+            "SELECT src.slug AS s, l.edge_type AS e, l.dst_slug AS d, "
+            "l.dst_page_id AS dpid, dst.deleted_at AS ddel "
+            "FROM links l JOIN pages src ON l.src_page_id = src.id "
+            "LEFT JOIN pages dst ON l.dst_page_id = dst.id "
+            "WHERE src.deleted_at IS NULL"
+        ):
+            if r["s"] not in nodes:
+                continue
+            if r["d"] in nodes and r["dpid"] is not None and r["ddel"] is None:
+                links.append({"source": r["s"], "target": r["d"],
+                              "edge_type": r["e"]})
+            elif r["dpid"] is None:
+                dangling.append({"source": r["s"], "target": r["d"]})
+
+        conn.close()
+        vlog("get_graph_for_viz: %d nodes, %d links", len(nodes), len(links))
+        return {"nodes": nodes, "links": links, "dangling": dangling}
+    except Exception:
+        logger.warning("get_graph_for_viz failed for agent %s", agent_id, exc_info=True)
+        return None
+
+
 def get_evomem_db_mtime(agent_id: str) -> float:
     """Return the mtime of the evomem DB file, or 0.0 if it doesn't exist.
 

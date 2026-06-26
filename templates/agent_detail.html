@@ -2249,7 +2249,8 @@ function renderKBGraph() {
     // Add links (only for nodes that are in the graph)
     for (const link of data.links || []) {
         if (nodeMap[link.source] && nodeMap[link.target]) {
-            links.push({ source: link.source, target: link.target, dangling: false });
+            links.push({ source: link.source, target: link.target, dangling: false,
+                         edgeType: link.edge_type || null });
         }
     }
 
@@ -2282,10 +2283,17 @@ function renderKBGraph() {
     function getNodeColor(node) {
         if (node.isDangling) return '#ef4444';  // dangling stays red
         switch (node.type) {
-            case 'session': return '#8b4513';  // brown
-            case 'note':    return '#ffffff';  // white
-            case 'group':   return '#3b82f6';  // blue
-            default:        return '#9ca3af';  // gray fallback (missing/invalid type)
+            case 'session':      return '#8b4513';  // brown
+            case 'note':         return '#ffffff';  // white (KB doc)
+            case 'group':        return '#3b82f6';  // blue
+            // entity node types
+            case 'person':       return '#22c55e';  // green
+            case 'place':        return '#14b8a6';  // teal
+            case 'organization': return '#f97316';  // orange
+            case 'venue':        return '#a855f7';  // purple
+            case 'product':      return '#ec4899';  // pink
+            case 'project':      return '#6366f1';  // indigo
+            default:             return '#9ca3af';  // gray fallback
         }
     }
 
@@ -2328,6 +2336,19 @@ function renderKBGraph() {
         .attr('stroke-width', d => d.dangling ? 1.5 : 1)
         .attr('stroke-dasharray', d => d.dangling ? '5,5' : null)
         .attr('opacity', 0.6);
+
+    // --- Draw typed-edge labels (skip generic 'mentions' to reduce noise) ---
+    const linkLabel = g.append('g')
+        .selectAll('text')
+        .data(links.filter(d => d.edgeType && d.edgeType !== 'mentions'))
+        .join('text')
+        .text(d => d.edgeType)
+        .attr('font-size', '8px')
+        .attr('fill', textColor)
+        .attr('opacity', 0.65)
+        .attr('text-anchor', 'middle')
+        .attr('font-family', 'monospace')
+        .attr('pointer-events', 'none');
 
     // --- Draw nodes ---
     const node = g.append('g')
@@ -2409,6 +2430,10 @@ function renderKBGraph() {
             .attr('y1', d => d.source.y)
             .attr('x2', d => d.target.x)
             .attr('y2', d => d.target.y);
+
+        linkLabel
+            .attr('x', d => (d.source.x + d.target.x) / 2)
+            .attr('y', d => (d.source.y + d.target.y) / 2);
 
         node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     });

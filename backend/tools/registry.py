@@ -850,7 +850,7 @@ def _builtin_recall_factory(agent_context: dict):
                 "is the KB filename, e.g. 'notes.md'). "
                 "Examples: recall(query='user phone number'); "
                 "recall(query='what do I know about Acme Corp?', mode='think'); "
-                "recall(query='Robin Syihab', mode='graph'); "
+                "recall(query='Andi Wijaya', mode='graph'); "
                 "recall(query='notes.md', mode='links')"
             ),
             "parameters": {

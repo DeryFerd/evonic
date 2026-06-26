@@ -144,7 +144,7 @@ class TestInjectionToolGuard:
         """read_file outside ~/.ssh/ is NOT blocked (no path guard)."""
         result = injection_tool_guard(
             "aisyah", "read_file",
-            {"file_path": "/home/robin/dev/evonic/keys/evonic"}
+            {"file_path": "/home/user/dev/evonic/keys/evonic"}
         )
         assert result is None, \
             f"read_file outside ~/.ssh/ should not be blocked, got {result}"

@@ -38,7 +38,7 @@ def _resolve_workspace(agent: dict, path: str) -> str:
 
     Handles three cases:
     1. /workspace sandbox prefix → maps to agent's host workspace
-       (e.g. /workspace/skills → /home/robin/dev/evonic/skills)
+       (e.g. /workspace/skills → /home/user/dev/evonic/skills)
     2. Relative paths → joins with agent's workspace
     3. Absolute paths → returns os.path.abspath (boundary check done separately)
     """

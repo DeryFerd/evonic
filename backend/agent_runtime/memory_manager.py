@@ -19,6 +19,7 @@ and the evomem static binary via subprocess.
 """
 
 import os
+import re
 import json
 import logging
 import threading
@@ -38,6 +39,14 @@ logger = logging.getLogger(__name__)
 # precision; explicit recall favours maximum recall from the weak hash embedder.
 _PASSIVE_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_PASSIVE", "conservative")
 _RECALL_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_RECALL", "tokenmax")
+
+# Cross-session entity coreference uses one LLM call PER extracted entity to
+# decide if a variant name ("Robin") is the same as an existing page ("Robin
+# Syihab"). On a slow/thinking model that dominates graph-extraction latency, so
+# it is OFF by default — exact-slug dedup still merges identical names without an
+# LLM call. Set EVOMEM_ENTITY_COREF=1 to re-enable (only worth it on a fast model).
+_ENTITY_COREF_LLM = os.environ.get("EVOMEM_ENTITY_COREF", "0").strip().lower() \
+    in ("1", "true", "yes", "on")
 
 # Memory categories that describe the user → linked to the canonical user entity
 # so the fact becomes graph-adjacent and feeds `think`.
@@ -101,17 +110,18 @@ Category: {category}
 
 Return only the dimension string (e.g. "user.language_preference") or null:"""
 
-_GRAPH_EXTRACT_PROMPT = """You build a knowledge graph from a conversation summary. Extract the named entities (people, organizations, projects, places) and the typed relationships between them.
+_GRAPH_EXTRACT_PROMPT = """You build a knowledge graph from a conversation summary. Extract the named entities (people, places, organizations, venues, projects, products) and the typed relationships between them.
 
-Allowed relation types (use ONLY these): works_at, founded, invested_in, advises, attended, mentions.
+Allowed relation types (use ONLY these): works_at, founded, invested_in, advises, attended, located_in, lives_in, visited, born_in, part_of, member_of, owns, uses, knows, related_to, mentions.
 
 Rules:
-- Only extract relationships that are explicitly stated and factual (not speculative/planned/negated).
-- Use real entity names as they appear (e.g. "Acme Corp", "Robin Syihab"). The user themselves is the entity "User".
-- If a relationship doesn't fit one of the allowed types, skip it (or use "mentions" for a loose association).
+- Extract relationships stated as fact (not speculative/planned/negated), INCLUDING personal ones the user mentions in passing (e.g. a place they visited, a café in a city).
+- Use real entity names as they appear (e.g. "Djournal Coffee", "Jakarta", "Robin Syihab"). The user themselves is the entity "User".
+- Prefer the most specific relation; if none fits, use "mentions".
 - Return STRICT JSON only, no prose:
-{{"entities": [{{"name": "...", "type": "person|organization|project|place", "aliases": ["..."]}}],
- "relations": [{{"subject": "...", "relation": "works_at", "object": "..."}}]}}
+{{"entities": [{{"name": "...", "type": "person|place|organization|venue|project|product", "aliases": ["..."]}}],
+ "relations": [{{"subject": "...", "relation": "located_in", "object": "..."}}]}}
+- Example: "User visited Djournal Coffee in Thamrin, Jakarta" -> User --visited--> Djournal Coffee; Djournal Coffee --located_in--> Thamrin; Thamrin --located_in--> Jakarta.
 - If nothing to extract, return: {{"entities": [], "relations": []}}
 
 Conversation summary:
@@ -207,7 +217,7 @@ def _canonicalize_entity(name: str, candidates: list,
     try:
         call_kwargs = dict(
             messages=[{"role": "user", "content": prompt}],
-            tools=None, temperature=0.0, enable_thinking=False, max_tokens=32,
+            tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
         )
         if llm_lock:
             with llm_lock:
@@ -259,7 +269,10 @@ def _resolve_existing_entity(agent_id: str, name: str,
         if evomem_writer.slugify(title) == name_slug:
             return title
         candidates.append(title)
-    if not candidates:
+    if not candidates or not _ENTITY_COREF_LLM:
+        # Without LLM coreference, fall back to slug dedup (exact matches already
+        # returned above); a variant name just yields a new page. Avoids one slow
+        # LLM call per extracted entity.
         return None
     return _canonicalize_entity(name, candidates, llm_lock)
 
@@ -278,7 +291,7 @@ def _extract_and_store_graph(agent_id: str, summary: str,
         with llm_lock:
             result = llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                tools=None, temperature=0.0, enable_thinking=False, max_tokens=1024,
+                tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
             )
         if not result.get('success'):
             return
@@ -334,9 +347,9 @@ def _extract_and_store_graph(agent_id: str, summary: str,
                                             anchor=obj):
                     wrote_edge = True
 
-        vlog("graph-extract[%s]: %d entities, %d relations%s", agent_id,
-             len(name_to_slug), len(data.get("relations", []) or []),
-             " (edges wired)" if wrote_edge else "")
+        logger.info("[MemoryManager] graph-extract[%s]: %d entities, %d relations%s",
+                    agent_id, len(name_to_slug), len(data.get("relations", []) or []),
+                    " (edges wired)" if wrote_edge else "")
         if name_to_slug or wrote_edge:
             evomem_writer.mark_dirty(agent_id)
     except (json.JSONDecodeError, KeyError, ValueError):
@@ -542,6 +555,326 @@ def extract_and_store_memories(agent: dict, session_id: str, summary: str,
         print(f"[MemoryManager] Extraction failed for agent {agent_id} (non-fatal): {e}")
 
 
+# ─── KB knowledge extraction (summarizer → curated KB pages) ─────────────────
+
+_DEFAULT_KB_GUIDANCE = (
+    "By default, capture EVERYTHING important and durable that could help in "
+    "future conversations."
+)
+
+_KB_EXTRACT_PROMPT = """You extract durable knowledge from a conversation summary to store in an AI agent's knowledge base (KB) for reuse in future conversations.
+
+{guidance}
+
+Rules:
+- Extract self-contained, reusable knowledge items: facts, procedures, decisions, domain/business info, preferences, persistent instructions.
+- Skip ephemeral chatter, pleasantries, and transient task status.
+- Each item has a short Title (the topic) and Content (1-5 factual sentences, English).
+- Group related facts under one item/title instead of splitting hairs.
+- Return a JSON array only: [{{"title": "...", "content": "...", "tags": ["..."]}}]
+- If nothing is worth keeping long-term, return: []
+
+Conversation summary:
+{summary}
+
+Return only the JSON array:"""
+
+_KB_DECIDE_PROMPT = """An AI agent is filing a new knowledge item into its KB. Avoid duplicate information.
+
+New item:
+Title: {title}
+Content: {content}
+
+Existing related KB pages (most relevant first):
+{candidates}
+
+Decide one:
+- "skip": the new item is already fully covered by an existing page (adds no new information).
+- "merge": it belongs on an existing page (same topic) — give that page's slug.
+- "create": it is a genuinely new topic.
+
+Return only JSON: {{"action": "skip|merge|create", "slug": "<existing slug, only if merge>"}}"""
+
+_KB_MERGE_SNIPPET_PROMPT = """An existing KB page already holds some knowledge. You are given new information. Output ONLY the part of the new information that is NOT already present on the page, as a concise markdown snippet (a short sentence or a few bullet points) ready to append to the page.
+
+Rules:
+- Do NOT restate anything already on the page.
+- Do NOT rewrite or return the existing content — output only the genuinely new delta.
+- If the new information is already fully covered by the page, output exactly: NONE
+
+Existing page body:
+{existing}
+
+New information:
+{content}
+
+New delta to append (or NONE):"""
+
+
+def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
+    """Run a JSON-returning LLM call; return parsed value or None on any issue.
+
+    max_tokens defaults to None (the model's configured default) — a thinking
+    model spends tokens on reasoning before the answer, so a small cap makes the
+    call finish on length with no parseable output.
+    """
+    try:
+        with llm_lock:
+            result = llm_client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens)
+        if not result.get('success'):
+            return None
+        choice = result['response'].get('choices', [{}])[0]
+        if choice.get('finish_reason') == 'length':
+            return None
+        raw = choice.get('message', {}).get('content', '')
+        raw, _ = strip_thinking_tags(raw)
+        raw = _strip_code_fences(raw)
+        return json.loads(raw)
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return None
+    except Exception:
+        return None
+
+
+def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
+    """Run a free-text LLM call; return stripped text or None.
+
+    max_tokens defaults to None (model default) so a thinking model has room to
+    reason before producing the answer (a small cap finishes on length).
+    """
+    try:
+        with llm_lock:
+            result = llm_client.chat_completion(
+                messages=[{"role": "user", "content": prompt}],
+                tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens)
+        if not result.get('success'):
+            return None
+        choice = result['response'].get('choices', [{}])[0]
+        if choice.get('finish_reason') == 'length':
+            return None
+        raw = choice.get('message', {}).get('content', '')
+        raw, _ = strip_thinking_tags(raw)
+        raw = _strip_code_fences(raw).strip()
+        return raw or None
+    except Exception:
+        return None
+
+
+def _read_kb_page(agent_id: str, slug: str):
+    """Return {'title', 'body'} for a top-level KB page on disk, or None."""
+    base = slug.split("/", 1)[-1]
+    path = os.path.join(f"agents/{agent_id}/kb", f"{base}.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    fm, body = evomem_writer._parse_frontmatter(raw)
+    return {"title": fm.get("title") or base, "body": body.strip()}
+
+
+def _find_related_kb(agent_id: str, title: str, content: str, limit: int = 6):
+    """Find related TOP-LEVEL KB pages (slug without '/') as merge candidates.
+
+    Combines a deterministic title-slug match (so a same-titled page is ALWAYS
+    found, regardless of the weak semantic ranker — the main fix for missed
+    merges) with two hybrid searches (title+content, then title alone). De-duped
+    by slug; the exact slug match is surfaced first.
+    """
+    out, seen = [], set()
+
+    def _add(slug, title_, snippet):
+        slug = (slug or "").strip()
+        if not slug or "/" in slug or slug in seen:
+            return
+        seen.add(slug)
+        out.append({"slug": slug, "title": title_ or slug,
+                    "snippet": (snippet or "").strip()[:240]})
+
+    # 1) deterministic: a page whose slug == slugify(title) already exists
+    tslug = evomem_writer.slugify(title)
+    if tslug:
+        page = _read_kb_page(agent_id, tslug)
+        if page is not None:
+            _add(tslug, page["title"], page["body"])
+
+    # 2) semantic: title+content and title-only, merged for recall
+    for q in (f"{title}. {content}", title):
+        try:
+            res = evomem_search(agent_id, q, limit=limit * 2, mode=_RECALL_SEARCH_MODE)
+        except Exception:
+            res = None
+        if res and isinstance(res.get("hits"), list):
+            for h in res["hits"]:
+                _add(h.get("slug"), h.get("title"), h.get("snippet"))
+        if len(out) >= limit:
+            break
+    return out[:limit]
+
+
+_MENTION_LINE = re.compile(r"^\s*\[\[[^\]]+\]\]\s*$")
+
+
+def _strip_trailing_mentions(body: str) -> str:
+    """Drop trailing bare [[wiki-link]] lines so new prose isn't appended after them."""
+    lines = body.rstrip().split("\n")
+    while lines and _MENTION_LINE.match(lines[-1]):
+        lines.pop()
+    return "\n".join(lines).rstrip()
+
+
+# Per-(agent, slug) re-entrant locks serialise read-modify-write on a single KB
+# page so concurrent background extractions can't lost-update each other.
+_page_locks: dict = {}
+_page_locks_guard = threading.Lock()
+
+
+def _kb_page_lock(agent_id: str, slug: str) -> threading.RLock:
+    key = (agent_id, slug)
+    with _page_locks_guard:
+        lk = _page_locks.get(key)
+        if lk is None:
+            lk = _page_locks[key] = threading.RLock()
+        return lk
+
+
+def _merge_into_page(agent_id: str, slug: str, new_content: str, tags: list,
+                     mentions: list, llm_lock: threading.Lock) -> bool:
+    """Non-destructively append only the NEW delta to an existing KB page.
+
+    Reads the page, asks the LLM for just the information not already present,
+    and appends it — existing content is never rewritten, so nothing is lost and
+    large pages can't be truncated. Serialised per page. Returns True if the page
+    changed; False if already covered, missing, or on error.
+    """
+    with _kb_page_lock(agent_id, slug):
+        page = _read_kb_page(agent_id, slug)
+        if page is None:
+            return False
+        snippet = _kb_llm_text(
+            _KB_MERGE_SNIPPET_PROMPT.format(existing=page["body"], content=new_content),
+            llm_lock)
+        if not snippet or snippet.strip().upper() == "NONE":
+            vlog("kb-extract[%s]: %s already covers item (no-op)", agent_id, slug)
+            return False
+        base = _strip_trailing_mentions(page["body"])
+        new_body = (base + "\n\n" + snippet).strip()
+        m = [x for x in mentions if x != slug and f"[[{x}]]" not in new_body]
+        ok = evomem_writer.upsert_kb_page(
+            agent_id, title=page["title"], body=new_body, tags=tags,
+            slug=slug, mentions=m)
+        if ok:
+            vlog("kb-extract[%s]: appended delta to %s", agent_id, slug)
+        return bool(ok)
+
+
+def extract_and_store_kb(agent: dict, session_id: str, summary: str,
+                          llm_lock: threading.Lock) -> None:
+    """Extract durable knowledge from a summary and file it into the agent's KB.
+
+    For each knowledge item: find related KB pages, then skip (duplicate),
+    merge into an existing page, or create a new linked page. Pages connect via
+    bare `[[slug]]` wiki-links. Runs in a background thread; non-fatal on error.
+    Requires the evomem engine (the KB lives in the evomem knowledge root).
+    """
+    agent_id = agent['id']
+    if get_engine() != "evomem":
+        return
+    try:
+        # Build the entity/typed-edge graph (entities/ pages + edges) from the
+        # summary. Independent of the KB-page extraction below; best-effort.
+        logger.info("[MemoryManager] extract[%s]: start (session=%s) — building "
+                    "entity graph…", agent_id, session_id)
+        _extract_and_store_graph(agent_id, summary, llm_lock)
+
+        logger.info("[MemoryManager] extract[%s]: extracting KB knowledge items…",
+                    agent_id)
+        guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
+        items = _kb_llm_json(
+            _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)
+        if not isinstance(items, list) or not items:
+            logger.info("[MemoryManager] KB extract[%s]: no durable knowledge "
+                        "to file from this summary", agent_id)
+            return
+        items = [it for it in items
+                 if isinstance(it, dict) and it.get('content', '').strip()
+                 and it.get('title', '').strip()][:10]
+
+        n = len(items)
+        logger.info("[MemoryManager] extract[%s]: filing %d knowledge item(s)…",
+                    agent_id, n)
+        created = appended = skipped = 0
+        for i, it in enumerate(items, 1):
+            title = it['title'].strip()
+            content = it['content'].strip()
+            tags = [t for t in (it.get('tags') or []) if isinstance(t, str) and t.strip()]
+
+            related = _find_related_kb(agent_id, title, content, limit=6)
+            decision = None
+            if related:
+                cand_text = "\n".join(
+                    f"[{r['slug']}] {r['title']} :: {r['snippet']}" for r in related)
+                decision = _kb_llm_json(
+                    _KB_DECIDE_PROMPT.format(title=title, content=content,
+                                             candidates=cand_text),
+                    llm_lock)
+            action = (decision or {}).get('action', 'create')
+            mentions = [r['slug'] for r in related][:4]
+
+            if action == 'skip':
+                logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
+                            agent_id, i, n, title[:50])
+                skipped += 1
+                continue
+
+            # Merge into the chosen page (append-only, locked).
+            if action == 'merge' and (decision or {}).get('slug'):
+                slug = decision['slug'].strip()
+                if _merge_into_page(agent_id, slug, content, tags, mentions, llm_lock):
+                    logger.info("[MemoryManager] extract[%s]: [%d/%d] appended -> %s",
+                                agent_id, i, n, slug)
+                    appended += 1
+                else:
+                    logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
+                                agent_id, i, n, title[:50])
+                    skipped += 1  # already covered (delta was NONE) or unreadable
+                continue
+
+            # Create — guard the title slug so a concurrent or colliding page is
+            # appended to rather than clobbered (atomic check-then-write).
+            cslug = evomem_writer.slugify(title)
+            if not cslug:
+                skipped += 1
+                continue
+            with _kb_page_lock(agent_id, cslug):
+                if _read_kb_page(agent_id, cslug) is None:
+                    if evomem_writer.upsert_kb_page(
+                            agent_id, title=title, body=content, tags=tags,
+                            mentions=mentions):
+                        logger.info("[MemoryManager] extract[%s]: [%d/%d] created %s",
+                                    agent_id, i, n, cslug)
+                        created += 1
+                    continue
+            # A page already exists under this slug → append-merge instead.
+            if _merge_into_page(agent_id, cslug, content, tags, mentions, llm_lock):
+                appended += 1
+            else:
+                skipped += 1
+
+        if created or appended:
+            evomem_writer.mark_dirty(agent_id)
+        logger.info("[MemoryManager] KB extract[%s]: %d item(s) -> created=%d "
+                    "appended=%d skipped=%d", agent_id, len(items),
+                    created, appended, skipped)
+
+    except Exception as e:
+        print(f"[MemoryManager] KB extraction failed for agent {agent_id} (non-fatal): {e}")
+
+
 def get_memories_for_context(agent_id: str, messages: list,
                               limit: int = 8) -> Optional[str]:
     """Retrieve relevant memories for injection into the LLM context.
@@ -595,16 +928,14 @@ def store_memory(agent_id: str, session_id: str, content: str,
                  category: str = 'general') -> dict:
     """Pin a fact into the running session summary. Backs the `remember` tool.
 
-    Rather than writing to long-term memory directly, this appends the fact to
-    the session's running summary so it is (a) immediately visible in the
-    agent's context for the rest of the session and (b) later folded into
-    long-term memory + the knowledge graph by the background summarizer.
-    Summarization is incremental (it feeds the existing summary back into the
-    prompt as "Existing summary to update"), so the noted fact survives and is
-    picked up by extract_and_store_memories / _extract_and_store_graph.
-
-    No LLM call and no direct long-term write happen here — that work belongs to
-    the summarizer, the single writer to FTS5/evomem/graph.
+    Two things happen:
+    1. The fact is appended to the session's running summary so it is immediately
+       visible in the agent's context for the rest of the session.
+    2. It is filed into long-term KB + knowledge graph DIRECTLY (in the
+       background), so an explicitly-remembered fact becomes a KB page / entity
+       node regardless of whether the incremental summarizer later compacts the
+       noted bullet away. Dedup in the extractor prevents duplicates with the
+       summary-driven pass.
     """
     content = content.strip()
     if not content:
@@ -624,9 +955,38 @@ def store_memory(agent_id: str, session_id: str, content: str,
                               last_message_ts=rec.get('last_message_ts'))
         else:
             db.upsert_summary(session_id, bullet, 0, 0, agent_id=agent_id)
+        # File the explicit fact into KB/graph directly (background, best-effort).
+        _extract_from_fact_async(agent_id, session_id, content)
         return {"result": "Noted for this session.", "content": content}
     except Exception as e:
         return {"error": f"Failed to note fact: {e}"}
+
+
+def _extract_from_fact_async(agent_id: str, session_id: str, content: str) -> None:
+    """Run KB + graph extraction on a single remembered fact, in the background.
+
+    Lets an explicitly `remember`-ed fact become a KB page / entity node without
+    depending on it surviving summary compaction. Non-fatal on any error.
+    """
+    if get_engine() != "evomem":
+        return
+
+    def _run():
+        try:
+            from backend.agent_runtime.runtime import AgentRuntime
+            from backend.llm_usage_events import usage_context
+            agent = db.get_agent(agent_id)
+            if not agent:
+                return
+            with usage_context('memory', agent_id, agent.get('name'), session_id):
+                extract_and_store_kb(
+                    agent, session_id, content,
+                    AgentRuntime._llm_serializer._llm_lock)
+        except Exception as e:
+            print(f"[MemoryManager] remember-extract failed for {agent_id} "
+                  f"(non-fatal): {e}")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
@@ -679,7 +1039,7 @@ def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
 
 
 def synthesize_memory(agent_id: str, query: str) -> dict:
-    """Brain-layer synthesis over memory. Backs the `think` built-in tool.
+    """Brain-layer synthesis over memory. Backs `recall(mode='think')`.
 
     Returns composed facts (with citations) plus knowledge gaps. Falls back to
     a plain keyword search when evomem is unavailable or has nothing to say.
@@ -709,7 +1069,7 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
 
 def graph_lookup(agent_id: str, entity: str, edge_type: str = None,
                  hops: int = 2) -> dict:
-    """Traverse the knowledge graph from an entity. Backs the `graph_query` tool.
+    """Traverse the knowledge graph from an entity. Backs `recall(mode='graph')`.
 
     Resolves a name/alias to a start slug via search, then follows typed edges.
     """

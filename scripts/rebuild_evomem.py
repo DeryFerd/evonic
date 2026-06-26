@@ -31,13 +31,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from models.db import db
 from backend.agent_runtime import evomem_writer as W
 from backend.agent_runtime.evomem_client import (
-    is_available, init_evomem, _run, _get_brain_dir,
+    is_available, init_evomem, _run, _get_evomem_dir,
 )
 from backend.agent_runtime.memory_manager import _USER_SCOPED, _extract_and_store_graph
 
 
 def _stats(agent_id: str) -> dict:
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return {}
     return _run(brain_dir, ["stats"]) or {}

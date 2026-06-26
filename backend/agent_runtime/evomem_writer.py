@@ -31,7 +31,7 @@ import unicodedata
 from datetime import datetime, timezone
 
 from backend.agent_runtime.evomem_client import (
-    _get_brain_dir, init_evomem, sync as _evomem_sync, vlog,
+    _get_evomem_dir, init_evomem, sync as _evomem_sync, vlog,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,7 +40,12 @@ logger = logging.getLogger(__name__)
 _SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "2"))
 
 # Edge types evomem understands (others fall back to a plain mention).
-EDGE_TYPES = {"founded", "invested_in", "works_at", "advises", "attended", "mentions"}
+# Must stay in sync with the allowed relations in memory_manager._GRAPH_EXTRACT_PROMPT.
+EDGE_TYPES = {
+    "founded", "invested_in", "works_at", "advises", "attended",
+    "located_in", "lives_in", "visited", "born_in", "part_of",
+    "member_of", "owns", "uses", "knows", "related_to", "mentions",
+}
 
 # Per-agent debounced-sync timers, guarded by a lock.
 _sync_timers: dict = {}
@@ -70,12 +75,12 @@ def slugify(name: str) -> str:
 def _brain_path(agent_id: str, source_dir: str, slug: str) -> str:
     """Absolute path to a page file under the agent's brain dir."""
     bare = slug.split("/", 1)[-1]  # strip any source_dir prefix
-    return os.path.abspath(os.path.join(_get_brain_dir(agent_id), source_dir, f"{bare}.md"))
+    return os.path.abspath(os.path.join(_get_evomem_dir(agent_id), source_dir, f"{bare}.md"))
 
 
 def _ensure_brain(agent_id: str) -> bool:
     """Make sure the brain DB exists (idempotent). Returns False if unavailable."""
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if os.path.isdir(brain_dir) and os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return True
     return init_evomem(agent_id)
@@ -253,6 +258,61 @@ def write_note(agent_id: str, title: str, body: str, tags=None,
         return f"notes/{base}"
     except Exception as e:
         logger.debug("write_note failed for %s: %s", agent_id, e)
+        return ""
+
+
+def upsert_kb_page(agent_id: str, title: str, body: str, description: str = None,
+                   tags=None, mentions=None, slug: str = None) -> str:
+    """Create or overwrite a top-level KB page (kb/<slug>.md). Returns slug or ''.
+
+    KB pages are the top-level pages of the evomem knowledge root, so the slug
+    is the bare filename stem (no source-dir prefix) and links to them use
+    `[[<slug>]]`. Frontmatter satisfies KB validation (title, description,
+    type: note). `mentions` are appended as bare `[[<slug>]]` wiki-links so the
+    page wires into the KB graph. On an existing page the original `created`
+    timestamp is kept and tags are merged (union) — the caller supplies the
+    already-merged body.
+    """
+    base = slug or slugify(title)
+    if not base or not _ensure_brain(agent_id):
+        return ""
+    path = _brain_path(agent_id, "", base)
+    tags = list(tags or [])
+    created = _now_iso()
+
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                fm, _old_body = _parse_frontmatter(f.read())
+            created = fm.get("created") or created
+            tags = sorted(set(tags) | set(fm.get("tags", []) or []))
+            if description is None:
+                description = fm.get("description")
+        except Exception:
+            pass
+    description = (description or title).strip()
+
+    mention_links = ""
+    for m in (mentions or []):
+        m = (m or "").strip()
+        if m and m != base:
+            mention_links += f"\n[[{m}]]"
+
+    fm_lines = ["---",
+                f"title: {_yaml_escape(title)}",
+                f"description: {_yaml_escape(description)}",
+                "type: note",
+                f"tags: {_yaml_list(tags)}",
+                f"created: {created}",
+                "---"]
+    doc = "\n".join(fm_lines) + "\n\n" + body.strip() + mention_links + "\n"
+    try:
+        _atomic_write(path, doc)
+        vlog("writer[%s]: kb page %s (mentions=%d)",
+             agent_id, base, len(mentions or []))
+        return base
+    except Exception as e:
+        logger.debug("upsert_kb_page failed for %s/%s: %s", agent_id, base, e)
         return ""
 
 

@@ -85,6 +85,31 @@ Messages to summarize:
 Write the updated factual summary. Remember: the current date is {current_datetime}. Use this date — do NOT use dates from the messages or existing summary."""
 
 
+# Appended to every summarizer prompt (custom or default). The knowledge/graph
+# extractor only ever sees the summary, so anything dropped here is lost
+# downstream. This mandates a dedicated, always-regenerated entities section so
+# named entities survive compaction even under a strong domain-specific prompt.
+_ENTITY_PRESERVATION_CLAUSE = """
+
+============================================================
+MANDATORY — this overrides any conflicting instruction above.
+You MUST end the summary with a section titled exactly:
+
+## Entities & Relationships
+
+In it, list EVERY specific named person, place, organization, venue, product, or brand the user mentioned — even casually, in passing, or as a personal anecdote (a café, a city, a district, a company, a tool). For each, give concrete details AND how it relates to other named entities (located in / works at / visited / owns / part of / uses …). Never drop a named entity as "small talk", and always carry this section forward when updating an existing summary.
+
+Format example:
+## Entities & Relationships
+- Djournal Coffee — café in Grand Indonesia, Thamrin, Jakarta; User visited (has an outdoor smoking area)
+- Thamrin — district in Jakarta; located_in Jakarta
+- Jakarta — city in Indonesia; User's current location
+
+If the user mentioned no named entities at all, write:
+## Entities & Relationships
+- (none)"""
+
+
 def maybe_summarize(agent: dict, session_id: str,
                     summarize_guard: threading.Lock,
                     summarize_active: set,
@@ -217,7 +242,7 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
             return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [entries_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(entries_to_summarize), MAX_SUMMARIZE_BATCH)]
@@ -351,7 +376,7 @@ def _do_summarize_sqlite(agent: dict, session_id: str, llm_lock: threading.Lock,
         print(f"[AgentRuntime] Summarize skipped (sqlite): no new messages to summarize")
         return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [msgs_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(msgs_to_summarize), MAX_SUMMARIZE_BATCH)]

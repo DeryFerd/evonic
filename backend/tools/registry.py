@@ -735,12 +735,17 @@ def _builtin_remember_factory(agent_context: dict):
 def _builtin_recall_factory(agent_context: dict):
     """Factory for the built-in 'recall' tool — searches long-term memory.
 
-    One tool, three modes:
+    One tool, four modes:
       - fts   (default): fast keyword search over remembered facts
       - think           : reason over everything known about a topic (synthesis
                           with citations + knowledge gaps)
-      - graph           : traverse the knowledge graph from an entity
+      - graph           : traverse the entity knowledge graph from an entity
+      - links           : the link neighborhood of a KB document (outgoing/incoming
+                          references, dangling links, same-tag docs); 'query' is the
+                          KB filename
     """
+    from backend.agent_runtime.evomem_writer import EDGE_TYPES
+    _edge_enum = sorted(EDGE_TYPES)
     tool_def = {
         "type": "function",
         "function": {
@@ -750,28 +755,31 @@ def _builtin_recall_factory(agent_context: dict):
                 "Modes: mode='fts' (default) for a fast keyword lookup; "
                 "mode='think' to reason over EVERYTHING you know about a topic and "
                 "surface what's missing (synthesis with citations + knowledge gaps); "
-                "mode='graph' to traverse the knowledge graph from an entity (here "
-                "'query' is the entity name; use edge_type/hops to steer). "
+                "mode='graph' to traverse the entity knowledge graph from an entity "
+                "(here 'query' is the entity name; use edge_type/hops to steer); "
+                "mode='links' to view a KB document's link neighborhood — outgoing/"
+                "incoming references, broken links, and same-tag docs (here 'query' "
+                "is the KB filename, e.g. 'notes.md'). "
                 "Examples: recall(query='user phone number'); "
                 "recall(query='what do I know about Acme Corp?', mode='think'); "
-                "recall(query='Robin Syihab', mode='graph')"
+                "recall(query='Robin Syihab', mode='graph'); "
+                "recall(query='notes.md', mode='links')"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Keywords to search for, or the entity name when mode='graph'."
+                        "description": "Keywords to search for; the entity name when mode='graph'; or the KB filename (e.g. 'notes.md') when mode='links'."
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["fts", "think", "graph"],
+                        "enum": ["fts", "think", "graph", "links"],
                         "description": "Retrieval mode (default: fts)."
                     },
                     "edge_type": {
                         "type": "string",
-                        "enum": ["founded", "invested_in", "works_at",
-                                 "advises", "attended", "mentions"],
+                        "enum": _edge_enum,
                         "description": "Only for mode='graph': only follow edges of this type."
                     },
                     "hops": {
@@ -799,6 +807,9 @@ def _builtin_recall_factory(agent_context: dict):
                 edge_type=args.get('edge_type'),
                 hops=int(args.get('hops', 2) or 2),
             )
+        if mode == 'links':
+            from backend.tools.kb_graph import execute as kb_graph_execute
+            return kb_graph_execute(agent_context, {'filename': query})
         return search_memories(agent_id, query)
 
     return tool_def, executor

@@ -300,7 +300,8 @@ def _build_kb_listing(effective_id: str) -> list:
 
     files = sorted(
         f for f in os.listdir(kb_dir)
-        if os.path.isfile(os.path.join(kb_dir, f))
+        if not f.startswith('.')  # hide .evomem.db, .gitignore
+        and os.path.isfile(os.path.join(kb_dir, f))
     )
     if not files:
         return []
@@ -346,7 +347,9 @@ def _build_kb_listing(effective_id: str) -> list:
             lines.append("### Graph metadata (auto-generated):")
             if graph_pages:
                 for f in regular_files:
-                    gdata = graph_pages.get(f, {})
+                    # graph slugs are filename stems (e.g. 'notes'); files are
+                    # filenames (e.g. 'notes.md').
+                    gdata = graph_pages.get(os.path.splitext(f)[0], {})
                     incoming = gdata.get('incoming_slugs', [])
                     outgoing = gdata.get('outgoing_slugs', [])
                     tags = gdata.get('tags', [])
@@ -372,7 +375,7 @@ def _build_kb_listing(effective_id: str) -> list:
         # --- Fallback: graph-aware listing (no _kb_index.md) ---
         lines.append(
             "You can read these files using the `read` tool. "
-            "Use [[kb/filename]] to link between KB docs."
+            "Use [[filename]] (without the .md extension) to link between KB docs."
         )
         lines.append("")
 
@@ -394,13 +397,15 @@ def _build_kb_listing(effective_id: str) -> list:
         target_updated_at = graph["target_updated_at"] if graph else {}
 
         for slug, gdata in graph_pages.items():
-            if slug in file_info:
+            # graph slugs are filename stems; file_info is keyed by filename.
+            fname = slug + ".md"
+            if fname in file_info:
                 if gdata.get("tags"):
-                    file_info[slug]["tags"] = gdata["tags"]
+                    file_info[fname]["tags"] = gdata["tags"]
 
         for f in files:
             info = file_info[f]
-            gdata = graph_pages.get(f, {})
+            gdata = graph_pages.get(os.path.splitext(f)[0], {})
 
             size_str = _format_size(info["size"])
             tags = info.get("tags") or gdata.get("tags") or []
@@ -468,7 +473,7 @@ def _build_kb_listing(effective_id: str) -> list:
         "frontmatter (title, description, type) when creating a new KB file."
     )
     lines.append(
-        "- **Wiki-links**: Use `[[kb/filename]]` (without `.md` extension) "
+        "- **Wiki-links**: Use `[[filename]]` (without `.md` extension) "
         "to link between KB documents. "
         "Update `_kb_index.md` when adding new KB files."
     )
@@ -477,10 +482,11 @@ def _build_kb_listing(effective_id: str) -> list:
     lines.append("")
     lines.append("### KB Coaching")
     lines.append(
-        "When creating new KB files, add `[[kb/...]]` wiki-links to related "
-        "documents so the knowledge graph stays connected. Use the `kb_graph` "
-        "tool to explore existing link neighborhoods. Keep `_kb_index.md` "
-        "updated when you add or remove KB documents."
+        "When creating new KB files, add `[[...]]` wiki-links to related "
+        "documents so the knowledge graph stays connected. Use "
+        "`recall(query='<file>.md', mode='links')` to explore a document's link "
+        "neighborhood. Keep `_kb_index.md` updated when you add or remove KB "
+        "documents."
     )
 
     # Inject notes.md instructions only if notes.md exists in KB

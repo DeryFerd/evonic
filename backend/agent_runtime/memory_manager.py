@@ -787,8 +787,12 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
     try:
         # Build the entity/typed-edge graph (entities/ pages + edges) from the
         # summary. Independent of the KB-page extraction below; best-effort.
+        logger.info("[MemoryManager] extract[%s]: start (session=%s) — building "
+                    "entity graph…", agent_id, session_id)
         _extract_and_store_graph(agent_id, summary, llm_lock)
 
+        logger.info("[MemoryManager] extract[%s]: extracting KB knowledge items…",
+                    agent_id)
         guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
         items = _kb_llm_json(
             _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)
@@ -800,8 +804,11 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
                  if isinstance(it, dict) and it.get('content', '').strip()
                  and it.get('title', '').strip()][:10]
 
+        n = len(items)
+        logger.info("[MemoryManager] extract[%s]: filing %d knowledge item(s)…",
+                    agent_id, n)
         created = appended = skipped = 0
-        for it in items:
+        for i, it in enumerate(items, 1):
             title = it['title'].strip()
             content = it['content'].strip()
             tags = [t for t in (it.get('tags') or []) if isinstance(t, str) and t.strip()]
@@ -819,16 +826,21 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
             mentions = [r['slug'] for r in related][:4]
 
             if action == 'skip':
-                vlog("kb-extract[%s]: skip duplicate %r", agent_id, title[:50])
+                logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
+                            agent_id, i, n, title[:50])
                 skipped += 1
                 continue
 
             # Merge into the chosen page (append-only, locked).
             if action == 'merge' and (decision or {}).get('slug'):
-                if _merge_into_page(agent_id, decision['slug'].strip(),
-                                    content, tags, mentions, llm_lock):
+                slug = decision['slug'].strip()
+                if _merge_into_page(agent_id, slug, content, tags, mentions, llm_lock):
+                    logger.info("[MemoryManager] extract[%s]: [%d/%d] appended -> %s",
+                                agent_id, i, n, slug)
                     appended += 1
                 else:
+                    logger.info("[MemoryManager] extract[%s]: [%d/%d] skip (covered) %r",
+                                agent_id, i, n, title[:50])
                     skipped += 1  # already covered (delta was NONE) or unreadable
                 continue
 
@@ -843,8 +855,8 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
                     if evomem_writer.upsert_kb_page(
                             agent_id, title=title, body=content, tags=tags,
                             mentions=mentions):
-                        vlog("kb-extract[%s]: created %r (links=%d)",
-                             agent_id, title[:50], len(mentions))
+                        logger.info("[MemoryManager] extract[%s]: [%d/%d] created %s",
+                                    agent_id, i, n, cslug)
                         created += 1
                     continue
             # A page already exists under this slug → append-merge instead.

@@ -2011,8 +2011,10 @@ let kbTree = [];
 let kbTreeState = {};
 
 async function loadKBFiles() {
+    const epoch = window._agentEpoch;
     const res = await fetch(`/api/agents/${AGENT_ID}/kb`);
     const data = await res.json();
+    if (epoch !== window._agentEpoch) return; // agent switched mid-flight
     kbTree = data.tree || [];
     document.getElementById('kb-filter').value = '';
     renderKBFiles();
@@ -2717,12 +2719,16 @@ let assignedToolIds = [];
 let currentFilterMode = 'assigned';
 
 async function loadTools() {
+    const epoch = window._agentEpoch;
     const [toolsRes, agentToolsRes] = await Promise.all([
         fetch('/api/settings/tools'),
         fetch(`/api/agents/${AGENT_ID}/tools`)
     ]);
-    allToolsDefs = (await toolsRes.json()).tools || [];
-    assignedToolIds = (await agentToolsRes.json()).tools || [];
+    const toolsDefs = (await toolsRes.json()).tools || [];
+    const assigned = (await agentToolsRes.json()).tools || [];
+    if (epoch !== window._agentEpoch) return; // agent switched mid-flight
+    allToolsDefs = toolsDefs;
+    assignedToolIds = assigned;
     renderToolsList();
 }
 
@@ -2999,13 +3005,17 @@ let allSkillsDefs = [];
 let allowedSkillIds = [];
 
 async function loadSkills() {
+    const epoch = window._agentEpoch;
     const [skillsRes, agentSkillsRes] = await Promise.all([
         fetch('/api/skills'),
         fetch(`/api/agents/${AGENT_ID}/skills`)
     ]);
     const skillsData = await skillsRes.json();
-    allSkillsDefs = (skillsData.skills || []).filter(s => s.enabled);
-    allowedSkillIds = (await agentSkillsRes.json()).skills || [];
+    const defs = (skillsData.skills || []).filter(s => s.enabled);
+    const allowed = (await agentSkillsRes.json()).skills || [];
+    if (epoch !== window._agentEpoch) return; // agent switched mid-flight
+    allSkillsDefs = defs;
+    allowedSkillIds = allowed;
     renderSkillsList();
 }
 
@@ -3351,8 +3361,10 @@ async function testToolExec(mode) {
 
 // ==================== Channels Tab ====================
 async function loadChannels() {
+    const epoch = window._agentEpoch;
     const res = await fetch(`/api/agents/${AGENT_ID}/channels`);
     const data = await res.json();
+    if (epoch !== window._agentEpoch) return; // agent switched mid-flight
     const channels = data.channels || [];
     const list = document.getElementById('channels-list');
     const empty = document.getElementById('channels-empty');
@@ -5016,9 +5028,11 @@ async function loadArtifacts() {
     const sort = document.getElementById('artifacts-sort').value;
     const q = document.getElementById('artifacts-search').value.trim();
     const type = _artifactsFilterType;
+    const epoch = window._agentEpoch;
     try {
         const res = await fetch(`/api/agents/${AGENT_ID}/artifacts?sort=${sort}&page=${_artifactsPage}&limit=24&q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`);
         const data = await res.json();
+        if (epoch !== window._agentEpoch) return; // agent switched mid-flight
         _artifactsData = data.files || [];
         _artifactsPages = data.pages || 1;
         _artifactsTotal = data.total || 0;
@@ -5506,8 +5520,10 @@ async function toggleEnabled() {
 let _portalEditingId = null;
 
 async function loadPortals() {
+    const epoch = window._agentEpoch;
     const res = await fetch(`/api/agents/${AGENT_ID}/portals`);
     const data = await res.json();
+    if (epoch !== window._agentEpoch) return; // agent switched mid-flight
     const portals = data.portals || [];
     const list = document.getElementById('portals-list');
     const empty = document.getElementById('portals-empty');

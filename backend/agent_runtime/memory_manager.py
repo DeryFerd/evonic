@@ -353,9 +353,10 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         existing_text = "\n".join(
             f"[{d['slug']}] {d['title']} :: {d['description']}" for d in existing
         ) or "(none yet)"
-        guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
+        # Fixed authoring guidance for deterministic output — the agent's
+        # summarize_prompt governs *summary style*, not *what to file as knowledge*.
         prompt = _AUTHOR_DOCS_PROMPT.format(
-            guidance=guidance, existing=existing_text, source=source_text)
+            guidance=_DEFAULT_KB_GUIDANCE, existing=existing_text, source=source_text)
         data = _kb_llm_json(prompt, llm_lock)
         if not isinstance(data, dict):
             return

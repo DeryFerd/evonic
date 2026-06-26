@@ -516,7 +516,37 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                 <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-1">Variables</h3>
                 <p class="text-xs text-gray-400 mb-4">Key-value config for tools &amp; skills (e.g. <code>SSH_HOST</code>, <code>SSH_USERNAME</code>). Mark as secret to mask values.</p>
                 <div id="agent-variables-list" class="space-y-2 mb-3"></div>
-                <button type="button" onclick="addVariableRow()" class="text-sm text-indigo-500 hover:text-indigo-700 transition-colors">+ Add Variable</button>
+                <button type="button" onclick="openAddVariableModal()" class="text-sm text-indigo-500 hover:text-indigo-700 transition-colors">+ Add Variable</button>
+            </div>
+            <!-- Add Variable Modal -->
+            <div id="add-var-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200]">
+                <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md p-6" onclick="event.stopPropagation()">
+                    <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4">Add Variable</h3>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Key</label>
+                            <input type="text" id="add-var-key" placeholder="KEY_NAME"
+                                class="var-key w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                                style="text-transform: uppercase;">
+                        </div>
+                        <div>
+                            <label class="block mb-1 text-xs font-medium text-gray-600 dark:text-gray-400">Value</label>
+                            <input type="text" id="add-var-value" placeholder="value"
+                                class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                        </div>
+                        <label class="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-600 dark:text-gray-400">
+                            <input type="checkbox" id="add-var-secret" class="rounded border-gray-300 text-indigo-500 focus:ring-indigo-400"
+                                onchange="document.getElementById('add-var-value').type = this.checked ? 'password' : 'text'">
+                            Mark as secret (masked in UI)
+                        </label>
+                    </div>
+                    <div class="flex justify-end gap-3 mt-6">
+                        <button type="button" onclick="closeAddVariableModal()"
+                            class="px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">Cancel</button>
+                        <button type="button" id="add-var-save-btn" onclick="saveNewVariable()"
+                            class="px-4 py-2 text-sm font-medium text-white bg-indigo-500 hover:bg-indigo-600 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save</button>
+                    </div>
+                </div>
             </div>
             <!-- Plugin Settings Card (dynamic, hidden if no plugin declares agent_settings) -->
             <div id="plugin-settings-card" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 hidden">
@@ -1675,6 +1705,64 @@ async function saveVariables(silent = false) {
     if (!silent) showToast("Variables saved successfully!", "success");
 }
 
+function openAddVariableModal() {
+    document.getElementById('add-var-key').value = '';
+    document.getElementById('add-var-value').value = '';
+    document.getElementById('add-var-secret').checked = false;
+    document.getElementById('add-var-value').type = 'text';
+    document.getElementById('add-var-save-btn').disabled = false;
+    document.getElementById('add-var-save-btn').textContent = 'Save';
+    document.getElementById('add-var-modal').classList.remove('hidden');
+    setTimeout(function() { document.getElementById('add-var-key').focus(); }, 100);
+}
+
+function closeAddVariableModal() {
+    document.getElementById('add-var-modal').classList.add('hidden');
+}
+
+async function saveNewVariable() {
+    const key = document.getElementById('add-var-key').value.trim().toUpperCase();
+    const value = document.getElementById('add-var-value').value;
+    const isSecret = document.getElementById('add-var-secret').checked;
+    const saveBtn = document.getElementById('add-var-save-btn');
+
+    if (!key) {
+        showToast('Key is required.', 'error');
+        return;
+    }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving...';
+
+    try {
+        const varRes = await fetch(`/api/agents/${AGENT_ID}/variables`);
+        const varData = await varRes.json();
+        const vars = varData.variables || [];
+        vars.push({ key, value, is_secret: isSecret });
+        await fetch(`/api/agents/${AGENT_ID}/variables`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ variables: vars })
+        });
+        closeAddVariableModal();
+        await loadVariables();
+        showToast('Variable added successfully!', 'success');
+    } catch (e) {
+        showToast('Failed to save variable.', 'error');
+        console.error('Failed to save new variable:', e);
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+    }
+}
+
+// Click-outside to close add variable modal
+document.addEventListener('click', function(e) {
+    const modal = document.getElementById('add-var-modal');
+    if (modal && !modal.classList.contains('hidden') && e.target === modal) {
+        closeAddVariableModal();
+    }
+});
+
 // ==================== Agent Safety Rules (HMADS) ====================
 let _specificRules = [];
 let _assignedRuleIds = new Set();
@@ -1820,11 +1908,10 @@ async function saveAdvanced() {
     const data = await res.json();
     if (!data.success) { showToast("Failed to save advanced settings.", "error"); return; }
 
-    // Save injection guard state as agent variable
+    // Save injection guard state as agent variable — flush DOM state first
     try {
-        const varRes = await fetch(`/api/agents/${AGENT_ID}/variables`);
-        const varData = await varRes.json();
-        const vars = varData.variables || [];
+        // Collect current DOM variables (includes any unsaved changes from inline edits)
+        const vars = collectVariables();
         const enabled = document.getElementById('agent-injection-guard').checked ? '1' : '0';
         const existingIdx = vars.findIndex(v => v.key === 'injection_guard_enabled');
         if (existingIdx >= 0) {

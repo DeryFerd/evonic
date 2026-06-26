@@ -28,6 +28,46 @@ _VALID_ACTIONS = {"create", "update"}
 _REQUIRED_FIELDS = ("action", "title", "type", "body")
 
 
+def _norm(s: str) -> str:
+    return (s or "").strip().lower()
+
+
+def _doc_names(d: dict) -> List[str]:
+    """A doc's title plus any aliases — the names it can be matched by."""
+    names = []
+    if isinstance(d, dict):
+        if d.get("title"):
+            names.append(str(d["title"]))
+        for a in (d.get("aliases") or []):
+            if isinstance(a, str) and a.strip():
+                names.append(a)
+    return names
+
+
+def _match_entity(entity: dict, docs: list) -> bool:
+    """True if some doc represents ``entity`` (title/alias match, optional type).
+
+    Title match is lenient (case-insensitive, either-direction substring) so
+    "Borobudur" matches a doc titled "Candi Borobudur". When the expected entity
+    names a ``type`` (str or list), the matching doc's type must be one of them.
+    """
+    want = _norm(entity.get("title"))
+    if not want:
+        return False
+    types = entity.get("type")
+    if isinstance(types, str):
+        types = [types]
+    type_set = set(types) if types else None
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        cands = [_norm(n) for n in _doc_names(d)]
+        if any(want == c or (c and (want in c or c in want)) for c in cands):
+            if type_set is None or (d.get("type") or "") in type_set:
+                return True
+    return False
+
+
 def _strip_code_fences(text: str) -> str:
     """Remove a leading/trailing ``` or ```json fence if present."""
     t = text.strip()
@@ -85,11 +125,12 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
 
     # Component weights (sum to 1.0).
     WEIGHTS = {
-        "structure": 0.30,      # required fields present & non-empty
-        "valid_type": 0.20,     # type in DOC_TYPES
-        "valid_action": 0.15,   # action create/update (+ slug on update)
-        "dedup": 0.20,          # action / slug match the scenario expectation
-        "links": 0.10,          # inline [[links]] when required
+        "structure": 0.18,      # required fields present & non-empty
+        "valid_type": 0.12,     # type in DOC_TYPES
+        "valid_action": 0.10,   # action create/update (+ slug on update)
+        "dedup": 0.15,          # action / slug match the scenario expectation
+        "entities": 0.25,       # the expected subjects surfaced as docs
+        "links": 0.15,          # inline [[links]] when required
         "anti_pattern": 0.05,   # no trailing "Relations" block
     }
 
@@ -133,6 +174,7 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         existing_slugs = set(expected.get("existing_slugs") or [])
         expect_update_slug = expected.get("expect_update_slug")
         require_links = bool(expected.get("require_links"))
+        expect_entities = expected.get("expect_entities") or []
 
         per_doc: List[Dict[str, Any]] = []
         for d in docs:
@@ -142,11 +184,19 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         def avg(key: str) -> float:
             return sum(p[key] for p in per_doc) / len(per_doc)
 
+        # Entity coverage: fraction of expected subjects that surfaced as docs.
+        matched_entities = [e for e in expect_entities if _match_entity(e, docs)]
+        missing_entities = [e.get("title") for e in expect_entities
+                            if e not in matched_entities]
+        entities_score = (len(matched_entities) / len(expect_entities)
+                          if expect_entities else 1.0)
+
         components = {
             "structure": avg("structure"),
             "valid_type": avg("valid_type"),
             "valid_action": avg("valid_action"),
             "dedup": avg("dedup"),
+            "entities": entities_score,
             "links": avg("links") if require_links else 1.0,
             "anti_pattern": avg("anti_pattern"),
         }
@@ -165,6 +215,8 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             details={
                 "components": {k: round(v, 3) for k, v in components.items()},
                 "num_docs": len(docs),
+                "matched_entities": [e.get("title") for e in matched_entities],
+                "missing_entities": missing_entities,
                 "per_doc": per_doc,
                 "scoring_method": "knowledge_builder",
             },

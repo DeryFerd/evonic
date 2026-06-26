@@ -2,7 +2,7 @@
   "id": "kb_mixed_create_update_1",
   "name": "Mixed create + update",
   "description": "One known subject updated, one new subject created, both linked.",
-  "prompt": "You are the long-term memory author for an AI assistant. From the SOURCE below (a conversation summary or a single remembered fact), write or update durable knowledge DOCUMENTS for the things worth remembering across future conversations.\n\nBy default, capture EVERYTHING important and durable that could help in future conversations.\n\nHow to write a document:\n- Each document is rich narrative prose about ONE subject — a person, place, venue, organization, company, product, contact, or a topical note.\n- Weave Obsidian-style [[Wiki Links]] INLINE into your sentences for every OTHER named subject you mention (the link text is that subject's display name). The link is part of the prose — NEVER a separate \"Relations\"/\"Links\" list at the bottom.\n  GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`\n  BAD:  a paragraph with no links, followed by a \"Relations:\" list of [[...]].\n- Choose a `type` for each document from: note, person, place, venue, organization, company, product, contact.\n- The user is always referred to as \"User\".\n\nDeduplication:\n- You are given EXISTING documents as `[slug] Title :: description`. If a subject is already covered by one, return action \"update\" with its `slug` and a `body` containing ONLY the genuinely NEW information to add (its existing prose is preserved). Otherwise return action \"create\" with a full `body` and a one-line `description`.\n\nSkip ephemeral chatter, pleasantries, and transient/in-progress task status.\n\nReturn STRICT JSON only, no prose:\n{\"docs\": [\n  {\"action\": \"create\", \"title\": \"Jakarta\", \"type\": \"place\", \"description\": \"Capital of Indonesia; User's home city.\", \"tags\": [\"place\"], \"body\": \"Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]].\"},\n  {\"action\": \"update\", \"slug\": \"<existing slug>\", \"title\": \"...\", \"type\": \"note\", \"description\": \"...\", \"tags\": [\"...\"], \"body\": \"<only the new prose to append, with inline [[links]]>\"}\n]}\nIf nothing is worth keeping long-term, return: {\"docs\": []}\n\nEXISTING documents:\n[jakarta] Jakarta :: Capital of Indonesia; User's home city.\n\nSOURCE:\nUser memperkenalkan investornya, Rina, dari Sequoia, dan menyebut bahwa kantornya di Jakarta kini punya 50 karyawan.\n\nReturn only the JSON object:",
+  "prompt": "EXISTING documents:\n[jakarta] Jakarta :: Capital of Indonesia; User's home city.\n\nSOURCE:\nUser memperkenalkan investornya, Rina, dari Sequoia, dan menyebut bahwa kantornya di Jakarta kini punya 50 karyawan.\n\nReturn only the JSON object:",
   "expected": {
     "min_docs": 2,
     "expect_actions": [
@@ -11,6 +11,23 @@
     ],
     "existing_slugs": [
       "jakarta"
+    ],
+    "expect_entities": [
+      {
+        "title": "Rina",
+        "type": "person"
+      },
+      {
+        "title": "Sequoia",
+        "type": [
+          "company",
+          "organization"
+        ]
+      },
+      {
+        "title": "Jakarta",
+        "type": "place"
+      }
     ],
     "require_links": true
   },

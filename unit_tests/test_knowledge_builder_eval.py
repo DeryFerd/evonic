@@ -39,6 +39,7 @@ def _good_create():
 
 GOOD_EXPECT = {"min_docs": 1, "expect_actions": ["create"],
                "expect_types": ["person", "organization", "company", "note", "place"],
+               "expect_entities": [{"title": "Sari", "type": "person"}],
                "require_links": True}
 
 
@@ -105,6 +106,48 @@ def test_missing_docs_key_fails(ev):
     assert ev.evaluate('{"items": []}', GOOD_EXPECT, level=2).score == 0.0
 
 
+def test_entity_coverage(ev):
+    """Producing all expected entities scores higher than missing one."""
+    expect = {"min_docs": 2, "expect_actions": ["create"],
+              "expect_entities": [{"title": "Budi", "type": "person"},
+                                  {"title": "Nuwaira", "type": ["company", "organization"]}]}
+    full = json.dumps({"docs": [
+        {"action": "create", "title": "Budi", "type": "person", "description": "Engineer.",
+         "body": "Budi adalah backend engineer di [[Nuwaira]]."},
+        {"action": "create", "title": "Nuwaira", "type": "company", "description": "Company.",
+         "body": "Nuwaira adalah perusahaan tempat [[Budi]] bekerja."},
+    ]})
+    partial = json.dumps({"docs": [
+        {"action": "create", "title": "Budi", "type": "person", "description": "Engineer.",
+         "body": "Budi adalah backend engineer."},
+    ]})
+    full_r = ev.evaluate(full, expect, level=1)
+    partial_r = ev.evaluate(partial, expect, level=1)
+    assert full_r.details["missing_entities"] == []
+    assert "Nuwaira" in partial_r.details["missing_entities"]
+    assert full_r.score > partial_r.score
+
+
+def test_entity_wrong_type_not_matched(ev):
+    """An entity created with the wrong doc type does not count as covered."""
+    expect = {"expect_entities": [{"title": "Bandung", "type": "place"}]}
+    wrong_type = json.dumps({"docs": [
+        {"action": "create", "title": "Bandung", "type": "person", "description": "x",
+         "body": "Bandung."},
+    ]})
+    assert "Bandung" in ev.evaluate(wrong_type, expect, level=1).details["missing_entities"]
+
+
+def test_entity_alias_and_substring_match(ev):
+    """Lenient title matching: 'Candi Borobudur' satisfies an expected 'Borobudur'."""
+    expect = {"expect_entities": [{"title": "Borobudur", "type": ["place", "venue"]}]}
+    r = json.dumps({"docs": [
+        {"action": "create", "title": "Candi Borobudur", "type": "venue", "description": "x",
+         "body": "Candi Borobudur."},
+    ]})
+    assert ev.evaluate(r, expect, level=3).details["missing_entities"] == []
+
+
 def test_trailing_relations_block_detected():
     assert _has_trailing_link_block("Sari is a PM.\n\n[[Evonic]]\n[[User]]") is True
     assert _has_trailing_link_block("## Relations\n[[Evonic]]") is True
@@ -113,19 +156,31 @@ def test_trailing_relations_block_detected():
 
 # ----------------------------------------------------------- drift guard ----
 
-def test_stored_prompts_match_live_author_docs_prompt():
-    """Every generated test prompt must equal a fresh render from the live prompt.
+_REGEN_HINT = "python -m evaluator.test_definitions.knowledge_builder._generate"
 
-    If this fails, the production _AUTHOR_DOCS_PROMPT changed — re-run:
-        python -m evaluator.test_definitions.knowledge_builder._generate
-    """
+
+def test_domain_system_prompt_matches_live():
+    """The domain system_prompt must equal the static head of the live prompt.
+
+    If this fails, production _AUTHOR_DOCS_PROMPT changed — re-run: """ + _REGEN_HINT
+    base = os.path.dirname(os.path.abspath(_generate.__file__))
+    with open(os.path.join(base, "domain.json"), encoding="utf-8") as f:
+        domain = json.load(f)
+    assert domain.get("system_prompt") == _generate.render_system_prompt(), (
+        "domain system_prompt is stale — regenerate")
+
+
+def test_stored_prompts_match_live_author_docs_prompt():
+    """Every generated test prompt must equal a fresh render of the dynamic tail.
+
+    If this fails, the production _AUTHOR_DOCS_PROMPT changed — re-run: """ + _REGEN_HINT
     base = os.path.dirname(os.path.abspath(_generate.__file__))
     for sc in _generate.SCENARIOS:
         path = os.path.join(base, f"level_{sc['level']}", f"{sc['id']}.json")
         assert os.path.exists(path), f"missing generated test: {path}"
         with open(path, encoding="utf-8") as f:
             stored = json.load(f)
-        expected_prompt = _generate.render_prompt(sc["existing"], sc["source"])
+        expected_prompt = _generate.render_user_prompt(sc["existing"], sc["source"])
         assert stored["prompt"] == expected_prompt, (
             f"{sc['id']} prompt is stale — regenerate test cases")
 

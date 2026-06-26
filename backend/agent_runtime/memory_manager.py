@@ -262,12 +262,37 @@ def switch_collection_tool(agent_id: str, session_id: str, name: str) -> dict:
     return {"result": f"Active collection is now '{folder}'.", "folder": folder}
 
 
-def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80) -> list:
+def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80,
+                        source_text: str = "") -> list:
     """List existing docs as dedupe candidates: [{slug, title, description}].
 
-    Walks the agent's kb/ dir, prioritising the active collection folder and root
-    docs (the most likely merge targets). Skips inbox/ and hidden files.
+    Primary path: evomem hybrid search using source_text as query — surfaces docs
+    semantically similar to the content being authored.
+    Fallback: filesystem walk, prioritising active collection + root docs.
     """
+    # --- Primary: evomem hybrid search ---
+    if source_text and get_engine() == 'evomem':
+        try:
+            # Truncate for safety — evomem handles long queries natively,
+            # but we cap at 2000 chars to avoid pathological CLI args.
+            q = source_text[:2000].strip()
+            if q:
+                result = evomem_search(agent_id, q, limit=limit, mode="balanced")
+                if isinstance(result, dict):
+                    hits = result.get("hits")
+                    if hits:
+                        docs = []
+                        for h in hits:
+                            slug = (h.get("slug") or "").strip()
+                            title = (h.get("title") or slug.rsplit('/', 1)[-1]).strip()
+                            desc = (h.get("snippet") or h.get("description") or "")[:160]
+                            docs.append({"slug": slug, "title": title, "description": desc})
+                        if docs:
+                            return docs[:limit]
+        except Exception:
+            logger.debug("_list_existing_docs: evomem search failed for %s, falling back", agent_id)
+
+    # --- Fallback: filesystem walk ---
     kb_dir = f"agents/{agent_id}/kb"
     if not os.path.isdir(kb_dir):
         return []
@@ -349,7 +374,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         return
     try:
         folder = _get_active_collection(agent_id, session_id)
-        existing = _list_existing_docs(agent_id, folder)
+        existing = _list_existing_docs(agent_id, folder, source_text=source_text)
         existing_text = "\n".join(
             f"[{d['slug']}] {d['title']} :: {d['description']}" for d in existing
         ) or "(none yet)"

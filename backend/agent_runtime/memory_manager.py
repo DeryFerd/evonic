@@ -595,39 +595,6 @@ _DEFAULT_KB_GUIDANCE = (
     "future conversations."
 )
 
-_KB_EXTRACT_PROMPT = """You extract durable knowledge from a conversation summary to store in an AI agent's knowledge base (KB) for reuse in future conversations.
-
-{guidance}
-
-Rules:
-- Extract self-contained, reusable knowledge items: facts, procedures, decisions, domain/business info, preferences, persistent instructions.
-- Skip ephemeral chatter, pleasantries, and transient task status.
-- Each item has a short Title (the topic) and Content (1-5 factual sentences, English).
-- Group related facts under one item/title instead of splitting hairs.
-- Return a JSON array only: [{{"title": "...", "content": "...", "tags": ["..."]}}]
-- If nothing is worth keeping long-term, return: []
-
-Conversation summary:
-{summary}
-
-Return only the JSON array:"""
-
-_KB_DECIDE_PROMPT = """An AI agent is filing a new knowledge item into its KB. Avoid duplicate information.
-
-New item:
-Title: {title}
-Content: {content}
-
-Existing related KB pages (most relevant first):
-{candidates}
-
-Decide one:
-- "skip": the new item is already fully covered by an existing page (adds no new information).
-- "merge": it belongs on an existing page (same topic) — give that page's slug.
-- "create": it is a genuinely new topic.
-
-Return only JSON: {{"action": "skip|merge|create", "slug": "<existing slug, only if merge>"}}"""
-
 _KB_MERGE_SNIPPET_PROMPT = """An existing KB page already holds some knowledge. You are given new information. Output ONLY the part of the new information that is NOT already present on the page, as a concise markdown snippet (a short sentence or a few bullet points) ready to append to the page.
 
 Rules:
@@ -695,69 +662,6 @@ def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
         return raw or None
     except Exception:
         return None
-
-
-def _read_kb_page(agent_id: str, slug: str):
-    """Return {'title', 'body'} for a top-level KB page on disk, or None."""
-    base = slug.split("/", 1)[-1]
-    path = os.path.join(f"agents/{agent_id}/kb", f"{base}.md")
-    try:
-        with open(path, encoding="utf-8") as f:
-            raw = f.read()
-    except OSError:
-        return None
-    fm, body = evomem_writer._parse_frontmatter(raw)
-    return {"title": fm.get("title") or base, "body": body.strip()}
-
-
-def _find_related_kb(agent_id: str, title: str, content: str, limit: int = 6):
-    """Find related TOP-LEVEL KB pages (slug without '/') as merge candidates.
-
-    Combines a deterministic title-slug match (so a same-titled page is ALWAYS
-    found, regardless of the weak semantic ranker — the main fix for missed
-    merges) with two hybrid searches (title+content, then title alone). De-duped
-    by slug; the exact slug match is surfaced first.
-    """
-    out, seen = [], set()
-
-    def _add(slug, title_, snippet):
-        slug = (slug or "").strip()
-        if not slug or "/" in slug or slug in seen:
-            return
-        seen.add(slug)
-        out.append({"slug": slug, "title": title_ or slug,
-                    "snippet": (snippet or "").strip()[:240]})
-
-    # 1) deterministic: a page whose slug == slugify(title) already exists
-    tslug = evomem_writer.slugify(title)
-    if tslug:
-        page = _read_kb_page(agent_id, tslug)
-        if page is not None:
-            _add(tslug, page["title"], page["body"])
-
-    # 2) semantic: title+content and title-only, merged for recall
-    for q in (f"{title}. {content}", title):
-        try:
-            res = evomem_search(agent_id, q, limit=limit * 2, mode=_RECALL_SEARCH_MODE)
-        except Exception:
-            res = None
-        if res and isinstance(res.get("hits"), list):
-            for h in res["hits"]:
-                _add(h.get("slug"), h.get("title"), h.get("snippet"))
-        if len(out) >= limit:
-            break
-    return out[:limit]
-
-
-_MENTION_LINE = re.compile(r"^\s*\[\[[^\]]+\]\]\s*$")
-
-
-def _strip_trailing_mentions(body: str) -> str:
-    """Drop trailing bare [[wiki-link]] lines so new prose isn't appended after them."""
-    lines = body.rstrip().split("\n")
-    while lines and _MENTION_LINE.match(lines[-1]):
-        lines.pop()
-    return "\n".join(lines).rstrip()
 
 
 # Per-(agent, slug) re-entrant locks serialise read-modify-write on a single KB

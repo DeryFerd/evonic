@@ -268,13 +268,18 @@ def _compute_staleness_flag(
     except (ValueError, TypeError):
         return ""
 
+    # Normalise both to tz-aware UTC so naive (legacy) and aware (new, +00:00)
+    # timestamps can be compared without raising.
+    if src_dt.tzinfo is None:
+        src_dt = src_dt.replace(tzinfo=timezone.utc)
+    if tgt_dt.tzinfo is None:
+        tgt_dt = tgt_dt.replace(tzinfo=timezone.utc)
+
     if tgt_dt <= src_dt:
         return ""
 
     # Compute "N days ago" relative to target's update time
     now = datetime.now(timezone.utc)
-    if tgt_dt.tzinfo is None:
-        tgt_dt = tgt_dt.replace(tzinfo=timezone.utc)
     delta = now - tgt_dt
     days = delta.days
     if days == 0:

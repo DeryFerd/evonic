@@ -69,7 +69,34 @@ def migrate_agent(agent_id: str) -> None:
             shutil.rmtree(p, ignore_errors=True)
             removed_dirs.append(d)
 
-    # 2) Delete index DBs so the new (doc) schema is created fresh.
+    # 2) Convert legacy top-level session/group docs into collection folders:
+    #    `<slug>.md` (type session|group) -> `<slug>/index.md`. In the doc model
+    #    session/group are collection markers (a folder + index.md), never flat
+    #    files; the authoring pipeline only emits them via create_collection.
+    converted = []
+    for fn in sorted(os.listdir(brain_dir)):
+        if not fn.endswith(".md") or fn.startswith("."):
+            continue
+        src = os.path.join(brain_dir, fn)
+        if not os.path.isfile(src):
+            continue
+        try:
+            with open(src, encoding="utf-8") as fh:
+                fm, _ = W._parse_frontmatter(fh.read())
+        except OSError:
+            continue
+        if (fm.get("type") or "").strip() not in ("session", "group"):
+            continue
+        slug = fn[:-3]
+        dest_dir = os.path.join(brain_dir, slug)
+        dest = os.path.join(dest_dir, "index.md")
+        if os.path.exists(dest_dir):
+            continue  # a collection folder already owns this slug
+        os.makedirs(dest_dir, exist_ok=True)
+        os.replace(src, dest)
+        converted.append(slug)
+
+    # 3) Delete index DBs so the new (doc) schema is created fresh.
     for f in _DB_FILES:
         p = os.path.join(brain_dir, f)
         try:
@@ -78,13 +105,14 @@ def migrate_agent(agent_id: str) -> None:
         except OSError:
             pass
 
-    # 3) Re-init + rebuild the graph from the remaining inline-linked docs.
+    # 4) Re-init + rebuild the graph from the remaining inline-linked docs.
     if not init_evomem(agent_id):
         print(f"  [{agent_id}] could not init brain — skipping")
         return
     ok = W.sync_now(agent_id)
     after = _stats(agent_id)
-    print(f"  [{agent_id}] removed={removed_dirs or '-'} sync={'ok' if ok else 'FAILED'}")
+    print(f"  [{agent_id}] removed={removed_dirs or '-'} "
+          f"collections={converted or '-'} sync={'ok' if ok else 'FAILED'}")
     print(f"      before: {_fmt_stats(before)}")
     print(f"      after:  {_fmt_stats(after)}")
 

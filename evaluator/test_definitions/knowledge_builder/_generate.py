@@ -129,6 +129,7 @@ SCENARIOS = [
                   "oleh Nusantara Tech.",
         "expected": {
             "expect_actions": {"create": [
+                {"title": "AI Summit", "type": ["event", "note"]},
                 {"title": "Jakarta", "type": "place"},
                 {"title": "Nusantara Tech", "type": ["organization", "company"]},
             ]},

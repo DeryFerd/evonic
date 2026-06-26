@@ -119,7 +119,7 @@ How to write a document:
 - Weave Obsidian-style [[Wiki Links]] INLINE into your sentences for every OTHER named subject you mention (the link text is that subject's display name). The link is part of the prose — NEVER a separate "Relations"/"Links" list at the bottom.
   GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
   BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
-- Choose a `type` for each document from: note, person, place, venue, organization, company, product, contact.
+- Choose a `type` for each document from: note, person, place, venue, event, organization, company, product, contact.
 - The user is always referred to as "User".
 
 Deduplication:

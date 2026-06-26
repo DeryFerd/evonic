@@ -52,7 +52,7 @@ EDGE_TYPES = {
 
 # Doc types accepted by evomem's validator (mirrors Rust validate::VALID_TYPES).
 DOC_TYPES = {
-    "note", "session", "group", "person", "place", "venue",
+    "note", "session", "group", "person", "place", "venue", "event",
     "organization", "company", "product", "contact",
 }
 

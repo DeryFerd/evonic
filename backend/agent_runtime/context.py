@@ -186,7 +186,7 @@ def _extract_kb_frontmatter(filepath: str) -> dict:
 
 # Allowed doc `type` frontmatter values (mirrors Rust validate::VALID_TYPES and
 # evomem_writer.DOC_TYPES). Used for write-time validation + KB-graph node colors.
-KB_VALID_TYPES = ("note", "session", "group", "person", "place", "venue",
+KB_VALID_TYPES = ("note", "session", "group", "person", "place", "venue", "event",
                   "organization", "company", "product", "contact")
 
 

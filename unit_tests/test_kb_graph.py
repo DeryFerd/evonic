@@ -22,17 +22,17 @@ def _make_test_db() -> str:
     db_path = os.path.join(tdir, ".evomem.db")
     conn = sqlite3.connect(db_path)
     conn.executescript("""
-        CREATE TABLE pages (
+        CREATE TABLE docs (
             id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
-            page_type TEXT NOT NULL DEFAULT 'note', source_dir TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT 'note', source_dir TEXT NOT NULL DEFAULT '',
             tags TEXT NOT NULL DEFAULT '[]', content_hash TEXT NOT NULL,
             created_at TEXT, updated_at TEXT, synced_at TEXT NOT NULL, deleted_at TEXT
         );
         CREATE TABLE links (
-            src_page_id INTEGER NOT NULL REFERENCES pages(id),
-            dst_slug TEXT NOT NULL, dst_page_id INTEGER REFERENCES pages(id),
+            src_doc_id INTEGER NOT NULL REFERENCES docs(id),
+            dst_slug TEXT NOT NULL, dst_doc_id INTEGER REFERENCES docs(id),
             edge_type TEXT NOT NULL DEFAULT 'mentions', anchor_text TEXT,
-            PRIMARY KEY (src_page_id, dst_slug, edge_type)
+            PRIMARY KEY (src_doc_id, dst_slug, edge_type)
         );
     """)
 
@@ -49,9 +49,9 @@ def _make_test_db() -> str:
     ]
     for p in pages:
         conn.execute(
-            "INSERT INTO pages(id,slug,title,page_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) "
+            "INSERT INTO docs(id,slug,title,doc_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (p[0], p[1], p[2], p[3], p[1], p[4], p[5], p[5], "hash", None),
+            (p[0], p[1], p[2], p[3], "", p[4], p[5], p[5], "hash", None),
         )
 
     links = [
@@ -63,7 +63,7 @@ def _make_test_db() -> str:
     ]
     for l in links:
         conn.execute(
-            "INSERT INTO links(src_page_id,dst_slug,dst_page_id,edge_type) VALUES(?,?,?,?)",
+            "INSERT INTO links(src_doc_id,dst_slug,dst_doc_id,edge_type) VALUES(?,?,?,?)",
             (l[0], l[1], l[2], "mentions"),
         )
     conn.commit()

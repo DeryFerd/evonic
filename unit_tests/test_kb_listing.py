@@ -20,17 +20,17 @@ def _make_temp_evomem_db() -> str:
     db_path = os.path.join(tmpdir, ".evomem.db")
     conn = sqlite3.connect(db_path)
     conn.executescript("""
-        CREATE TABLE pages (
+        CREATE TABLE docs (
             id INTEGER PRIMARY KEY, slug TEXT NOT NULL UNIQUE, title TEXT NOT NULL,
-            page_type TEXT NOT NULL DEFAULT 'note', source_dir TEXT NOT NULL DEFAULT '',
+            doc_type TEXT NOT NULL DEFAULT 'note', source_dir TEXT NOT NULL DEFAULT '',
             tags TEXT NOT NULL DEFAULT '[]', content_hash TEXT NOT NULL,
             created_at TEXT, updated_at TEXT, synced_at TEXT NOT NULL, deleted_at TEXT
         );
         CREATE TABLE links (
-            src_page_id INTEGER NOT NULL REFERENCES pages(id),
-            dst_slug TEXT NOT NULL, dst_page_id INTEGER REFERENCES pages(id),
+            src_doc_id INTEGER NOT NULL REFERENCES docs(id),
+            dst_slug TEXT NOT NULL, dst_doc_id INTEGER REFERENCES docs(id),
             edge_type TEXT NOT NULL DEFAULT 'mentions', anchor_text TEXT,
-            PRIMARY KEY (src_page_id, dst_slug, edge_type)
+            PRIMARY KEY (src_doc_id, dst_slug, edge_type)
         );
     """)
     conn.close()
@@ -44,24 +44,23 @@ def _seed_graph_data(db_path: str):
     old = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     newer = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
 
-    pages = [
-        # KB pages
-        (1, "notes.md", "User Notes", "kb", "kb", '["preferences","instructions"]', old),
-        (2, "howto-report.md", "Report Guide", "kb", "kb", '["guide","reporting"]', old),
-        (3, "changelog-format.md", "Changelog Format", "kb", "kb", '["guide"]', newer),
-        (4, "api-docs.md", "API Docs", "kb", "kb", '["reference"]', old),
-        # Isolated KB page: no incoming and no outgoing links
-        (5, "isolated.md", "Isolated", "kb", "kb", '["reference"]', old),
-        # Non-KB pages
-        (10, "entities/acme", "Acme Corp", "entity", "entities", '["entity"]', old),
-        (11, "notes/some-fact", "A Fact", "note", "notes", "[]", old),
-        # Soft-deleted KB page
-        (12, "deleted-doc.md", "Deleted", "kb", "kb", "[]", old),
+    docs = [
+        # Root docs (source_dir '')
+        (1, "notes.md", "User Notes", "note", "", '["preferences","instructions"]', old),
+        (2, "howto-report.md", "Report Guide", "note", "", '["guide","reporting"]', old),
+        (3, "changelog-format.md", "Changelog Format", "note", "", '["guide"]', newer),
+        (4, "api-docs.md", "API Docs", "note", "", '["reference"]', old),
+        # Isolated doc: no incoming and no outgoing links
+        (5, "isolated.md", "Isolated", "note", "", '["reference"]', old),
+        # inbox/ capture — excluded from the knowledge listing
+        (10, "inbox/raw", "Raw Capture", "note", "inbox", "[]", old),
+        # Soft-deleted doc
+        (12, "deleted-doc.md", "Deleted", "note", "", "[]", old),
     ]
-    for p in pages:
-        deleted = old if p[0] == 12 else None  # page 12 is soft-deleted
+    for p in docs:
+        deleted = old if p[0] == 12 else None  # doc 12 is soft-deleted
         conn.execute(
-            "INSERT INTO pages(id,slug,title,page_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO docs(id,slug,title,doc_type,source_dir,tags,updated_at,synced_at,content_hash,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
             (p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[6], "hash", deleted),
         )
 
@@ -70,12 +69,12 @@ def _seed_graph_data(db_path: str):
         (1, "changelog-format.md", 3, "mentions"),
         (3, "notes.md", 1, "mentions"),
         (3, "api-docs.md", 4, "mentions"),
-        # Dangling link (dst_page_id IS NULL)
+        # Dangling link (dst_doc_id IS NULL)
         (2, "missing-doc.md", None, "mentions"),
     ]
     for l in links:
         conn.execute(
-            "INSERT INTO links(src_page_id,dst_slug,dst_page_id,edge_type) VALUES(?,?,?,?)",
+            "INSERT INTO links(src_doc_id,dst_slug,dst_doc_id,edge_type) VALUES(?,?,?,?)",
             (l[0], l[1], l[2], l[3]),
         )
 
@@ -166,7 +165,7 @@ class TestGetKbGraphMetadata:
         pages = meta["pages"]
         assert "deleted-doc.md" not in pages
 
-    def test_only_kb_pages_returned(self):
+    def test_inbox_excluded_other_docs_included(self):
         db_dir = _make_temp_evomem_db()
         db_path = os.path.join(db_dir, ".evomem.db")
         _seed_graph_data(db_path)
@@ -177,11 +176,11 @@ class TestGetKbGraphMetadata:
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
-        # Only kb pages, not entities or notes
-        for slug in pages:
-            assert slug.endswith(".md")
-        assert "entities/acme" not in pages
-        assert "notes/some-fact" not in pages
+        # Every live doc is returned (root + workspace), keyed by slug — except
+        # inbox/ raw captures.
+        assert "inbox/raw" not in pages
+        assert {"notes.md", "howto-report.md", "changelog-format.md",
+                "api-docs.md", "isolated.md"} <= set(pages)
 
     def test_target_updated_at_included(self):
         db_dir = _make_temp_evomem_db()
@@ -239,7 +238,7 @@ class TestKbListingFormat:
         assert result
         text = "\n".join(result)
         assert "## Available Knowledge Files" in text
-        assert "[[filename]]" in text
+        assert "[[Doc Title]]" in text  # Obsidian-style title links
         assert "### KB Usage" in text
         assert "- api.md" in text
         assert "- notes.md" in text

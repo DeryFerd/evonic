@@ -23,6 +23,7 @@ Usage:
 """
 
 import os
+import re
 import sys
 import shutil
 import argparse
@@ -69,11 +70,11 @@ def migrate_agent(agent_id: str) -> None:
             shutil.rmtree(p, ignore_errors=True)
             removed_dirs.append(d)
 
-    # 2) Convert legacy top-level session/group docs into collection folders:
-    #    `<slug>.md` (type session|group) -> `<slug>/index.md`. In the doc model
-    #    session/group are collection markers (a folder + index.md), never flat
-    #    files; the authoring pipeline only emits them via create_collection.
-    converted = []
+    # 2) Fix mis-typed standalone docs: session/group are collection markers
+    #    (a folder + index.md created via create_collection), so a flat top-level
+    #    `<slug>.md` carrying type session|group is a bad type guess, not a real
+    #    collection. Coerce its frontmatter type to `note` in place.
+    retyped = []
     for fn in sorted(os.listdir(brain_dir)):
         if not fn.endswith(".md") or fn.startswith("."):
             continue
@@ -82,19 +83,18 @@ def migrate_agent(agent_id: str) -> None:
             continue
         try:
             with open(src, encoding="utf-8") as fh:
-                fm, _ = W._parse_frontmatter(fh.read())
+                raw = fh.read()
+            fm, _ = W._parse_frontmatter(raw)
         except OSError:
             continue
         if (fm.get("type") or "").strip() not in ("session", "group"):
             continue
-        slug = fn[:-3]
-        dest_dir = os.path.join(brain_dir, slug)
-        dest = os.path.join(dest_dir, "index.md")
-        if os.path.exists(dest_dir):
-            continue  # a collection folder already owns this slug
-        os.makedirs(dest_dir, exist_ok=True)
-        os.replace(src, dest)
-        converted.append(slug)
+        new_raw = re.sub(r'(?m)^(type:\s*)["\']?(session|group)["\']?\s*$',
+                         r'\1note', raw, count=1)
+        if new_raw != raw:
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write(new_raw)
+            retyped.append(fn[:-3])
 
     # 3) Delete index DBs so the new (doc) schema is created fresh.
     for f in _DB_FILES:
@@ -112,7 +112,7 @@ def migrate_agent(agent_id: str) -> None:
     ok = W.sync_now(agent_id)
     after = _stats(agent_id)
     print(f"  [{agent_id}] removed={removed_dirs or '-'} "
-          f"collections={converted or '-'} sync={'ok' if ok else 'FAILED'}")
+          f"retyped={retyped or '-'} sync={'ok' if ok else 'FAILED'}")
     print(f"      before: {_fmt_stats(before)}")
     print(f"      after:  {_fmt_stats(after)}")
 

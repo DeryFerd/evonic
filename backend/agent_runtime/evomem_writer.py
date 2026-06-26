@@ -171,7 +171,14 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
     verbatim, with no appended link block. On an existing doc the original
     ``created`` is kept, ``updated`` is refreshed, and tags/aliases are merged
     (union); the caller supplies the already-merged body.
+
+    ``session``/``group`` are reserved for collection ``index.md`` files (created
+    via :func:`create_collection`); a standalone doc must not carry them, so they
+    are coerced to ``note`` here — otherwise an LLM type guess could mint a flat
+    "session" file that looks like a collection but isn't one.
     """
+    if doc_type in ("session", "group"):
+        doc_type = "note"
     base = (slug or slugify(title)).strip("/")
     if not base or not _ensure_brain(agent_id):
         return ""
@@ -191,9 +198,12 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
             aliases = sorted(set(aliases) | set(fm.get("aliases", []) or []))
             if description is None:
                 description = fm.get("description")
-            # Don't downgrade a typed doc to a plain note on re-write.
-            if (not doc_type or doc_type == "note") and fm.get("type"):
-                doc_type = fm["type"]
+            # Don't downgrade a typed doc to a plain note on re-write — but never
+            # adopt a stale session/group type from a mis-typed flat file.
+            existing_type = fm.get("type")
+            if (not doc_type or doc_type == "note") and existing_type \
+                    and existing_type not in ("session", "group"):
+                doc_type = existing_type
         except Exception:
             pass
     description = (description or title).strip()

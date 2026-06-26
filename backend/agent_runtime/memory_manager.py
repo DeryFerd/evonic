@@ -40,6 +40,14 @@ logger = logging.getLogger(__name__)
 _PASSIVE_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_PASSIVE", "conservative")
 _RECALL_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_RECALL", "tokenmax")
 
+# Cross-session entity coreference uses one LLM call PER extracted entity to
+# decide if a variant name ("Robin") is the same as an existing page ("Robin
+# Syihab"). On a slow/thinking model that dominates graph-extraction latency, so
+# it is OFF by default — exact-slug dedup still merges identical names without an
+# LLM call. Set EVOMEM_ENTITY_COREF=1 to re-enable (only worth it on a fast model).
+_ENTITY_COREF_LLM = os.environ.get("EVOMEM_ENTITY_COREF", "0").strip().lower() \
+    in ("1", "true", "yes", "on")
+
 # Memory categories that describe the user → linked to the canonical user entity
 # so the fact becomes graph-adjacent and feeds `think`.
 _USER_SCOPED = {"user_info", "preference", "instruction", "decision", "context"}
@@ -261,7 +269,10 @@ def _resolve_existing_entity(agent_id: str, name: str,
         if evomem_writer.slugify(title) == name_slug:
             return title
         candidates.append(title)
-    if not candidates:
+    if not candidates or not _ENTITY_COREF_LLM:
+        # Without LLM coreference, fall back to slug dedup (exact matches already
+        # returned above); a variant name just yields a new page. Avoids one slow
+        # LLM call per extracted entity.
         return None
     return _canonicalize_entity(name, candidates, llm_lock)
 

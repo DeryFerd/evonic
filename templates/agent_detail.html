@@ -499,9 +499,12 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                     </div>
 
                     <div>
-                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Summarize Prompt</label>
-                        <textarea id="agent-summarize-prompt" rows="10" class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">{{ agent.summarize_prompt or DEFAULT_SUMMARIZE_PROMPT }}</textarea>
-                        <p class="text-xs text-gray-400 mt-1">Custom prompt for summarization. Use <code>{existing_summary_section}</code> and <code>{messages_text}</code> as placeholders.</p>
+                        <div class="flex items-center gap-2 mb-1">
+                            <input type="checkbox" id="agent-summarize-prompt-override" {{ 'checked' if agent.summarize_prompt else '' }} onchange="toggleSummarizePromptOverride()" class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500">
+                            <label for="agent-summarize-prompt-override" class="text-gray-600 dark:text-gray-300 text-sm font-medium">Override default summarizer prompt</label>
+                        </div>
+                        <textarea id="agent-summarize-prompt" rows="10" class="w-full p-2.5 border border-gray-300 rounded-md text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 {{ 'opacity-50' if not agent.summarize_prompt else '' }}" {{ '' if agent.summarize_prompt else 'disabled' }}>{{ agent.summarize_prompt or DEFAULT_SUMMARIZE_PROMPT }}</textarea>
+                        <p class="text-xs text-gray-400 mt-1">Unchecked: the built-in default prompt is used (kept up to date automatically — recommended). Check to provide your own. Use <code>{existing_summary_section}</code> and <code>{messages_text}</code> placeholders.</p>
                     </div>
                     <div class="pt-2">
                         <button id="saveAdvancedBtn" onclick="saveAdvanced()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-5 py-2 rounded-md text-sm font-medium transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save Advanced</button>
@@ -1796,7 +1799,9 @@ async function saveAdvanced() {
         body: JSON.stringify({
             summarize_threshold: parseInt(document.getElementById('agent-summarize-threshold').value) || 0,
             summarize_tail: parseInt(document.getElementById('agent-summarize-tail').value) || 5,
-            summarize_prompt: document.getElementById('agent-summarize-prompt').value || null,
+            summarize_prompt: document.getElementById('agent-summarize-prompt-override').checked
+                ? (document.getElementById('agent-summarize-prompt').value || null)
+                : null,
             message_buffer_seconds: parseFloat(document.getElementById('agent-buffer-seconds').value) || 0,
             send_intermediate_responses: document.getElementById('agent-send-intermediate').checked ? 1 : 0,
             enable_agent_state: document.getElementById('agent-state-enabled').checked ? 1 : 0,
@@ -2249,6 +2254,15 @@ function toggleKBGraphView() {
 function toggleOrphans() {
     kbGraphShowOrphans = document.getElementById('kb-graph-show-orphans').checked;
     if (kbGraphMode === 'graph' && kbGraphData) renderKBGraph();
+}
+
+// Enable/disable the custom summarizer prompt textarea based on the override checkbox.
+function toggleSummarizePromptOverride() {
+    const cb = document.getElementById('agent-summarize-prompt-override');
+    const ta = document.getElementById('agent-summarize-prompt');
+    if (!cb || !ta) return;
+    ta.disabled = !cb.checked;
+    ta.classList.toggle('opacity-50', !cb.checked);
 }
 
 function renderKBGraph() {

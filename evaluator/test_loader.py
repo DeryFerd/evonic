@@ -242,7 +242,7 @@ class TestLoader:
         domains = []
         
         # Define preferred domain order
-        domain_order = ["conversation", "math", "sql", "tool_calling", "reasoning", "health"]
+        domain_order = ["conversation", "math", "tool_calling", "reasoning", "health"]
         
         # Scan default tests directory
         if self.tests_dir.exists():

@@ -463,7 +463,7 @@ class EvaluationEngine:
             model_name: Model being evaluated
             selected_domains: List of domain names to test (None = all domains)
         """
-        all_domains = ["conversation", "math", "sql", "tool_calling", "reasoning", "health"]
+        all_domains = ["conversation", "math", "tool_calling", "reasoning", "health"]
         
         # Filter domains if selection provided
         if selected_domains:
@@ -1955,7 +1955,7 @@ class EvaluationEngine:
         if self.use_configurable_tests:
             domains = [d['id'] for d in test_manager.list_domains()]
         else:
-            domains = ["conversation", "math", "sql", "tool_calling", "reasoning"]
+            domains = ["conversation", "math", "tool_calling", "reasoning"]
         
         for domain in domains:
             matrix[domain] = {}

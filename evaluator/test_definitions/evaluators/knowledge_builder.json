@@ -1,0 +1,8 @@
+{
+  "id": "knowledge_builder",
+  "name": "Knowledge Builder Evaluator",
+  "type": "predefined",
+  "description": "Validates author-docs JSON (structure, doc types, create/update + dedup, inline [[links]]) for the evomem knowledge pipeline. Deterministic, no PASS2.",
+  "uses_pass2": false,
+  "config": {}
+}

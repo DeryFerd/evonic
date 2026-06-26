@@ -1,0 +1,8 @@
+{
+  "id": "knowledge_builder",
+  "name": "Knowledge Builder",
+  "description": "Tests a model's ability to produce valid author-docs JSON for the evomem knowledge pipeline (structure, doc types, create/update + dedup, inline [[wiki-links]]). Test prompts are generated from the live _AUTHOR_DOCS_PROMPT via _generate.py.",
+  "icon": "book",
+  "color": "#7C3AED",
+  "evaluator_id": "knowledge_builder"
+}

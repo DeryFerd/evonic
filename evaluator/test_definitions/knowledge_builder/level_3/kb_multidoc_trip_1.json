@@ -4,31 +4,29 @@
   "description": "A richer narrative should yield several linked docs.",
   "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser berlibur ke Yogyakarta, mengunjungi Candi Borobudur, dan makan gudeg di Warung Bu Tjitro bersama temannya Andi.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 3,
-    "expect_actions": [
-      "create"
-    ],
-    "expect_entities": [
-      {
-        "title": "Yogyakarta",
-        "type": "place"
-      },
-      {
-        "title": "Candi Borobudur",
-        "type": [
-          "place",
-          "venue"
-        ]
-      },
-      {
-        "title": "Warung Bu Tjitro",
-        "type": "venue"
-      },
-      {
-        "title": "Andi",
-        "type": "person"
-      }
-    ],
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Yogyakarta",
+          "type": "place"
+        },
+        {
+          "title": "Candi Borobudur",
+          "type": [
+            "place",
+            "venue"
+          ]
+        },
+        {
+          "title": "Warung Bu Tjitro",
+          "type": "venue"
+        },
+        {
+          "title": "Andi",
+          "type": "person"
+        }
+      ]
+    },
     "require_links": true
   },
   "evaluator_id": "knowledge_builder",

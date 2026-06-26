@@ -4,23 +4,21 @@
   "description": "Founder, company, and product should each be a linked doc.",
   "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser mendirikan startup bernama Larisin yang membuat produk POS bernama LarisinKasir untuk UMKM di Indonesia.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 2,
-    "expect_actions": [
-      "create"
-    ],
-    "expect_entities": [
-      {
-        "title": "Larisin",
-        "type": [
-          "company",
-          "organization"
-        ]
-      },
-      {
-        "title": "LarisinKasir",
-        "type": "product"
-      }
-    ],
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Larisin",
+          "type": [
+            "company",
+            "organization"
+          ]
+        },
+        {
+          "title": "LarisinKasir",
+          "type": "product"
+        }
+      ]
+    },
     "require_links": true
   },
   "evaluator_id": "knowledge_builder",

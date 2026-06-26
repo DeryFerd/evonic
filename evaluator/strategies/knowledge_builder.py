@@ -44,12 +44,13 @@ def _doc_names(d: dict) -> List[str]:
     return names
 
 
-def _match_entity(entity: dict, docs: list) -> bool:
-    """True if some doc represents ``entity`` (title/alias match, optional type).
+def _entity_satisfied(entity: dict, action: str, docs: list) -> bool:
+    """True if some doc fulfils ``entity`` under the expected ``action``.
 
-    Title match is lenient (case-insensitive, either-direction substring) so
-    "Borobudur" matches a doc titled "Candi Borobudur". When the expected entity
-    names a ``type`` (str or list), the matching doc's type must be one of them.
+    A doc fulfils the entity when its ``action`` matches, its title/alias matches
+    (case-insensitive, either-direction substring so "Borobudur" matches a doc
+    titled "Candi Borobudur"), its ``type`` is one of the expected types (when
+    given), and — for updates — its ``slug`` matches the expected slug (when given).
     """
     want = _norm(entity.get("title"))
     if not want:
@@ -58,13 +59,20 @@ def _match_entity(entity: dict, docs: list) -> bool:
     if isinstance(types, str):
         types = [types]
     type_set = set(types) if types else None
+    slug = entity.get("slug")
     for d in docs:
         if not isinstance(d, dict):
             continue
+        if (d.get("action") or "").strip() != action:
+            continue
         cands = [_norm(n) for n in _doc_names(d)]
-        if any(want == c or (c and (want in c or c in want)) for c in cands):
-            if type_set is None or (d.get("type") or "") in type_set:
-                return True
+        if not any(want == c or (c and (want in c or c in want)) for c in cands):
+            continue
+        if type_set is not None and (d.get("type") or "") not in type_set:
+            continue
+        if action == "update" and slug and (d.get("slug") or "").strip() != slug:
+            continue
+        return True
     return False
 
 
@@ -128,8 +136,7 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         "structure": 0.18,      # required fields present & non-empty
         "valid_type": 0.12,     # type in DOC_TYPES
         "valid_action": 0.10,   # action create/update (+ slug on update)
-        "dedup": 0.15,          # action / slug match the scenario expectation
-        "entities": 0.25,       # the expected subjects surfaced as docs
+        "coverage": 0.40,       # expected subjects surfaced with the right action/slug
         "links": 0.15,          # inline [[links]] when required
         "anti_pattern": 0.05,   # no trailing "Relations" block
     }
@@ -156,8 +163,15 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             return EvaluationResult(0.0, "failed",
                                     {"error": "missing 'docs' list", "scoring_method": "knowledge_builder"})
 
-        # Scenario where the right answer is to keep nothing.
-        if expected.get("expect_empty"):
+        # Expected docs grouped by action: {"create": [entity...], "update": [entity...]}.
+        ea = expected.get("expect_actions") or {}
+        create_ents = ea.get("create") or []
+        update_ents = ea.get("update") or []
+        total_expected = len(create_ents) + len(update_ents)
+        require_links = bool(expected.get("require_links"))
+
+        # An explicit, all-empty expectation means: keep nothing (e.g. pure chatter).
+        if ea and total_expected == 0:
             ok = len(docs) == 0
             return EvaluationResult(
                 1.0 if ok else 0.0,
@@ -169,45 +183,31 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             return EvaluationResult(0.0, "failed",
                                     {"error": "no docs produced", "scoring_method": "knowledge_builder"})
 
-        expect_actions = set(expected.get("expect_actions") or [])
-        expect_types = set(expected.get("expect_types") or [])
-        existing_slugs = set(expected.get("existing_slugs") or [])
-        expect_update_slug = expected.get("expect_update_slug")
-        require_links = bool(expected.get("require_links"))
-        expect_entities = expected.get("expect_entities") or []
-
-        per_doc: List[Dict[str, Any]] = []
-        for d in docs:
-            per_doc.append(self._score_doc(d, expect_actions, expect_types,
-                                           existing_slugs, expect_update_slug, require_links))
+        per_doc = [self._score_doc(d, require_links) for d in docs]
 
         def avg(key: str) -> float:
             return sum(p[key] for p in per_doc) / len(per_doc)
 
-        # Entity coverage: fraction of expected subjects that surfaced as docs.
-        matched_entities = [e for e in expect_entities if _match_entity(e, docs)]
-        missing_entities = [e.get("title") for e in expect_entities
-                            if e not in matched_entities]
-        entities_score = (len(matched_entities) / len(expect_entities)
-                          if expect_entities else 1.0)
+        # Coverage: expected subjects that surfaced with the right action (and slug).
+        missing = []
+        satisfied = 0
+        for action, ents in (("create", create_ents), ("update", update_ents)):
+            for e in ents:
+                if _entity_satisfied(e, action, docs):
+                    satisfied += 1
+                else:
+                    missing.append({"action": action, "title": e.get("title")})
+        coverage = satisfied / total_expected if total_expected else 1.0
 
         components = {
             "structure": avg("structure"),
             "valid_type": avg("valid_type"),
             "valid_action": avg("valid_action"),
-            "dedup": avg("dedup"),
-            "entities": entities_score,
+            "coverage": coverage,
             "links": avg("links") if require_links else 1.0,
             "anti_pattern": avg("anti_pattern"),
         }
-        score = sum(components[k] * w for k, w in self.WEIGHTS.items())
-
-        # Completeness: penalize producing fewer docs than the scenario needs.
-        min_docs = int(expected.get("min_docs", 1))
-        if min_docs > 0 and len(docs) < min_docs:
-            score *= len(docs) / min_docs
-
-        score = round(score, 3)
+        score = round(sum(components[k] * w for k, w in self.WEIGHTS.items()), 3)
         status = "passed" if score >= 0.8 else "partial" if score >= 0.5 else "failed"
         return EvaluationResult(
             score=score,
@@ -215,43 +215,32 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             details={
                 "components": {k: round(v, 3) for k, v in components.items()},
                 "num_docs": len(docs),
-                "matched_entities": [e.get("title") for e in matched_entities],
-                "missing_entities": missing_entities,
+                "satisfied_entities": satisfied,
+                "expected_entities": total_expected,
+                "missing": missing,
+                "missing_entities": [m["title"] for m in missing],
                 "per_doc": per_doc,
                 "scoring_method": "knowledge_builder",
             },
             pass2_used=False,
         )
 
-    def _score_doc(self, d: Any, expect_actions, expect_types,
-                   existing_slugs, expect_update_slug, require_links) -> Dict[str, Any]:
+    def _score_doc(self, d: Any, require_links) -> Dict[str, Any]:
+        """Per-doc structural quality (independent of which entities are expected)."""
         if not isinstance(d, dict):
-            return {k: 0.0 for k in ("structure", "valid_type", "valid_action", "dedup",
-                                     "links", "anti_pattern")} | {"error": "doc is not an object"}
+            return {"structure": 0.0, "valid_type": 0.0, "valid_action": 0.0,
+                    "links": 0.0, "anti_pattern": 0.0, "error": "doc is not an object"}
 
         action = (d.get("action") or "").strip()
-        title = (d.get("title") or "").strip()
         doc_type = (d.get("type") or "").strip()
         body = (d.get("body") or "").strip()
         slug = (d.get("slug") or "").strip()
 
         structure = 1.0 if all(str(d.get(f, "")).strip() for f in _REQUIRED_FIELDS) else 0.0
         valid_type = 1.0 if doc_type in DOC_TYPES else 0.0
-
         valid_action = 0.0
         if action in _VALID_ACTIONS:
             valid_action = 1.0 if (action == "create" or slug) else 0.5  # update must carry a slug
-
-        # Dedup correctness vs. the scenario's expectation.
-        dedup = 1.0
-        if expect_actions:
-            dedup = 1.0 if action in expect_actions else 0.0
-        if action == "update" and dedup > 0:
-            if expect_update_slug is not None:
-                dedup = 1.0 if slug == expect_update_slug else 0.0
-            elif existing_slugs:
-                dedup = 1.0 if slug in existing_slugs else 0.0
-
         links = 1.0 if _LINK_RE.search(body) else 0.0
         anti_pattern = 0.0 if _has_trailing_link_block(body) else 1.0
 
@@ -259,10 +248,9 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             "structure": structure,
             "valid_type": valid_type,
             "valid_action": valid_action,
-            "dedup": dedup,
             "links": links,
             "anti_pattern": anti_pattern,
             "action": action,
             "type": doc_type,
-            "title": title,
+            "title": (d.get("title") or "").strip(),
         }

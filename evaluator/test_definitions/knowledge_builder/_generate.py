@@ -69,8 +69,10 @@ def render_user_prompt(existing, source):
 
 
 # 2 scenarios per level, levels 1-5. `existing` + `source` feed the prompt;
-# `expected` drives KnowledgeBuilderEvaluator scoring. `expect_entities` lists the
-# subjects that must surface as docs (matched by title/alias, optional type).
+# `expected` drives KnowledgeBuilderEvaluator scoring. `expect_actions` maps each
+# action to the subjects that must surface under it (matched by title/alias, with
+# an optional `type`; `update` entities carry the existing `slug` they map to).
+# An all-empty expect_actions means "keep nothing". `require_links` is orthogonal.
 SCENARIOS = [
     # ---- Level 1: single create, simple subject, links optional ----
     {
@@ -80,11 +82,10 @@ SCENARIOS = [
         "existing": [],
         "source": "User bertemu Budi, seorang backend engineer di Nuwaira.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Budi", "type": "person"},
                 {"title": "Nuwaira", "type": ["company", "organization"]},
-            ],
+            ]},
             "require_links": False,
         },
     },
@@ -95,11 +96,10 @@ SCENARIOS = [
         "existing": [],
         "source": "User tinggal di Bandung, sebuah kota di Jawa Barat.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Bandung", "type": "place"},
                 {"title": "Jawa Barat", "type": "place"},
-            ],
+            ]},
             "require_links": False,
         },
     },
@@ -113,11 +113,10 @@ SCENARIOS = [
         "source": "User bekerja sebagai engineer di Evonic, sebuah perusahaan AI, "
                   "bersama rekannya Sari yang menjadi product manager.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Sari", "type": "person"},
                 {"title": "Evonic", "type": ["company", "organization"]},
-            ],
+            ]},
             "require_links": True,
         },
     },
@@ -129,11 +128,10 @@ SCENARIOS = [
         "source": "User menghadiri konferensi AI Summit di Jakarta yang diselenggarakan "
                   "oleh Nusantara Tech.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Jakarta", "type": "place"},
                 {"title": "Nusantara Tech", "type": ["organization", "company"]},
-            ],
+            ]},
             "require_links": True,
         },
     },
@@ -147,13 +145,12 @@ SCENARIOS = [
         "source": "User berlibur ke Yogyakarta, mengunjungi Candi Borobudur, dan makan "
                   "gudeg di Warung Bu Tjitro bersama temannya Andi.",
         "expected": {
-            "min_docs": 3, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Yogyakarta", "type": "place"},
                 {"title": "Candi Borobudur", "type": ["place", "venue"]},
                 {"title": "Warung Bu Tjitro", "type": "venue"},
                 {"title": "Andi", "type": "person"},
-            ],
+            ]},
             "require_links": True,
         },
     },
@@ -165,11 +162,10 @@ SCENARIOS = [
         "source": "User mendirikan startup bernama Larisin yang membuat produk POS bernama "
                   "LarisinKasir untuk UMKM di Indonesia.",
         "expected": {
-            "min_docs": 2, "expect_actions": ["create"],
-            "expect_entities": [
+            "expect_actions": {"create": [
                 {"title": "Larisin", "type": ["company", "organization"]},
                 {"title": "LarisinKasir", "type": "product"},
-            ],
+            ]},
             "require_links": True,
         },
     },
@@ -183,9 +179,9 @@ SCENARIOS = [
                       "description": "Capital of Indonesia; User's home city."}],
         "source": "User membuka kantor cabang baru perusahaannya di Jakarta tahun ini.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["update"],
-            "existing_slugs": ["jakarta"], "expect_update_slug": "jakarta",
-            "expect_entities": [{"title": "Jakarta", "type": "place"}],
+            "expect_actions": {"update": [
+                {"title": "Jakarta", "type": "place", "slug": "jakarta"},
+            ]},
             "require_links": False,
         },
     },
@@ -197,9 +193,9 @@ SCENARIOS = [
                       "description": "Backend engineer at Nuwaira."}],
         "source": "Budi baru saja dipromosikan menjadi engineering lead di Nuwaira.",
         "expected": {
-            "min_docs": 1, "expect_actions": ["update"],
-            "existing_slugs": ["budi"], "expect_update_slug": "budi",
-            "expect_entities": [{"title": "Budi", "type": "person"}],
+            "expect_actions": {"update": [
+                {"title": "Budi", "type": "person", "slug": "budi"},
+            ]},
             "require_links": False,
         },
     },
@@ -212,7 +208,7 @@ SCENARIOS = [
         "existing": [],
         "source": "User menyapa, menanyakan kabar, kami bertukar salam, lalu User "
                   "mengucapkan terima kasih dan pamit.",
-        "expected": {"expect_empty": True},
+        "expected": {"expect_actions": {"create": [], "update": []}},
     },
     {
         "id": "kb_mixed_create_update_1", "level": 5,
@@ -223,13 +219,15 @@ SCENARIOS = [
         "source": "User memperkenalkan investornya, Rina, dari Sequoia, dan menyebut "
                   "bahwa kantornya di Jakarta kini punya 50 karyawan.",
         "expected": {
-            "min_docs": 2, "expect_actions": ["create", "update"],
-            "existing_slugs": ["jakarta"],
-            "expect_entities": [
-                {"title": "Rina", "type": "person"},
-                {"title": "Sequoia", "type": ["company", "organization"]},
-                {"title": "Jakarta", "type": "place"},
-            ],
+            "expect_actions": {
+                "create": [
+                    {"title": "Rina", "type": "person"},
+                    {"title": "Sequoia", "type": ["company", "organization"]},
+                ],
+                "update": [
+                    {"title": "Jakarta", "type": "place", "slug": "jakarta"},
+                ],
+            },
             "require_links": True,
         },
     },

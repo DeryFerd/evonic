@@ -4,20 +4,15 @@
   "description": "A new fact about a known person updates that doc by slug.",
   "prompt": "EXISTING documents:\n[budi] Budi :: Backend engineer at Nuwaira.\n\nSOURCE:\nBudi baru saja dipromosikan menjadi engineering lead di Nuwaira.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 1,
-    "expect_actions": [
-      "update"
-    ],
-    "existing_slugs": [
-      "budi"
-    ],
-    "expect_update_slug": "budi",
-    "expect_entities": [
-      {
-        "title": "Budi",
-        "type": "person"
-      }
-    ],
+    "expect_actions": {
+      "update": [
+        {
+          "title": "Budi",
+          "type": "person",
+          "slug": "budi"
+        }
+      ]
+    },
     "require_links": false
   },
   "evaluator_id": "knowledge_builder",

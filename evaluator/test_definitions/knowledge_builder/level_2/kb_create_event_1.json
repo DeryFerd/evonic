@@ -4,23 +4,21 @@
   "description": "An event mentioning a place and host should link them inline.",
   "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser menghadiri konferensi AI Summit di Jakarta yang diselenggarakan oleh Nusantara Tech.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 1,
-    "expect_actions": [
-      "create"
-    ],
-    "expect_entities": [
-      {
-        "title": "Jakarta",
-        "type": "place"
-      },
-      {
-        "title": "Nusantara Tech",
-        "type": [
-          "organization",
-          "company"
-        ]
-      }
-    ],
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Jakarta",
+          "type": "place"
+        },
+        {
+          "title": "Nusantara Tech",
+          "type": [
+            "organization",
+            "company"
+          ]
+        }
+      ]
+    },
     "require_links": true
   },
   "evaluator_id": "knowledge_builder",

@@ -4,31 +4,28 @@
   "description": "One known subject updated, one new subject created, both linked.",
   "prompt": "EXISTING documents:\n[jakarta] Jakarta :: Capital of Indonesia; User's home city.\n\nSOURCE:\nUser memperkenalkan investornya, Rina, dari Sequoia, dan menyebut bahwa kantornya di Jakarta kini punya 50 karyawan.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 2,
-    "expect_actions": [
-      "create",
-      "update"
-    ],
-    "existing_slugs": [
-      "jakarta"
-    ],
-    "expect_entities": [
-      {
-        "title": "Rina",
-        "type": "person"
-      },
-      {
-        "title": "Sequoia",
-        "type": [
-          "company",
-          "organization"
-        ]
-      },
-      {
-        "title": "Jakarta",
-        "type": "place"
-      }
-    ],
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Rina",
+          "type": "person"
+        },
+        {
+          "title": "Sequoia",
+          "type": [
+            "company",
+            "organization"
+          ]
+        }
+      ],
+      "update": [
+        {
+          "title": "Jakarta",
+          "type": "place",
+          "slug": "jakarta"
+        }
+      ]
+    },
     "require_links": true
   },
   "evaluator_id": "knowledge_builder",

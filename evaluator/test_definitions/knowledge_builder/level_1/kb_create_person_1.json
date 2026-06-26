@@ -4,23 +4,21 @@
   "description": "Author a person doc (and the company they work at) from a simple fact.",
   "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser bertemu Budi, seorang backend engineer di Nuwaira.\n\nReturn only the JSON object:",
   "expected": {
-    "min_docs": 1,
-    "expect_actions": [
-      "create"
-    ],
-    "expect_entities": [
-      {
-        "title": "Budi",
-        "type": "person"
-      },
-      {
-        "title": "Nuwaira",
-        "type": [
-          "company",
-          "organization"
-        ]
-      }
-    ],
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Budi",
+          "type": "person"
+        },
+        {
+          "title": "Nuwaira",
+          "type": [
+            "company",
+            "organization"
+          ]
+        }
+      ]
+    },
     "require_links": false
   },
   "evaluator_id": "knowledge_builder",

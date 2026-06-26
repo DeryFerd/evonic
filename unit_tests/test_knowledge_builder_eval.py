@@ -37,9 +37,7 @@ def _good_create():
     }]})
 
 
-GOOD_EXPECT = {"min_docs": 1, "expect_actions": ["create"],
-               "expect_types": ["person", "organization", "company", "note", "place"],
-               "expect_entities": [{"title": "Sari", "type": "person"}],
+GOOD_EXPECT = {"expect_actions": {"create": [{"title": "Sari", "type": "person"}]},
                "require_links": True}
 
 
@@ -81,8 +79,8 @@ def test_missing_links_when_required_penalized(ev):
 
 
 def test_update_dedup_slug(ev):
-    expect = {"min_docs": 1, "expect_actions": ["update"],
-              "existing_slugs": ["jakarta"], "expect_update_slug": "jakarta"}
+    expect = {"expect_actions": {"update": [
+        {"title": "Jakarta", "type": "place", "slug": "jakarta"}]}}
     right = json.dumps({"docs": [{
         "action": "update", "slug": "jakarta", "title": "Jakarta", "type": "place",
         "description": "Capital.", "body": "User membuka kantor baru di sini.",
@@ -91,11 +89,24 @@ def test_update_dedup_slug(ev):
         "action": "update", "slug": "bandung", "title": "Jakarta", "type": "place",
         "description": "Capital.", "body": "User membuka kantor baru di sini.",
     }]})
+    # Right slug fully satisfies the update entity; wrong slug does not.
     assert ev.evaluate(right, expect, level=4).score > ev.evaluate(wrong, expect, level=4).score
+    assert ev.evaluate(wrong, expect, level=4).details["missing_entities"] == ["Jakarta"]
+
+
+def test_create_instead_of_update_not_satisfied(ev):
+    """A subject that should be updated must not be satisfied by a create."""
+    expect = {"expect_actions": {"update": [
+        {"title": "Jakarta", "type": "place", "slug": "jakarta"}]}}
+    created = json.dumps({"docs": [{
+        "action": "create", "title": "Jakarta", "type": "place",
+        "description": "Capital.", "body": "User membuka kantor baru di [[Jakarta]].",
+    }]})
+    assert ev.evaluate(created, expect, level=4).details["missing_entities"] == ["Jakarta"]
 
 
 def test_expect_empty(ev):
-    expect = {"expect_empty": True}
+    expect = {"expect_actions": {"create": [], "update": []}}
     assert ev.evaluate('{"docs": []}', expect, level=5).score == 1.0
     non_empty = json.dumps({"docs": [{"action": "create", "title": "X", "type": "note",
                                        "description": "d", "body": "b"}]})
@@ -108,9 +119,9 @@ def test_missing_docs_key_fails(ev):
 
 def test_entity_coverage(ev):
     """Producing all expected entities scores higher than missing one."""
-    expect = {"min_docs": 2, "expect_actions": ["create"],
-              "expect_entities": [{"title": "Budi", "type": "person"},
-                                  {"title": "Nuwaira", "type": ["company", "organization"]}]}
+    expect = {"expect_actions": {"create": [
+        {"title": "Budi", "type": "person"},
+        {"title": "Nuwaira", "type": ["company", "organization"]}]}}
     full = json.dumps({"docs": [
         {"action": "create", "title": "Budi", "type": "person", "description": "Engineer.",
          "body": "Budi adalah backend engineer di [[Nuwaira]]."},
@@ -130,7 +141,7 @@ def test_entity_coverage(ev):
 
 def test_entity_wrong_type_not_matched(ev):
     """An entity created with the wrong doc type does not count as covered."""
-    expect = {"expect_entities": [{"title": "Bandung", "type": "place"}]}
+    expect = {"expect_actions": {"create": [{"title": "Bandung", "type": "place"}]}}
     wrong_type = json.dumps({"docs": [
         {"action": "create", "title": "Bandung", "type": "person", "description": "x",
          "body": "Bandung."},
@@ -140,7 +151,7 @@ def test_entity_wrong_type_not_matched(ev):
 
 def test_entity_alias_and_substring_match(ev):
     """Lenient title matching: 'Candi Borobudur' satisfies an expected 'Borobudur'."""
-    expect = {"expect_entities": [{"title": "Borobudur", "type": ["place", "venue"]}]}
+    expect = {"expect_actions": {"create": [{"title": "Borobudur", "type": ["place", "venue"]}]}}
     r = json.dumps({"docs": [
         {"action": "create", "title": "Candi Borobudur", "type": "venue", "description": "x",
          "body": "Candi Borobudur."},

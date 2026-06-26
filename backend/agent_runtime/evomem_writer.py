@@ -40,7 +40,12 @@ logger = logging.getLogger(__name__)
 _SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "2"))
 
 # Edge types evomem understands (others fall back to a plain mention).
-EDGE_TYPES = {"founded", "invested_in", "works_at", "advises", "attended", "mentions"}
+# Must stay in sync with the allowed relations in memory_manager._GRAPH_EXTRACT_PROMPT.
+EDGE_TYPES = {
+    "founded", "invested_in", "works_at", "advises", "attended",
+    "located_in", "lives_in", "visited", "born_in", "part_of",
+    "member_of", "owns", "uses", "knows", "related_to", "mentions",
+}
 
 # Per-agent debounced-sync timers, guarded by a lock.
 _sync_timers: dict = {}

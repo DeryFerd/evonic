@@ -102,17 +102,18 @@ Category: {category}
 
 Return only the dimension string (e.g. "user.language_preference") or null:"""
 
-_GRAPH_EXTRACT_PROMPT = """You build a knowledge graph from a conversation summary. Extract the named entities (people, organizations, projects, places) and the typed relationships between them.
+_GRAPH_EXTRACT_PROMPT = """You build a knowledge graph from a conversation summary. Extract the named entities (people, places, organizations, venues, projects, products) and the typed relationships between them.
 
-Allowed relation types (use ONLY these): works_at, founded, invested_in, advises, attended, mentions.
+Allowed relation types (use ONLY these): works_at, founded, invested_in, advises, attended, located_in, lives_in, visited, born_in, part_of, member_of, owns, uses, knows, related_to, mentions.
 
 Rules:
-- Only extract relationships that are explicitly stated and factual (not speculative/planned/negated).
-- Use real entity names as they appear (e.g. "Acme Corp", "Robin Syihab"). The user themselves is the entity "User".
-- If a relationship doesn't fit one of the allowed types, skip it (or use "mentions" for a loose association).
+- Extract relationships stated as fact (not speculative/planned/negated), INCLUDING personal ones the user mentions in passing (e.g. a place they visited, a café in a city).
+- Use real entity names as they appear (e.g. "Djournal Coffee", "Jakarta", "Robin Syihab"). The user themselves is the entity "User".
+- Prefer the most specific relation; if none fits, use "mentions".
 - Return STRICT JSON only, no prose:
-{{"entities": [{{"name": "...", "type": "person|organization|project|place", "aliases": ["..."]}}],
- "relations": [{{"subject": "...", "relation": "works_at", "object": "..."}}]}}
+{{"entities": [{{"name": "...", "type": "person|place|organization|venue|project|product", "aliases": ["..."]}}],
+ "relations": [{{"subject": "...", "relation": "located_in", "object": "..."}}]}}
+- Example: "User visited Djournal Coffee in Thamrin, Jakarta" -> User --visited--> Djournal Coffee; Djournal Coffee --located_in--> Thamrin; Thamrin --located_in--> Jakarta.
 - If nothing to extract, return: {{"entities": [], "relations": []}}
 
 Conversation summary:
@@ -208,7 +209,7 @@ def _canonicalize_entity(name: str, candidates: list,
     try:
         call_kwargs = dict(
             messages=[{"role": "user", "content": prompt}],
-            tools=None, temperature=0.0, enable_thinking=False, max_tokens=32,
+            tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
         )
         if llm_lock:
             with llm_lock:
@@ -279,7 +280,7 @@ def _extract_and_store_graph(agent_id: str, summary: str,
         with llm_lock:
             result = llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
-                tools=None, temperature=0.0, enable_thinking=False, max_tokens=1024,
+                tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
             )
         if not result.get('success'):
             return
@@ -335,9 +336,9 @@ def _extract_and_store_graph(agent_id: str, summary: str,
                                             anchor=obj):
                     wrote_edge = True
 
-        vlog("graph-extract[%s]: %d entities, %d relations%s", agent_id,
-             len(name_to_slug), len(data.get("relations", []) or []),
-             " (edges wired)" if wrote_edge else "")
+        logger.info("[MemoryManager] graph-extract[%s]: %d entities, %d relations%s",
+                    agent_id, len(name_to_slug), len(data.get("relations", []) or []),
+                    " (edges wired)" if wrote_edge else "")
         if name_to_slug or wrote_edge:
             evomem_writer.mark_dirty(agent_id)
     except (json.JSONDecodeError, KeyError, ValueError):
@@ -773,6 +774,10 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
     if get_engine() != "evomem":
         return
     try:
+        # Build the entity/typed-edge graph (entities/ pages + edges) from the
+        # summary. Independent of the KB-page extraction below; best-effort.
+        _extract_and_store_graph(agent_id, summary, llm_lock)
+
         guidance = (agent.get('summarize_prompt') or '').strip() or _DEFAULT_KB_GUIDANCE
         items = _kb_llm_json(
             _KB_EXTRACT_PROMPT.format(guidance=guidance, summary=summary), llm_lock)

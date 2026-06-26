@@ -85,6 +85,14 @@ Messages to summarize:
 Write the updated factual summary. Remember: the current date is {current_datetime}. Use this date — do NOT use dates from the messages or existing summary."""
 
 
+# Appended to every summarizer prompt (custom or default) so named entities the
+# user mentions survive into the summary — the knowledge/graph extractor only
+# ever sees the summary, so anything dropped here is lost downstream.
+_ENTITY_PRESERVATION_CLAUSE = """
+
+IMPORTANT — Named entities: Always preserve the specific named people, places, organizations, venues, products, and brands the user mentions — even casually or in passing (e.g. a café, a city, a district, a company). Record each as a concrete fact (e.g. "User visited Djournal Coffee in Thamrin, Jakarta") and note how named entities relate (who/what is located in, works at, visited, or belongs to what). Do NOT drop these as small talk."""
+
+
 def maybe_summarize(agent: dict, session_id: str,
                     summarize_guard: threading.Lock,
                     summarize_active: set,
@@ -217,7 +225,7 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
             return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [entries_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(entries_to_summarize), MAX_SUMMARIZE_BATCH)]
@@ -351,7 +359,7 @@ def _do_summarize_sqlite(agent: dict, session_id: str, llm_lock: threading.Lock,
         print(f"[AgentRuntime] Summarize skipped (sqlite): no new messages to summarize")
         return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [msgs_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(msgs_to_summarize), MAX_SUMMARIZE_BATCH)]

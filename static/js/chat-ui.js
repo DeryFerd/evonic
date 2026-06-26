@@ -826,6 +826,98 @@ function _renderRecallResult(result) {
     return $wrap;
 }
 
+function _renderRecallThinkResult(result) {
+    const $wrap = $('<div>');
+    const facts = result.facts || [];
+    const gaps  = result.gaps  || [];
+
+    // Header badge
+    const engine = result.engine || '';
+    $wrap.append(
+        $('<div class="text-[10px] font-semibold text-purple-600 dark:text-purple-300 mb-1.5">').text(
+            `🤔 think synthesis${engine ? ' (' + engine + ')' : ''}`
+        )
+    );
+
+    // Query (if present)
+    if (result.query) {
+        $wrap.append($('<div class="text-[10px] text-purple-500 dark:text-purple-400 mb-1.5 italic">').text('Query: "' + result.query + '"'));
+    }
+
+    // Facts
+    if (facts.length) {
+        $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-purple-500 mb-1">').text('Facts (' + facts.length + ')'));
+        for (const f of facts) {
+            const $fact = $('<div class="mb-1 border border-purple-200 rounded px-2 py-1.5 bg-purple-50/50 dark:bg-purple-900/20 dark:border-purple-700">');
+            $fact.append($('<div class="text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words">').text(f.fact));
+            if (f.source || f.evidence) {
+                const $src = $('<div class="flex items-center gap-2 text-[10px] text-purple-400 mt-1">');
+                if (f.source)  $src.append($('<span>').text('source: ' + f.source));
+                if (f.evidence) $src.append($('<span class="text-purple-300">').text(f.evidence));
+                $fact.append($src);
+            }
+            $wrap.append($fact);
+        }
+    }
+
+    // Gaps
+    if (gaps.length) {
+        $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-orange-500 mb-1 mt-2">').text('Knowledge Gaps (' + gaps.length + ')'));
+        for (const g of gaps) {
+            $wrap.append(
+                $('<div class="mb-1 border border-orange-200 rounded px-2 py-1.5 bg-orange-50/50 dark:bg-orange-900/20 dark:border-orange-700">').append(
+                    $('<div class="text-xs text-orange-700 dark:text-orange-300">').text(g)
+                )
+            );
+        }
+    }
+
+    if (!facts.length && !gaps.length) {
+        $wrap.append($('<div class="text-xs text-gray-500 italic">').text('No synthesis results.'));
+    }
+
+    return $wrap;
+}
+
+function _renderRecallGraphResult(result) {
+    const $wrap = $('<div>');
+    const edges = result.edges || [];
+
+    // Header
+    $wrap.append(
+        $('<div class="text-[10px] font-semibold text-purple-600 dark:text-purple-300 mb-1.5">').text('🔗 graph traversal')
+    );
+
+    // Start entity
+    if (result.start) {
+        $wrap.append($('<div class="text-[10px] text-purple-500 dark:text-purple-400 mb-1.5">').text('From: ' + result.start));
+    }
+
+    if (!edges.length) {
+        const msg = result.result || 'No connections found.';
+        return $wrap.add($('<div class="text-xs text-gray-500 italic px-2 py-1">').text(msg));
+    }
+
+    $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-purple-500 mb-1">').text('Connections (' + edges.length + ')'));
+
+    for (const e of edges) {
+        const $edge = $('<div class="mb-1 border border-purple-200 rounded px-2 py-1.5 bg-purple-50/50 dark:bg-purple-900/20 dark:border-purple-700">');
+        const $row = $('<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 text-xs">');
+        $row.append(
+            $('<span class="font-semibold text-gray-700 dark:text-gray-200">').text(e.from || '?'),
+            $('<span class="text-[10px] text-purple-500 font-semibold px-1 py-0.5 bg-purple-100 dark:bg-purple-800 rounded">').text(e.edge || '?'),
+            $('<span class="font-semibold text-gray-700 dark:text-gray-200">').text(e.to || '?')
+        );
+        if (e.hop !== undefined) {
+            $row.append($('<span class="text-[10px] text-gray-400">').text('(hop ' + e.hop + ')'));
+        }
+        $edge.append($row);
+        $wrap.append($edge);
+    }
+
+    return $wrap;
+}
+
 function buildToolResultDetail(ev) {
     if (ev.error) {
         let msg = typeof ev.error === 'string' && ev.error.length > 1 ? ev.error : null;
@@ -851,9 +943,12 @@ function buildToolResultDetail(ev) {
     if (typeof ev.result === 'object' && ev.result !== null && Object.keys(ev.result).length === 1 && 'data' in ev.result && typeof ev.result.data === 'string') {
         return $('<pre class="text-xs bg-gray-50 dark:bg-gray-900 dark:text-gray-300 border border-gray-200 rounded p-2 overflow-x-auto font-mono text-gray-700 max-h-[300px] whitespace-pre-wrap">').text(ev.result.data);
     }
-    // recall — show full memory contents
-    if (ev.tool === 'recall' && typeof ev.result === 'object' && ev.result !== null && 'memories' in ev.result) {
-        return _renderRecallResult(ev.result);
+    // recall — show full memory contents for all modes (fts, think, graph)
+    if (ev.tool === 'recall' && typeof ev.result === 'object' && ev.result !== null) {
+        if ('memories' in ev.result) return _renderRecallResult(ev.result);
+        if ('facts' in ev.result)    return _renderRecallThinkResult(ev.result);
+        if ('edges' in ev.result)    return _renderRecallGraphResult(ev.result);
+        return $('<div class="text-xs text-purple-700 bg-purple-50 border border-purple-200 rounded px-2 py-1">').text(summarizeToolResult(ev.result));
     }
     return $('<div class="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">').text(summarizeToolResult(ev.result));
 }

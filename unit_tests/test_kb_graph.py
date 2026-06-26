@@ -14,14 +14,6 @@ from datetime import datetime, timezone, timedelta
 import pytest
 from unittest.mock import patch
 
-# Anchor to the repo root so the tool-definition path resolves regardless of
-# the pytest working directory.
-_TOOL_JSON = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "tools", "kb_graph.json",
-)
-
-
 # ─── helpers ────────────────────────────────────────────────────────────────
 
 def _make_test_db() -> str:
@@ -82,21 +74,18 @@ def _make_test_db() -> str:
 # ─── Tool registration tests ────────────────────────────────────────────────
 
 class TestToolRegistration:
-    def test_tool_json_exists(self):
-        assert os.path.isfile(_TOOL_JSON)
-
-    def test_tool_json_valid(self):
-        with open(_TOOL_JSON) as f:
-            data = json.load(f)
-        assert data["id"] == "kb_graph"
-        assert data["function"]["name"] == "kb_graph"
-        params = data["function"]["parameters"]
-        assert "filename" in params["properties"]
-        assert "filename" in params["required"]
-
     def test_backend_has_execute(self):
+        # kb_graph is no longer a standalone tool; its execute() is the formatter
+        # behind recall(mode='links').
         from backend.tools.kb_graph import execute
         assert callable(execute)
+
+    def test_recall_links_mode_routes_to_kb_graph(self):
+        # The unified 'recall' tool exposes a 'links' mode in its schema.
+        from backend.tools.registry import _builtin_recall_factory
+        tool_def, _ = _builtin_recall_factory({"id": "test"})
+        modes = tool_def["function"]["parameters"]["properties"]["mode"]["enum"]
+        assert "links" in modes
 
     def test_missing_filename_error(self):
         from backend.tools.kb_graph import execute

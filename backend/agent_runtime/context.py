@@ -483,9 +483,10 @@ def _build_kb_listing(effective_id: str) -> list:
     lines.append("### KB Coaching")
     lines.append(
         "When creating new KB files, add `[[...]]` wiki-links to related "
-        "documents so the knowledge graph stays connected. Use the `kb_graph` "
-        "tool to explore existing link neighborhoods. Keep `_kb_index.md` "
-        "updated when you add or remove KB documents."
+        "documents so the knowledge graph stays connected. Use "
+        "`recall(query='<file>.md', mode='links')` to explore a document's link "
+        "neighborhood. Keep `_kb_index.md` updated when you add or remove KB "
+        "documents."
     )
 
     # Inject notes.md instructions only if notes.md exists in KB

@@ -102,7 +102,9 @@ class TestKbListingIntegration:
         text = "\n".join(result)
         assert "### Graph metadata" not in text  # fallback uses per-file format
         assert "notes.md" in text
-        assert "referenced by: <none>" in text
+        # Empty graph relations are omitted (no noisy "<none>" lines)
+        assert "referenced by" not in text
+        assert "references:" not in text
 
     def test_kb_index_excluded_from_metadata(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
@@ -145,8 +147,8 @@ class TestKbCoaching:
 
         text = "\n".join(result)
         assert "### KB Coaching" in text
-        assert "[[...]]" in text
-        assert "_kb_index.md" in text
+        assert "[[Doc Title]]" in text  # Obsidian-style inline links
+        assert "mode='links'" in text   # recall links-neighborhood guidance
 
     def test_coaching_token_budget(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {

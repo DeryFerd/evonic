@@ -466,8 +466,6 @@ def _build_kb_listing(effective_id: str) -> list:
             incoming = gdata.get("incoming_slugs", [])
             if incoming:
                 lines.append(f"    ↑ referenced by: {', '.join(incoming)}")
-            else:
-                lines.append("    ↑ referenced by: <none>")
 
             outgoing = gdata.get("outgoing_slugs", [])
             if outgoing:
@@ -477,8 +475,6 @@ def _build_kb_listing(effective_id: str) -> list:
                     flag = _compute_staleness_flag(source_ts, tgt, target_updated_at)
                     out_parts.append(tgt + flag)
                 lines.append(f"    → references: {', '.join(out_parts)}")
-            else:
-                lines.append("    → references: <none>")
 
             lines.append("")
 

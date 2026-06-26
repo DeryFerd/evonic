@@ -989,7 +989,7 @@ def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
 
 
 def synthesize_memory(agent_id: str, query: str) -> dict:
-    """Brain-layer synthesis over memory. Backs the `think` built-in tool.
+    """Brain-layer synthesis over memory. Backs `recall(mode='think')`.
 
     Returns composed facts (with citations) plus knowledge gaps. Falls back to
     a plain keyword search when evomem is unavailable or has nothing to say.
@@ -1019,7 +1019,7 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
 
 def graph_lookup(agent_id: str, entity: str, edge_type: str = None,
                  hops: int = 2) -> dict:
-    """Traverse the knowledge graph from an entity. Backs the `graph_query` tool.
+    """Traverse the knowledge graph from an entity. Backs `recall(mode='graph')`.
 
     Resolves a name/alias to a start slug via search, then follows typed edges.
     """

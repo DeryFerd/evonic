@@ -139,6 +139,31 @@ If the new entity name refers to the SAME real-world entity as one of the candid
 Return only the candidate name or null:"""
 
 
+_SINGLE_PIPELINE_PROMPT = """You build a knowledge graph from a conversation summary.
+
+Extract:
+1. Named entities (people, places, organizations, venues, projects, products) with their types
+2. Typed relationships between entities (use ONLY: works_at, founded, invested_in, advises, attended, located_in, lives_in, visited, born_in, part_of, member_of, owns, uses, knows, related_to, mentions)
+3. For each entity, check whether that entity name literally appears in any EXISTING KB document. If YES, note the doc slug (bare filename stem, no extension) and the entity name.
+
+Rules:
+- Use real entity names as they appear; the user is always "User"
+- Prefer the most specific relation; if none fits, use "mentions"
+- For doc_links: ONLY suggest linking if the entity name occurs as actual text in the document body (case-insensitive). Do NOT suggest links to unrelated documents.
+- Return STRICT JSON only, no prose:
+{{
+  "entities": [{{"name": "...", "type": "person|place|organization|venue|project|product", "aliases": ["..."]}}],
+  "relations": [{{"subject": "...", "relation": "works_at", "object": "..."}}],
+  "doc_links": [{{"doc_slug": "...", "entity_name": "..."}}]
+}}
+- If nothing to extract, return: {{"entities": [], "relations": [], "doc_links": []}}
+
+Summary:
+{summary}
+
+Return only the JSON object:"""
+
+
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
     """Try to retrieve memories via evomem hybrid search.
 
@@ -356,6 +381,151 @@ def _extract_and_store_graph(agent_id: str, summary: str,
         return
     except Exception:
         logger.debug("evomem graph extraction exception (non-fatal)")
+        return
+
+
+def _emit_doc_updated(agent_id: str, modified_slugs: list) -> None:
+    """Emit a ``doc_updated`` event so the evomem sync listener fires."""
+    if not modified_slugs:
+        return
+    try:
+        from backend.event_stream import event_stream
+        event_stream.emit('doc_updated', {
+            'agent_id': agent_id,
+            'modified_slugs': modified_slugs,
+        })
+        vlog("knowledge[%s]: emitted doc_updated for %d slug(s)", agent_id, len(modified_slugs))
+    except Exception:
+        logger.debug("_emit_doc_updated failed for %s (non-fatal)", agent_id)
+
+
+def _inline_wikilink(agent_id: str, doc_slug: str, entity_name: str, entity_slug: str) -> int:
+    """Insert an inline wiki-link into an existing KB doc.
+
+    Opens ``kb/<doc_slug>.md``, finds ``entity_name`` in the body (case-insensitive,
+    word-boundary-checked, skipping already-linked occurrences), and replaces them
+    with ``[[entities/<entity_slug>|entity_name]]``.
+
+    Returns the number of replacements made, or 0 on no-op / error.
+    """
+    wikilink_text = f"[[entities/{entity_slug}|{entity_name}]]"
+    return evomem_writer.inline_wikilink_in_file(agent_id, doc_slug, entity_name, wikilink_text)
+
+
+def process_knowledge(agent: dict, session_id: str, summary: str,
+                      llm_lock: threading.Lock) -> None:
+    """Single knowledge pipeline: extract entities, link existing docs, emit sync.
+
+    Replaces the old two-pipeline system (``extract_and_store_kb`` +
+    ``_extract_and_store_graph``). Single LLM call extracts:
+
+    1. Entities (with types and aliases) -- upserted as entity pages
+    2. Relations -- wired as typed edges via blockquotes
+    3. ``doc_links`` -- existing KB docs where the entity name appears
+       -> inline ``[[entities/slug|Name]]`` inserted in the document body
+
+    After all modifications, emits ``doc_updated`` to trigger evomem sync.
+    Best-effort, runs in background; non-fatal on any error.
+    """
+    agent_id = agent['id']
+    if get_engine() != 'evomem':
+        return
+    try:
+        prompt = _SINGLE_PIPELINE_PROMPT.format(summary=summary)
+        with llm_lock:
+            result = llm_client.chat_completion(
+                messages=[{'role': 'user', 'content': prompt}],
+                tools=None, temperature=0.0, enable_thinking=False, max_tokens=None,
+            )
+        if not result.get('success'):
+            return
+        raw = result['response'].get('choices', [{}])[0].get('message', {}).get('content', '')
+        raw, _ = strip_thinking_tags(raw)
+        raw = _strip_code_fences(raw)
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return
+
+        # --- Step 1: Create/update entity pages + typed edges ---
+        name_to_slug = {}
+        for ent in data.get('entities', []):
+            if not isinstance(ent, dict):
+                continue
+            name = (ent.get('name') or '').strip()
+            if not name:
+                continue
+            entity_type = ent.get('type', 'entity')
+            aliases = ent.get('aliases') or []
+
+            # Cross-session coreference: fold variant names (e.g. "Robin" -> "Robin Syihab")
+            canonical = _resolve_existing_entity(agent_id, name, llm_lock)
+            if canonical and evomem_writer.slugify(canonical) != evomem_writer.slugify(name):
+                slug = evomem_writer.upsert_entity_page(
+                    agent_id, canonical, entity_type=entity_type,
+                    aliases=[name, *aliases])
+                if slug:
+                    name_to_slug[name.lower()] = slug
+                    name_to_slug[canonical.lower()] = slug
+            else:
+                slug = evomem_writer.upsert_entity_page(
+                    agent_id, name, entity_type=entity_type, aliases=aliases)
+                if slug:
+                    name_to_slug[name.lower()] = slug
+
+        # --- Step 2: Wire typed edges (relations) ---
+        wrote_edge = False
+        for rel in data.get('relations', []):
+            if not isinstance(rel, dict):
+                continue
+            subj = (rel.get('subject') or '').strip()
+            obj = (rel.get('object') or '').strip()
+            relation = (rel.get('relation') or '').strip()
+            if not subj or not obj or not relation:
+                continue
+            subj_slug = name_to_slug.get(subj.lower()) or \
+                evomem_writer.upsert_entity_page(agent_id, subj)
+            obj_slug = name_to_slug.get(obj.lower()) or \
+                evomem_writer.upsert_entity_page(agent_id, obj)
+            if subj_slug and obj_slug:
+                if evomem_writer.add_edge(agent_id, subj_slug, relation, obj_slug,
+                                            anchor=obj):
+                    wrote_edge = True
+
+        needs_sync = bool(name_to_slug) or wrote_edge
+
+        # --- Step 3: Insert inline wiki-links in existing KB docs ---
+        modified_slugs = []
+        for link in data.get('doc_links', []):
+            if not isinstance(link, dict):
+                continue
+            doc_slug = (link.get('doc_slug') or '').strip()
+            entity_name = (link.get('entity_name') or '').strip()
+            if not doc_slug or not entity_name:
+                continue
+            entity_slug = evomem_writer.slugify(entity_name)
+            if not entity_slug:
+                continue
+            # Ensure entity page exists (it was created in step 1 if extracted)
+            if entity_name.lower() not in name_to_slug:
+                evomem_writer.upsert_entity_page(agent_id, entity_name)
+
+            count = _inline_wikilink(agent_id, doc_slug, entity_name, entity_slug)
+            if count > 0:
+                modified_slugs.append(doc_slug)
+                needs_sync = True
+
+        # --- Step 4: Mark dirty + emit doc_updated ---
+        if needs_sync:
+            evomem_writer.mark_dirty(agent_id)
+            _emit_doc_updated(agent_id, modified_slugs)
+
+        logger.info("[MemoryManager] process_knowledge[%s]: %d entities, %d relations, %d inline-links",
+                    agent_id, len(name_to_slug), len(data.get('relations', []) or []),
+                    len(modified_slugs))
+    except (json.JSONDecodeError, KeyError, ValueError):
+        return
+    except Exception:
+        logger.debug("process_knowledge exception (non-fatal) for %s", agent_id)
         return
 
 

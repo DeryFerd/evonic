@@ -338,6 +338,76 @@ def delete_note(agent_id: str, memory_id) -> bool:
         return False
 
 
+def _replace_with_wikilink(content: str, target_text: str, wikilink_text: str) -> str:
+    """Replace all non-wiki-linked occurrences of *target_text* with *wikilink_text*.
+
+    Case-insensitive matching. Skips occurrences already wrapped in ``[[...]]``
+    (including ``[[entities/slug|Display Name]]`` syntax). Returns modified
+    content, or the original if no unlinked occurrences are found.
+    """
+    if not target_text or not wikilink_text:
+        return content
+    pattern = re.compile(re.escape(target_text), re.IGNORECASE)
+    result = []
+    pos = 0
+
+    for m in pattern.finditer(content):
+        start, end = m.start(), m.end()
+
+        # --- word-boundary check ---
+        non_alnum = lambda ch: not (ch.isalnum() or ch == '_')
+        if start > 0 and not non_alnum(content[start - 1]):
+            # preceded by word character → partial match (e.g. "User" in "Username")
+            continue
+        if end < len(content) and not non_alnum(content[end]):
+            # followed by word character → partial match
+            continue
+
+        # --- already-wiki-linked check ---
+        before = content[max(0, start - 500):start]
+        last_open = before.rfind('[[')
+        last_close = before.rfind(']]')
+        if last_open > last_close:
+            # inside [[...]] → skip (already linked)
+            continue
+        # preceded by |  → inside [[...|...]] syntax
+        if start > 0 and content[start - 1] == '|':
+            continue
+
+        # Not already linked → replace
+        result.append(content[pos:start])
+        result.append(wikilink_text)
+        pos = end
+
+    result.append(content[pos:])
+    return ''.join(result)
+
+
+def inline_wikilink_in_file(agent_id: str, slug: str,
+                            target_text: str, wikilink_text: str) -> int:
+    """Insert inline wiki-link into a KB document, replacing entity mentions.
+
+    Reads the file at ``kb/<slug>.md``, replaces all non-linked occurrences of
+    *target_text* with *wikilink_text* (e.g. ``[[entities/reza|Reza]]``), and
+    writes back atomically. Returns the number of replacements made (0 = no
+    change).
+    """
+    path = _brain_path(agent_id, '', slug)
+    try:
+        with open(path, encoding='utf-8') as f:
+            content = f.read()
+    except FileNotFoundError:
+        return 0
+    new_content = _replace_with_wikilink(content, target_text, wikilink_text)
+    if new_content != content:
+        _atomic_write(path, new_content)
+        count = (len(content) - len(new_content)) // max(len(wikilink_text) - len(target_text), 1)
+        vlog("writer[%s]: inline wikilink %d replacement(s) in %s (%r -> %r)",
+             agent_id, count, slug, target_text, wikilink_text)
+        return count
+    return 0
+
+
 def _do_sync(agent_id: str) -> None:
     with _sync_lock:
         _sync_timers.pop(agent_id, None)

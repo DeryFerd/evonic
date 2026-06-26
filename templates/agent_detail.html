@@ -2047,13 +2047,113 @@ function switchKBTab(tab) {
     } else {
         // Re-render preview from current textarea content
         const textarea = document.getElementById('kb-editor-content');
-        document.getElementById('kb-editor-preview').innerHTML = marked.parse(textarea.value);
+        document.getElementById('kb-editor-preview').innerHTML = renderKBPreview(textarea.value);
         editPanel.classList.add('hidden');
         previewPanel.classList.remove('hidden');
         editBtn.className = editBtn.className.replace(activeClass, inactiveClass);
         previewBtn.className = previewBtn.className.replace(inactiveClass, activeClass);
     }
 }
+
+// ── KB doc preview: format frontmatter + render inline [[wiki-links]] ──
+function _kbSplitFrontmatter(content) {
+    const m = (content || '').match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!m) return { fm: null, body: content || '' };
+    return { fm: m[1], body: m[2] };
+}
+
+function _kbParseFM(raw) {
+    const fm = {};
+    (raw || '').split('\n').forEach(line => {
+        const i = line.indexOf(':');
+        if (i < 0) return;
+        const k = line.slice(0, i).trim();
+        if (!k) return;
+        let v = line.slice(i + 1).trim();
+        if (v.startsWith('[') && v.endsWith(']')) {
+            v = v.slice(1, -1).split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+        } else {
+            v = v.replace(/^["']|["']$/g, '');
+        }
+        fm[k] = v;
+    });
+    return fm;
+}
+
+function _kbFmtDate(s) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? s : d.toLocaleString();
+}
+
+function _kbRenderFrontmatter(raw) {
+    const fm = _kbParseFM(raw);
+    const asList = v => Array.isArray(v) ? v : (v ? [v] : []);
+    const tags = asList(fm.tags), aliases = asList(fm.aliases);
+    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated']);
+    let h = '<div class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">';
+    h += '<div class="flex items-center gap-2 flex-wrap mb-1">';
+    if (fm.type) h += `<span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">${escapeHtml(fm.type)}</span>`;
+    if (fm.title) h += `<span class="text-base font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(fm.title)}</span>`;
+    h += '</div>';
+    if (fm.description) h += `<p class="text-sm text-gray-600 dark:text-gray-300 mt-1 mb-2">${escapeHtml(fm.description)}</p>`;
+    if (tags.length) h += '<div class="flex flex-wrap gap-1 mb-2">' + tags.map(t => `<span class="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300">#${escapeHtml(t)}</span>`).join('') + '</div>';
+    if (aliases.length) h += `<div class="text-xs text-gray-500 dark:text-gray-400 mb-1">aliases: ${aliases.map(escapeHtml).join(', ')}</div>`;
+    const meta = [];
+    if (fm.created) meta.push('created ' + escapeHtml(_kbFmtDate(fm.created)));
+    if (fm.updated) meta.push('updated ' + escapeHtml(_kbFmtDate(fm.updated)));
+    Object.keys(fm).forEach(k => {
+        if (!known.has(k)) meta.push(`${escapeHtml(k)}: ${escapeHtml(Array.isArray(fm[k]) ? fm[k].join(', ') : fm[k])}`);
+    });
+    if (meta.length) h += `<div class="text-xs text-gray-400 dark:text-gray-500">${meta.join(' · ')}</div>`;
+    h += '</div>';
+    return h;
+}
+
+function _kbTransformWikiLinks(body) {
+    return (body || '').replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, target, display) => {
+        const t = (target || '').trim();
+        const label = ((display || target) || '').trim();
+        const attr = escapeHtml(t).replace(/"/g, '&quot;');
+        return `<a href="#" class="kb-wikilink text-indigo-600 dark:text-indigo-400 font-medium no-underline hover:underline" data-wikilink="${attr}">${escapeHtml(label)}</a>`;
+    });
+}
+
+function renderKBPreview(content) {
+    const { fm, body } = _kbSplitFrontmatter(content);
+    const cardHtml = fm !== null ? _kbRenderFrontmatter(fm) : '';
+    const bodyHtml = marked.parse(_kbTransformWikiLinks(body));
+    return cardHtml + bodyHtml;
+}
+
+async function openKBLink(title) {
+    if (!kbGraphData || !kbGraphData.pages) {
+        try {
+            const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
+            kbGraphData = await res.json();
+        } catch (e) { /* ignore */ }
+    }
+    const pages = (kbGraphData && kbGraphData.pages) || {};
+    const want = (title || '').trim().toLowerCase();
+    let slug = null;
+    for (const [s, p] of Object.entries(pages)) {
+        const pt = (p.title || '').trim().toLowerCase();
+        if (pt === want || s.toLowerCase() === want || s.split('/').pop().toLowerCase() === want) { slug = s; break; }
+    }
+    if (slug) editFile(slug + '.md');
+    else showToast(`Document "${title}" doesn't exist yet (empty link).`, 'info');
+}
+
+// Delegated click for inline wiki-links in the preview (attached once).
+(function () {
+    const prev = document.getElementById('kb-editor-preview');
+    if (prev && !prev._wikilinkBound) {
+        prev._wikilinkBound = true;
+        prev.addEventListener('click', function (e) {
+            const a = e.target.closest('.kb-wikilink');
+            if (a) { e.preventDefault(); openKBLink(a.getAttribute('data-wikilink')); }
+        });
+    }
+})();
 
 async function editFile(filename) {
     const res = await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`);
@@ -2065,7 +2165,7 @@ async function editFile(filename) {
     window.kbEditorOriginalContent = data.content;
     document.getElementById('kb-editor-modal').classList.remove('hidden');
     // Render preview and show Preview tab by default
-    document.getElementById('kb-editor-preview').innerHTML = marked.parse(data.content);
+    document.getElementById('kb-editor-preview').innerHTML = renderKBPreview(data.content);
     document.getElementById('kb-editor-preview').classList.remove('hidden');
     document.getElementById('kb-editor-edit-panel').classList.add('hidden');
     document.getElementById('kb-tab-preview').className = 'px-4 py-2 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600 transition-colors';

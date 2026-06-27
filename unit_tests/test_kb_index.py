@@ -91,7 +91,7 @@ class TestKbListingIntegration:
 
     def test_index_missing_fallback(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
-            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "evonic.md": '---\ndescription: Notes\n---\ncontent',
         })
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -101,7 +101,7 @@ class TestKbListingIntegration:
 
         text = "\n".join(result)
         assert "### Graph metadata" not in text  # fallback uses per-file format
-        assert "notes.md" in text
+        assert "evonic.md" in text
         # Empty graph relations are omitted (no noisy "<none>" lines)
         assert "referenced by" not in text
         assert "references:" not in text
@@ -109,7 +109,7 @@ class TestKbListingIntegration:
     def test_kb_index_excluded_from_metadata(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
             "_kb_index.md": '---\ndescription: Index\ntags: [meta, index]\n---\n\n# Index\n',
-            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "evonic.md": '---\ndescription: Notes\n---\ncontent',
         })
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -137,7 +137,7 @@ class TestKbListingIntegration:
 class TestKbCoaching:
     def test_coaching_injected(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
-            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "evonic.md": '---\ndescription: Notes\n---\ncontent',
         })
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -152,7 +152,7 @@ class TestKbCoaching:
 
     def test_coaching_token_budget(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
-            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "evonic.md": '---\ndescription: Notes\n---\ncontent',
         })
         from backend.agent_runtime.context import _build_kb_listing
 

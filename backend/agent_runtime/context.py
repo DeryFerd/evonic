@@ -607,7 +607,7 @@ def _build_kb_listing(effective_id: str) -> list:
     )
     lines.append(
         "1. Save the image as an artifact first using "
-        "`save_artifact(source_path=\"...\")`"
+        "`save_artifact(source_path="...")`"
     )
     lines.append(
         "2. Reference it using markdown image format: "
@@ -618,56 +618,11 @@ def _build_kb_listing(effective_id: str) -> list:
         "won't render in the KB viewer"
     )
     lines.append(
-        "4. NEVER just mention \"ada foto\" without embedding it — always use "
+        "4. NEVER just mention "ada foto" without embedding it — always use "
         "the proper `![...](...)` markdown syntax"
     )
 
-    # Inject notes.md instructions only if notes.md exists in KB
-    if 'notes.md' in files:
-        lines.append("")
-        lines.append("### Notes.md - User Preferences & Instructions")
-        lines.append(
-            "You have a `notes.md` file in your KB. This file is your primary "
-            "location for storing your user's personal preferences, tastes, "
-            "language preferences, and communication style instructions."
-        )
-        lines.append("")
-        lines.append("**Use notes.md for:**")
-        lines.append(
-            "- User's preferred language (e.g., 'User prefers Bahasa Indonesia')"
-        )
-        lines.append(
-            "- Communication style preferences (e.g., 'User likes concise "
-            "answers', 'User dislikes emoji')"
-        )
-        lines.append("- Personal instructions (e.g., 'Call the user Pak')")
-        lines.append(
-            "- Tastes and preferences (e.g., 'User prefers bullet points "
-            "over paragraphs')"
-        )
-        lines.append("")
-        lines.append("**Do NOT put in notes.md -- use `remember` instead:**")
-        lines.append(
-            "- Factual/memorization data: addresses, phone numbers, email, birthday"
-        )
-        lines.append(
-            "- Secret/sensitive data: passwords, tokens, PINs, secret codes, "
-            "bank accounts"
-        )
-        lines.append("")
-        lines.append("**Usage rules:**")
-        lines.append('- Read this file: `read_file(file_path=\"/_self/kb/notes.md\")`')
-        lines.append(
-            "- Update via `write_file` with path `/_self/kb/notes.md`"
-        )
-        lines.append(
-            "- Update immediately when the user communicates a new preference"
-        )
-        lines.append(
-            "- Prioritize notes.md over `remember` for non-factual preference "
-            "information"
-        )
-
+    return lines
 
 
 def _build_static_prompt(agent: Dict[str, Any]) -> str:

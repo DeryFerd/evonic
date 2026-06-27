@@ -574,8 +574,8 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
         <div id="kb-graph-container" class="absolute inset-0">
             <div id="kb-graph-svg" class="w-full h-full bg-gray-50 dark:bg-gray-900 rounded-lg"></div>
 
-            <!-- Overlay: Search bar (top-left) -->
-            <div class="absolute top-4 left-4 z-10">
+            <!-- Overlay: Search bar + type filters (top-left, stacked) -->
+            <div class="absolute top-4 left-4 z-10 flex flex-col items-start gap-1.5">
                 <div class="relative">
                     <input type="text" id="kb-graph-search" placeholder="Search nodes..." autocomplete="off"
                            class="pl-3 pr-8 py-2 w-48 sm:w-64 bg-white/80 dark:bg-gray-800 backdrop-blur-sm border border-gray-200 dark:border-gray-600 rounded-lg text-sm shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/50 dark:text-gray-100 dark:placeholder-gray-400"
@@ -584,6 +584,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                     </button>
                 </div>
+                <div id="kb-type-filters" class="hidden flex flex-col items-start gap-1"></div>
             </div>
 
             <!-- Overlay: Action buttons (top-right) -->
@@ -2504,11 +2505,13 @@ function toggleOrphans() {
 }
 
 let _kbSearchTimer = null;
+let _kbActiveTypeFilters = new Set();
+
 function searchKBGraph(query) {
     const clearBtn = document.getElementById('kb-graph-search-clear');
     if (clearBtn) clearBtn.classList.toggle('hidden', !query);
     clearTimeout(_kbSearchTimer);
-    _kbSearchTimer = setTimeout(() => _applyKBGraphSearch(query), 150);
+    _kbSearchTimer = setTimeout(() => _applyGraphFilters(), 150);
 }
 
 function clearKBGraphSearch() {
@@ -2517,43 +2520,78 @@ function clearKBGraphSearch() {
     searchKBGraph('');
 }
 
-function _applyKBGraphSearch(query) {
-    const q = (query || '').toLowerCase().trim();
+function toggleTypeFilter(type) {
+    if (_kbActiveTypeFilters.has(type)) _kbActiveTypeFilters.delete(type);
+    else _kbActiveTypeFilters.add(type);
+    _renderTypeFilterChips();
+    _applyGraphFilters();
+}
+
+function _renderTypeFilterChips() {
+    const el = document.getElementById('kb-type-filters');
+    if (!el) return;
+    el.querySelectorAll('[data-type]').forEach(btn => {
+        const t = btn.getAttribute('data-type');
+        const active = _kbActiveTypeFilters.has(t);
+        const color = btn.getAttribute('data-color');
+        if (active) {
+            btn.style.background = color;
+            btn.style.color = '#fff';
+            btn.style.borderColor = color;
+        } else {
+            btn.style.background = '';
+            btn.style.color = '';
+            btn.style.borderColor = '';
+        }
+    });
+}
+
+function _applyGraphFilters() {
     const svg = d3.select('#kb-graph-svg svg');
     if (!svg.node()) return;
 
-    if (!q) {
+    const q = (document.getElementById('kb-graph-search').value || '').toLowerCase().trim();
+    const hasSearch = !!q;
+    const hasTypeFilter = _kbActiveTypeFilters.size > 0;
+
+    if (!hasSearch && !hasTypeFilter) {
         svg.selectAll('.kb-node').classed('kb-node-dimmed', false).classed('kb-node-match', false);
         svg.selectAll('line').classed('kb-link-dimmed', false);
         return;
     }
 
-    const matchIds = new Set();
+    const visibleIds = new Set();
+    const searchMatchIds = new Set();
+
     svg.selectAll('.kb-node').each(function(d) {
-        if (d && (
+        if (!d) return;
+        const passesType = !hasTypeFilter || _kbActiveTypeFilters.has(d.type);
+        const passesSearch = !hasSearch || (
             (d.fullTitle || '').toLowerCase().includes(q) ||
             (d.id || '').toLowerCase().includes(q) ||
             (d.tags || []).some(t => t.toLowerCase().includes(q)) ||
             (d.type || '').toLowerCase().includes(q)
-        )) matchIds.add(d.id);
+        );
+        if (passesType && passesSearch) visibleIds.add(d.id);
+        if (hasSearch && passesSearch) searchMatchIds.add(d.id);
     });
 
     svg.selectAll('.kb-node')
-        .classed('kb-node-dimmed', d => !matchIds.has(d.id))
-        .classed('kb-node-match', d => matchIds.has(d.id));
+        .classed('kb-node-dimmed', d => !visibleIds.has(d.id))
+        .classed('kb-node-match', d => hasSearch && searchMatchIds.has(d.id) && visibleIds.has(d.id));
 
     svg.selectAll('line')
         .classed('kb-link-dimmed', d => {
             const srcId = typeof d.source === 'object' ? d.source.id : d.source;
             const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
-            return !matchIds.has(srcId) && !matchIds.has(tgtId);
+            return !visibleIds.has(srcId) && !visibleIds.has(tgtId);
         });
 
-    // Pan viewport to center on the first match
-    if (matchIds.size > 0 && kbGraphZoom && kbGraphSvg) {
+    // Pan to first search match
+    if (hasSearch && searchMatchIds.size > 0 && kbGraphZoom && kbGraphSvg) {
         let target = null;
         svg.selectAll('.kb-node').each(function(d) {
-            if (!target && matchIds.has(d.id)) target = d;
+            if (!target && visibleIds.has(d.id) && searchMatchIds.has(d.id)) target = d;
         });
         if (target && target.x != null && target.y != null) {
             const container = document.getElementById('kb-graph-container');
@@ -2673,6 +2711,29 @@ function renderKBGraph() {
             case 'project':      return '#6366f1';  // indigo
             default:             return '#9ca3af';  // gray fallback
         }
+    }
+
+    // --- Build type filter chips ---
+    const typeSet = new Set();
+    nodes.forEach(n => { if (n.type) typeSet.add(n.type); });
+    const types = [...typeSet].sort();
+    const filterEl = document.getElementById('kb-type-filters');
+    if (types.length > 1) {
+        filterEl.innerHTML = types.map(t => {
+            const color = getNodeColor({ type: t });
+            const active = _kbActiveTypeFilters.has(t);
+            return '<button onclick="toggleTypeFilter(\'' + t + '\')" data-type="' + t + '" data-color="' + color + '"'
+                + ' class="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border cursor-pointer transition-all'
+                + ' bg-white/80 dark:bg-gray-800 border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300'
+                + ' hover:opacity-80 backdrop-blur-sm shadow-sm"'
+                + (active ? ' style="background:' + color + ';color:#fff;border-color:' + color + '"' : '')
+                + '><span class="inline-block w-2 h-2 rounded-full flex-shrink-0" style="background:' + color + '"></span>'
+                + t + '</button>';
+        }).join('');
+        filterEl.classList.remove('hidden');
+    } else {
+        filterEl.innerHTML = '';
+        filterEl.classList.add('hidden');
     }
 
     // --- D3 setup ---
@@ -2824,6 +2885,9 @@ function renderKBGraph() {
 
         node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     });
+
+    // Re-apply active filters after re-render
+    setTimeout(() => _applyGraphFilters(), 50);
 }
 
 // Debounced resize handler for graph

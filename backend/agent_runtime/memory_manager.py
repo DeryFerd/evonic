@@ -22,6 +22,7 @@ import os
 import re
 import json
 import time
+import difflib
 import logging
 import threading
 from typing import List, Optional
@@ -166,6 +167,7 @@ Given the conversation below, file any durable, long-term knowledge into the vau
 - KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
 - NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
 - WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.
+- RETRO-LINK existing docs (IMPORTANT — frequently the MOST valuable work, and easy to miss): once a subject HAS a doc (you just created it, or it already existed), OTHER docs often still mention that subject as PLAIN TEXT because its doc didn't exist when they were written. Your job is to connect them: Grep the vault for the subject's name + aliases, and for each bare mention in another doc's body that is NOT already inside [[ ]], EDIT that doc (action "edit") to wrap it as a [[link]]. Keep `old_str` short and UNIQUE (include a couple of surrounding words so it matches exactly one spot). E.g. old_str "Komisaris Independen Grace Natalie" → new_str "Komisaris Independen [[Grace Natalie]]". Leaving a plain-text mention of an entity that HAS a doc is WRONG — emit one "edit" op per doc that needs linking (it is normal and good for a run to return ONLY edit ops, even when nothing new is created).
 - WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
 - DUPLICATED CONTENT in an existing doc (the same section, or the whole body, appears TWICE — e.g. it was concatenated to itself) → DEDUPE it: action "dedupe" with just the doc's `slug`. This safely removes verbatim repeated blocks; do NOT try to fix duplication with `edit`.
 - Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
@@ -178,7 +180,7 @@ OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
  {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"},
  {"action":"dedupe","slug":"<existing slug with duplicated content>"}
 ]}
-RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str; rename=existing slug + corrected new_title; dedupe=existing slug; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}.
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str (also used to RETRO-LINK plain-text mentions in other docs to a subject that now has a doc); rename=existing slug + corrected new_title; dedupe=existing slug; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "edit" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
 
 Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
@@ -406,13 +408,27 @@ def _iter_balanced_json(text: str):
                 start = -1
 
 
+# Smart/curly double-quotes LLMs sometimes emit for the JSON structure itself
+# (e.g. {“docs“:[]}), which json.loads rejects. Normalized only as a fallback.
+_SMART_DQUOTES = {0x201C: '"', 0x201D: '"', 0x201E: '"', 0x201F: '"', 0x2033: '"'}
+
+
 def _loads_lenient(s: str):
-    """json.loads, tolerant of the two most common LLM JSON slips:
+    """json.loads, tolerant of the most common LLM JSON slips:
     - literal control chars (newlines/tabs) INSIDE string values — very common for
       multi-line ``body``/``old_str`` content — handled via ``strict=False``;
-    - a trailing comma before ``}``/``]``.
+    - a trailing comma before ``}``/``]``;
+    - smart/curly double-quotes used for the JSON structure (tried LAST so valid
+      JSON with curly quotes inside string values is parsed verbatim first).
     """
-    for variant in (s, re.sub(r',(\s*[}\]])', r'\1', s)):
+    smart = s.translate(_SMART_DQUOTES)
+    variants = (
+        s,
+        re.sub(r',(\s*[}\]])', r'\1', s),
+        smart,
+        re.sub(r',(\s*[}\]])', r'\1', smart),
+    )
+    for variant in variants:
         try:
             return json.loads(variant, strict=False)
         except (json.JSONDecodeError, ValueError):
@@ -555,6 +571,127 @@ def _format_recent_messages(recent_messages, n: int = 6, max_chars: int = 4000) 
     return text[-max_chars:] if len(text) > max_chars else text
 
 
+# ── KB organizer delta: feed only what's new since the organizer last filed ──
+# The rolling summary is LLM-regenerated (and re-lists every entity) on each
+# summarization, so handing the organizer the whole thing every run buries the
+# genuinely-new bits. Instead we diff the current summary against the snapshot
+# the organizer last successfully processed (an organizer-OWN cursor, robust to
+# the debounce skips), and feed only the changed regions + a little context.
+
+def _delta_enabled() -> bool:
+    return os.environ.get('EVOMEM_KB_ORGANIZER_DELTA', 'on').strip().lower() \
+        not in ('0', 'off', 'no', 'false')
+
+
+def _delta_context() -> int:
+    """Lines of surrounding context to keep around each changed hunk."""
+    try:
+        return max(0, int(os.environ.get('EVOMEM_KB_ORGANIZER_DELTA_CONTEXT', '2')))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _delta_min_score() -> int:
+    """Minimum delta score (count of genuinely-new content lines) required to
+    bother spawning the organizer. Below this, the run is skipped and the cursor
+    is left un-advanced so small changes accumulate until they're worth a run."""
+    try:
+        return max(0, int(os.environ.get('EVOMEM_KB_ORGANIZER_DELTA_MIN', '3')))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _summary_delta(prev: str, curr: str, context: int):
+    """Return ``(delta_text, score)`` describing what's new in ``curr`` vs ``prev``.
+
+    ``delta_text`` is the inserted/replaced regions of ``curr``, each prefixed with
+    its nearest preceding markdown header and padded with ``context`` lines, hunks
+    joined by an ``…`` separator. ``score`` counts the new-side lines whose stripped
+    content is non-empty AND absent from ``prev`` — so pure reordering / re-listing
+    of existing entities does not inflate it.
+
+    ``prev`` empty (cold start) → ``("", 0)``: the caller feeds the full summary and
+    skips the score gate so the vault still gets seeded.
+    """
+    if not (prev or "").strip() or not (curr or "").strip():
+        return "", 0
+
+    prev_lines = prev.splitlines()
+    curr_lines = curr.splitlines()
+    prev_set = {ln.strip() for ln in prev_lines if ln.strip()}
+
+    sm = difflib.SequenceMatcher(None, prev_lines, curr_lines, autojunk=False)
+    score = 0
+    ranges = []  # (start, end) on curr_lines, context-padded
+    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+        if tag not in ('insert', 'replace'):
+            continue
+        for ln in curr_lines[j1:j2]:
+            s = ln.strip()
+            if s and s not in prev_set:
+                score += 1
+        ranges.append((max(0, j1 - context), min(len(curr_lines), j2 + context)))
+
+    if not ranges:
+        return "", score
+
+    # Merge overlapping/adjacent padded ranges.
+    ranges.sort()
+    merged = [list(ranges[0])]
+    for s, e in ranges[1:]:
+        if s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+
+    def _header_above(idx):
+        for k in range(idx - 1, -1, -1):
+            if curr_lines[k].lstrip().startswith('#'):
+                return curr_lines[k]
+        return None
+
+    out = []
+    last_header = None  # the section header most recently emitted
+    for s, e in merged:
+        chunk = curr_lines[s:e]
+        hdr = _header_above(s)
+        if out:
+            out.append("…")  # separator between non-adjacent hunks
+        # Prepend the section header only when it differs from the one already
+        # emitted — otherwise every hunk inside the same section would repeat
+        # "## Entities & Relationships" (the bug seen in organizer prompts).
+        if hdr and hdr != last_header and hdr not in chunk:
+            out.append(hdr)
+        out.extend(chunk)
+        inner_headers = [ln for ln in chunk if ln.lstrip().startswith('#')]
+        if inner_headers:
+            last_header = inner_headers[-1]
+        elif hdr:
+            last_header = hdr
+
+    return ("\n".join(out).strip(), score)
+
+
+def _organized_snapshot_key(agent_id: str, session_id: str) -> str:
+    return f"kb_organizer_last_summary:{agent_id}:{session_id}"
+
+
+def _load_organized_snapshot(agent_id: str, session_id: str) -> str:
+    """Summary the organizer last successfully processed for this (agent, session)."""
+    try:
+        return db.get_setting(_organized_snapshot_key(agent_id, session_id)) or ""
+    except Exception:  # noqa: BLE001 — best-effort; treat as cold start
+        return ""
+
+
+def _save_organized_snapshot(agent_id: str, session_id: str, summary: str) -> None:
+    """Advance the organizer cursor to the full current summary (the new baseline)."""
+    try:
+        db.set_setting(_organized_snapshot_key(agent_id, session_id), summary or "")
+    except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
+        logger.debug("[MemoryManager] could not save organizer snapshot: %s", e)
+
+
 # Per-agent organizer concurrency control: at most ONE organizer sub-agent runs
 # per agent at a time (no double-spawn), rate-limited to one run per debounce
 # window (default 60s; EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS to tune, 0 disables).
@@ -622,7 +759,8 @@ def _organizer_docs_from(agent_id, explorer_id, session_id, event_answer):
     return None
 
 
-def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
+def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
+                        source_label: str = "SUMMARY / NOTE (what to file)"):
     """Run the Knowledge Organizer sub-agent over the agent's server-local KB and
     return the parsed ``docs`` list of write-ops, or ``None`` on any failure/timeout.
 
@@ -706,7 +844,7 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
         if recent_text and recent_text.strip():
             parts.append("RECENT CONVERSATION (latest turns):\n" + recent_text.strip())
         if source_text and source_text.strip():
-            parts.append("SUMMARY / NOTE (what to file):\n" + source_text.strip())
+            parts.append(f"{source_label}:\n" + source_text.strip())
         task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
                     "Grep/Glob/Read and file any durable knowledge from the conversation "
                     "above into the right docs. Output ONLY the JSON object.")
@@ -816,6 +954,22 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         docs = None
         name_to_slug = {}
         if use_organizer and _kb_organizer_infra_ok():
+            # Diff the current summary against what the organizer last filed and
+            # feed only that delta (+ context). Skip the spawn when too little is
+            # new — leaving the cursor un-advanced so small changes accumulate.
+            delta_mode = _delta_enabled()
+            prev_snapshot = _load_organized_snapshot(agent_id, session_id) if delta_mode else ""
+            if delta_mode:
+                delta_text, delta_score = _summary_delta(
+                    prev_snapshot, source_text, _delta_context())
+                if prev_snapshot and delta_score < _delta_min_score():
+                    logger.debug("[MemoryManager] author_docs[%s]: delta score %d < %d; "
+                                 "skipping organizer (not enough new to file)",
+                                 agent_id, delta_score, _delta_min_score())
+                    return
+            else:
+                delta_text = ""
+
             # One organizer per agent at a time, debounced — never double-spawn.
             if not _organizer_try_claim(agent_id, _organizer_debounce_seconds()):
                 logger.debug("[MemoryManager] author_docs[%s]: organizer busy or "
@@ -823,13 +977,22 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 return
             try:
                 recent_text = _format_recent_messages(recent_messages)
-                docs = _spawn_kb_organizer(agent, source_text, recent_text)
+                if delta_mode and delta_text.strip():
+                    feed_text, source_label = delta_text, "WHAT'S NEW SINCE LAST FILING"
+                else:
+                    feed_text, source_label = source_text, "SUMMARY / NOTE (what to file)"
+                docs = _spawn_kb_organizer(agent, feed_text, recent_text,
+                                           source_label=source_label)
             finally:
                 _organizer_release(agent_id)
             if docs is None:
                 logger.info("[MemoryManager] author_docs[%s]: organizer returned nothing "
                             "(skipping to avoid duplicates)", agent_id)
                 return
+            # Organizer ran (returned ops, possibly empty) — advance the cursor to
+            # the full current summary so the next run diffs against this point.
+            if delta_mode:
+                _save_organized_snapshot(agent_id, session_id, source_text)
         else:
             # Legacy author can't explore — give it the full vault listing + a
             # title/alias map for alias-aware resolution.

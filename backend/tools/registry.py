@@ -388,7 +388,7 @@ class ToolRegistry:
         skills path, whose hardcoded 'tools.<name>' spec shares one parent
         package across all skills).
 
-        'plugin_tools_<id>' is deliberately NOT under the 'plugin_pkg_<id>'
+    'plugin_tools_<id>' is deliberately NOT under the 'plugin_pkg_<id>'
         prefix that _unload_plugin evicts: helper submodules holding
         long-lived singletons (e.g. subprocess managers) survive
         reload_plugin, which runs on every plugin config save. Tradeoff:
@@ -413,6 +413,85 @@ class ToolRegistry:
             sys.modules.pop(mod_name, None)
             raise
         return module
+
+
+def _builtin_read_kb_file_factory(agent_context: dict, base_dir: str, workplace_id: str = ""):
+    """Factory for the built-in 'read' tool for reading KB files."""
+    # Tailor description for remote agents who see /_self/kb/ in their system prompt
+    _is_remote = bool(workplace_id)
+    _desc = (
+        "Read a file from this agent's knowledge base (KB). "
+        + ("Pass a bare filename (e.g. 'evonic.md') or a /_self/ path (e.g. '/_self/kb/evonic.md'). "
+           if _is_remote else
+           "Pass a bare filename only \u2014 no paths (e.g. 'evonic.md', not '/kb/evonic.md'). ")
+        + "This tool is ONLY for KB files. "
+        "To read any other file (source code, logs, workspace files), use read_file instead."
+    )
+    _param_desc = (
+        "Bare KB filename (e.g. 'evonic.md') or /_self/ path (e.g. '/_self/kb/evonic.md')."
+        if _is_remote else
+        "Bare KB filename, e.g. 'evonic.md'. No slashes or paths."
+    )
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": _desc,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string",
+                        "description": _param_desc
+                    }
+                },
+                "required": ["filename"]
+            }
+        }
+    }
+
+    def executor(args: dict) -> dict:
+        filename = args.get('filename', '')
+
+        # /_self/ path: resolve to the agent's local directory on the evonic server.
+        # Remote agents get /_self/kb/ injected into their system prompt, so the
+        # LLM naturally passes /_self/kb/notes.md here.  Handle it like the other
+        # file tools (read_file, write_file, etc.) do.
+        from backend.tools._workspace import is_self_path, resolve_self_path
+        # Sub-agents inherit their parent's directory \u2014 use effective agent ID.
+        _agent_id = (agent_context.get("parent_id") if agent_context.get("is_subagent")
+                     else agent_context.get("id", ""))
+        if _agent_id and is_self_path(filename):
+            resolved = resolve_self_path(_agent_id, filename)
+            if not resolved:
+                return {"error": "Access denied \u2014 path escapes agent directory."}
+            if not os.path.isfile(resolved):
+                return {"error": f"File not found: {filename}"}
+            try:
+                with open(resolved, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                return {"filename": filename, "content": content}
+            except Exception as e:
+                return {"error": f"Read error: {str(e)}"}
+
+        # Security: only bare filenames allowed
+        if '/' in filename or '\\' in filename or '..' in filename:
+            return {"error": "This tool only reads KB files by bare filename (e.g. 'evonic.md'). To read workspace or other files use the read_file tool instead."}
+        filepath = os.path.join(base_dir, filename)
+        filepath = os.path.normpath(filepath)
+        # Double-check we're still inside the KB dir
+        if not filepath.startswith(base_dir):
+            return {"error": "Access denied."}
+        if not os.path.isfile(filepath):
+            return {"error": f"File not found: {filename}"}
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return {"filename": filename, "content": content}
+        except Exception as e:
+            return {"error": f"Read error: {str(e)}"}
+
+    return tool_def, executor
 
 
 def _builtin_clear_log_factory(agent_context: dict):
@@ -835,18 +914,18 @@ def _builtin_recall_factory(agent_context: dict):
                 "(here 'query' is the entity name; use edge_type/hops to steer); "
                 "mode='links' to view a KB document's link neighborhood — outgoing/"
                 "incoming references, broken links, and same-tag docs (here 'query' "
-                "is the KB filename, e.g. 'notes.md'). "
+                "is the KB filename, e.g. 'evonic.md'). "
                 "Examples: recall(query='user phone number'); "
                 "recall(query='what do I know about Acme Corp?', mode='think'); "
                 "recall(query='Andi Wijaya', mode='graph'); "
-                "recall(query='notes.md', mode='links')"
+                "recall(query='evonic.md', mode='links')"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Keywords to search for; the entity name when mode='graph'; or the KB filename (e.g. 'notes.md') when mode='links'."
+                        "description": "Keywords to search for; the entity name when mode='graph'; or the KB filename (e.g. 'evonic.md') when mode='links'."
                     },
                     "mode": {
                         "type": "string",

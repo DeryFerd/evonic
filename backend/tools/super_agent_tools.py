@@ -42,32 +42,6 @@ def _read_system_prompt(agent_id: str) -> str:
     return ''
 
 
-_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
-
-This file stores your user's personal preferences, tastes, language
-preferences, and communication style instructions.
-
-## What to store here
-
-- User's preferred language (e.g. "User prefers Bahasa Indonesia")
-- Communication style preferences (e.g. "User likes concise answers",
-  "User dislikes emoji")
-- Personal instructions (e.g. "Call the user 'Pak'")
-- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
-
-## What NOT to store here (use `remember` instead)
-
-- Factual/memorization data: addresses, phone numbers, email, birthday
-- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
-
-## Usage
-
-- Read this file: read("notes.md")
-- Update via write_file with path /_self/kb/notes.md
-- Update immediately when the user gives a new preference
-- Prioritize notes.md over `remember` for non-factual preference information
-"""
-
 
 # ==================== Tool Definitions ====================
 
@@ -441,11 +415,6 @@ def _exec_create_agent(args: dict) -> dict:
             'workspace': workspace,
         })
         _write_system_prompt(agent_id, args.get('system_prompt', ''))
-        # Create notes.md template if it does not already exist
-        _notes_md = os.path.join(AGENTS_DIR, agent_id, 'kb', 'notes.md')
-        if not os.path.isfile(_notes_md):
-            with open(_notes_md, 'w', encoding='utf-8') as _f:
-                _f.write(_NOTES_MD_TEMPLATE)
         return {'success': True, 'agent_id': agent_id, 'message': f"Agent '{name}' ({agent_id}) created successfully."}
     except Exception as e:
         return {'error': str(e)}
@@ -636,12 +605,6 @@ def _exec_apply_skillset(args: dict) -> dict:
             kb_file_path = os.path.join(kb_dir, fname)
             with open(kb_file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
-
-        # Create notes.md template if it does not already exist
-        _notes_md = os.path.join(kb_dir, 'notes.md')
-        if not os.path.isfile(_notes_md):
-            with open(_notes_md, 'w', encoding='utf-8') as _f:
-                _f.write(_NOTES_MD_TEMPLATE)
 
         return {
             'success': True,

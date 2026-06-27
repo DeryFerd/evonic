@@ -46,7 +46,7 @@ def _seed_graph_data(db_path: str):
 
     docs = [
         # Root docs (source_dir '')
-        (1, "notes.md", "User Notes", "note", "", '["preferences","instructions"]', old),
+        (1, "evonic.md", "User Notes", "note", "", '["preferences","instructions"]', old),
         (2, "howto-report.md", "Report Guide", "note", "", '["guide","reporting"]', old),
         (3, "changelog-format.md", "Changelog Format", "note", "", '["guide"]', newer),
         (4, "api-docs.md", "API Docs", "note", "", '["reference"]', old),
@@ -67,7 +67,7 @@ def _seed_graph_data(db_path: str):
     links = [
         (1, "howto-report.md", 2, "mentions"),
         (1, "changelog-format.md", 3, "mentions"),
-        (3, "notes.md", 1, "mentions"),
+        (3, "evonic.md", 1, "mentions"),
         (3, "api-docs.md", 4, "mentions"),
         # Dangling link (dst_doc_id IS NULL)
         (2, "missing-doc.md", None, "mentions"),
@@ -97,12 +97,12 @@ class TestGetKbGraphMetadata:
 
         assert meta is not None
         pages = meta["pages"]
-        # notes.md has incoming from changelog-format.md (page 3)
-        assert pages["notes.md"]["incoming_count"] == 1
-        assert "changelog-format.md" in pages["notes.md"]["incoming_slugs"]
-        # howto-report.md has incoming from notes.md (page 1)
+        # evonic.md has incoming from changelog-format.md (page 3)
+        assert pages["evonic.md"]["incoming_count"] == 1
+        assert "changelog-format.md" in pages["evonic.md"]["incoming_slugs"]
+        # howto-report.md has incoming from evonic.md (page 1)
         assert pages["howto-report.md"]["incoming_count"] == 1
-        assert "notes.md" in pages["howto-report.md"]["incoming_slugs"]
+        assert "evonic.md" in pages["howto-report.md"]["incoming_slugs"]
 
     def test_outgoing_count_correct(self):
         db_dir = _make_temp_evomem_db()
@@ -115,10 +115,10 @@ class TestGetKbGraphMetadata:
             meta = get_kb_graph_metadata("test-agent")
 
         pages = meta["pages"]
-        # notes.md links to howto-report.md and changelog-format.md
-        assert len(pages["notes.md"]["outgoing_slugs"]) == 2
-        assert "howto-report.md" in pages["notes.md"]["outgoing_slugs"]
-        assert "changelog-format.md" in pages["notes.md"]["outgoing_slugs"]
+        # evonic.md links to howto-report.md and changelog-format.md
+        assert len(pages["evonic.md"]["outgoing_slugs"]) == 2
+        assert "howto-report.md" in pages["evonic.md"]["outgoing_slugs"]
+        assert "changelog-format.md" in pages["evonic.md"]["outgoing_slugs"]
 
     def test_no_links_shows_zero(self):
         db_dir = _make_temp_evomem_db()
@@ -179,7 +179,7 @@ class TestGetKbGraphMetadata:
         # Every live doc is returned (root + workspace), keyed by slug — except
         # inbox/ raw captures.
         assert "inbox/raw" not in pages
-        assert {"notes.md", "howto-report.md", "changelog-format.md",
+        assert {"evonic.md", "howto-report.md", "changelog-format.md",
                 "api-docs.md", "isolated.md"} <= set(pages)
 
     def test_target_updated_at_included(self):
@@ -225,7 +225,7 @@ class TestKbListingFormat:
 
     def test_full_listing_format(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "User guide notes", ["preferences"]),
+            "evonic.md": ("content", "User guide notes", ["preferences"]),
             "api.md": ("content", "API reference", ["reference"]),
         }, tmp_path)
 
@@ -241,12 +241,12 @@ class TestKbListingFormat:
         assert "[[Doc Title]]" in text  # Obsidian-style title links
         assert "### KB Usage" in text
         assert "- api.md" in text
-        assert "- notes.md" in text
+        assert "- evonic.md" in text
         assert "[tags: reference]" in text or "[tags: preferences]" in text
 
     def test_tags_from_frontmatter_displayed(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "desc", ["preferences", "instructions"]),
+            "evonic.md": ("content", "desc", ["preferences", "instructions"]),
         }, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
@@ -260,7 +260,7 @@ class TestKbListingFormat:
 
     def test_file_size_displayed(self, tmp_path):
         content = "x" * 3000  # ~3 KB
-        kb_dir = self._make_fake_kb_dir({"notes.md": (content, "desc", None)}, tmp_path)
+        kb_dir = self._make_fake_kb_dir({"evonic.md": (content, "desc", None)}, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -273,7 +273,7 @@ class TestKbListingFormat:
 
     def test_description_from_frontmatter(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "My important notes", None),
+            "evonic.md": ("content", "My important notes", None),
         }, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
@@ -401,7 +401,7 @@ class TestEdgeCases:
 
         kb_dir = tmp_path / "test-agent" / "kb"
         kb_dir.mkdir(parents=True)
-        fpath = kb_dir / "notes.md"
+        fpath = kb_dir / "evonic.md"
         fpath.write_text(
             f"---\ndescription: {long_desc}\n---\ncontent", encoding="utf-8"
         )
@@ -457,7 +457,7 @@ class TestSubAgentInheritance:
         # Create parent KB
         parent_kb = tmp_path / "parent" / "kb"
         parent_kb.mkdir(parents=True)
-        (parent_kb / "notes.md").write_text(
+        (parent_kb / "evonic.md").write_text(
             "---\ndescription: parent doc\n---\ncontent", encoding="utf-8"
         )
 
@@ -470,7 +470,7 @@ class TestSubAgentInheritance:
             result = _build_kb_listing(eid)
 
         text = "\n".join(result)
-        assert "notes.md" in text
+        assert "evonic.md" in text
         assert "parent doc" in text
 
 

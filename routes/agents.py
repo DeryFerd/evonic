@@ -330,6 +330,17 @@ def api_update_agent(agent_id):
     # Super agent cannot be disabled
     if existing.get('is_super') and data.get('enabled') is False:
         return jsonify({'error': 'Super agent cannot be disabled.'}), 403
+    if 'messaging_acl_mode' in data and data['messaging_acl_mode'] not in ('whitelist', 'blacklist'):
+        return jsonify({'error': "messaging_acl_mode must be 'whitelist' or 'blacklist'."}), 400
+    if 'messaging_acl' in data and data['messaging_acl'] is not None:
+        import json as _json
+        if isinstance(data['messaging_acl'], list):
+            data['messaging_acl'] = _json.dumps(data['messaging_acl'])
+        elif isinstance(data['messaging_acl'], str):
+            try:
+                _json.loads(data['messaging_acl'])
+            except _json.JSONDecodeError:
+                return jsonify({'error': 'messaging_acl must be a JSON array of agent IDs.'}), 400
     target_workplace_id = data.get('workplace_id', existing.get('workplace_id'))
     _apply_sandbox_workplace_policy(data, target_workplace_id)
     if 'system_prompt' in data:

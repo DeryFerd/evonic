@@ -1903,6 +1903,8 @@ class AgentRuntime:
                 'run_as_user': agent.get('run_as_user'),
                 'vision_model_id': agent.get('vision_model_id'),
                 'vision_enabled': agent.get('vision_enabled', 1),
+                'messaging_acl': agent.get('messaging_acl'),
+                'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
             }
         # Propagate agent_message_depth and from_agent_id from incoming message metadata
         if ctx.external_user_id.startswith("__agent__"):

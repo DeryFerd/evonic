@@ -428,7 +428,7 @@ class ChatDelegationMixin:
         # the sub-agent id. Resolve to the parent so message/session lookups hit
         # the DB that actually holds the rows — otherwise the chat panel loads
         # from the sub-agent's empty DB and shows nothing.
-        m = re.match(r'^(.+)_(?:sub|explorer)_\d+$', agent_id)
+        m = re.match(r'^(.+)_(?:sub|explorer|organizer)_\d+$', agent_id)
         if m and self._chat_db(m.group(1)).get_session(session_id):
             return m.group(1)
         return agent_id

@@ -2049,7 +2049,12 @@ class AgentRuntime:
 
         try:
             from backend.llm_usage_events import usage_context
-            _usage_source = 'explorer' if agent.get('is_explorer') else 'agent_turn'
+            if agent.get('is_kb_organizer'):
+                _usage_source = 'kb_organizer'   # distinct usage category for the token monitor
+            elif agent.get('is_explorer'):
+                _usage_source = 'explorer'
+            else:
+                _usage_source = 'agent_turn'
             with usage_context(_usage_source, agent_id, agent.get('name'), ctx.session_id):
                 response_raw, tool_trace, timeline = _loop.run_tool_loop(
                     agent=agent,

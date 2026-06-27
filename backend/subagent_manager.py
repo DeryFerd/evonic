@@ -119,7 +119,7 @@ class SubAgentManager:
 
         return sub_id
 
-    def spawn_explorer(self, parent_agent: Dict[str, Any], build_config) -> str:
+    def spawn_explorer(self, parent_agent: Dict[str, Any], build_config, id_kind: str = 'explorer') -> str:
         """Spawn an explorer sub-agent from a pre-built config (NOT a parent copy).
 
         Unlike ``spawn``, the explorer's config is supplied by ``build_config`` — a
@@ -157,7 +157,9 @@ class SubAgentManager:
             counter = self._counters.get(parent_id, 0) + 1
             self._counters[parent_id] = counter
 
-        explorer_id = f"{parent_id}_explorer_{counter}"
+        # id_kind ('explorer' | 'organizer' | ...) marks the sub-agent's role in
+        # its id so the sessions UI / parent-resolution can label it correctly.
+        explorer_id = f"{parent_id}_{id_kind}_{counter}"
         config = build_config(explorer_id)
 
         sub = SubAgent(explorer_id, parent_id, config)

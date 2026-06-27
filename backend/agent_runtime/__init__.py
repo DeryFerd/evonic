@@ -113,10 +113,16 @@ def _on_summary_updated(event):
     Calls ``process_knowledge()`` which extracts entities, inserts inline
     wiki-links into existing KB docs, and emits ``doc_updated``.
     """
-    payload = event.get('payload', {})
+    # event_stream.emit() delivers the data dict FLAT (no 'payload' wrapper), so
+    # read fields off the event directly. (Falling back to a 'payload' key keeps
+    # this resilient if an emitter ever wraps.)
+    payload = event.get('payload') or event
     agent_id = payload.get('agent_id')
     session_id = payload.get('session_id')
     summary = payload.get('summary')
+    # Latest turns not yet folded into the summary — handed to the Knowledge
+    # Organizer as conversation context so freshly-mentioned info isn't lost.
+    tail_messages = payload.get('tail_messages') or []
     if not (agent_id and session_id and summary):
         return
 
@@ -132,7 +138,8 @@ def _on_summary_updated(event):
     def _run_extract():
         with usage_context('memory', agent_id, agent.get('name'), session_id):
             process_knowledge(agent, session_id, summary,
-                              AgentRuntime._llm_serializer._llm_lock)
+                              AgentRuntime._llm_serializer._llm_lock,
+                              recent_messages=tail_messages)
 
     threading.Thread(target=_run_extract, daemon=True).start()
 

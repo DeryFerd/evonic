@@ -21,6 +21,7 @@ and the evomem static binary via subprocess.
 import os
 import re
 import json
+import time
 import logging
 import threading
 from typing import List, Optional
@@ -144,6 +145,29 @@ SOURCE:
 Return only the JSON object:"""
 
 
+# ---- Knowledge Organizer sub-agent -----------------------------------------
+# A librarian sub-agent that organizes incoming knowledge into the vault. It is a
+# real agent: its WORKSPACE is the KB directory, so it EXPLORES the vault itself
+# with Grep/Glob/Read — we do NOT pre-list docs for it. It returns the write-ops
+# the pipeline applies. Single-brace JSON below is literal (NOT .format()'d).
+_KB_ORGANIZER_SYSTEM_PROMPT = """You are the Knowledge Organizer — a librarian who keeps an AI assistant's personal knowledge vault tidy. The vault is YOUR WORKSPACE: a directory of Markdown docs, each with YAML frontmatter (title, aliases, type, description, tags) and a prose body with inline [[Wiki Links]]. There is NO pre-made index — use your tools (Glob, Grep, Read) to explore the vault and discover what already exists.
+
+Given the conversation below, file any durable, long-term knowledge into the vault. For each subject:
+- EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Robin" is "Robin Syihab"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
+- KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
+- NEW subject → CREATE a doc: full prose with inline [[links]] to every other named subject.
+- MISSPELLED / WRONG doc name (a typo in an existing doc's title) → RENAME it: action "rename" with the existing `slug` and the corrected `new_title`. The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info in the same pass.
+- Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
+
+OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
+{"docs":[
+ {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"images":["<on-topic photo url from the conversation, else omit>"],"body":"<ONLY new prose to append, inline [[Links]]; don't restate existing>"},
+ {"action":"create","title":"<subject>","type":"place","description":"<one-line>","tags":["place"],"images":[],"body":"<FULL prose, inline [[Links]] for every OTHER named entity>"},
+ {"action":"rename","slug":"<existing slug with the typo>","new_title":"<corrected name>","body":"<optional: new prose to also add>"}
+]}
+RULES: the user is always "User"; update=delta-only body + existing slug; create=full body, NO slug; rename=existing slug + corrected new_title; embed photos inline as ![desc](url) only when on-topic; valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}. Output ONLY the JSON object."""
+
+
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
     """Try to retrieve memories via evomem hybrid search.
 
@@ -263,45 +287,22 @@ def switch_collection_tool(agent_id: str, session_id: str, name: str) -> dict:
     return {"result": f"Active collection is now '{folder}'.", "folder": folder}
 
 
-def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80,
-                        source_text: str = "") -> list:
-    """List existing docs as dedupe candidates: [{slug, title, description}].
+def _kb_doc_listing(agent_id: str, limit: int = 400):
+    """Walk the server-local KB and return ``(listing_text, name_to_slug)``.
 
-    Primary path: evomem hybrid search using source_text as query — surfaces docs
-    semantically similar to the content being authored.
-    Fallback: filesystem walk, prioritising active collection + root docs.
+    ``listing_text``: one line per doc — ``[slug] Title (aka a1; a2) :: description`` —
+    shown to the resolver (and the legacy author) as the COMPLETE set of existing
+    docs (replaces the old top-80 ranked search that hid docs from the LLM).
+    ``name_to_slug``: ``{casefold(title|alias): slug}`` — the create-collision guard
+    that keeps an exact title/alias dupe from being minted even if the resolver errs.
     """
-    # --- Primary: evomem hybrid search ---
-    if source_text and get_engine() == 'evomem':
-        try:
-            # Truncate for safety — evomem handles long queries natively,
-            # but we cap at 2000 chars to avoid pathological CLI args.
-            q = source_text[:2000].strip()
-            if q:
-                result = evomem_search(agent_id, q, limit=limit, mode="balanced")
-                if isinstance(result, dict):
-                    hits = result.get("hits")
-                    if hits:
-                        docs = []
-                        for h in hits:
-                            slug = (h.get("slug") or "").strip()
-                            title = (h.get("title") or slug.rsplit('/', 1)[-1]).strip()
-                            desc = (h.get("snippet") or h.get("description") or "")[:160]
-                            docs.append({"slug": slug, "title": title, "description": desc})
-                        if docs:
-                            return docs[:limit]
-        except Exception:
-            logger.debug("_list_existing_docs: evomem search failed for %s, falling back", agent_id)
-
-    # --- Fallback: filesystem walk ---
     kb_dir = f"agents/{agent_id}/kb"
     if not os.path.isdir(kb_dir):
-        return []
-    folder = (folder or "").strip("/")
-    prio, rest = [], []
+        return "(none yet)", {}
+    lines, name_to_slug, count = [], {}, 0
     for root, dirs, fnames in os.walk(kb_dir):
         dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'inbox']
-        for fn in fnames:
+        for fn in sorted(fnames):
             if not fn.endswith('.md') or fn.startswith('.'):
                 continue
             full = os.path.join(root, fn)
@@ -312,103 +313,423 @@ def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80,
                     fm, _ = evomem_writer._parse_frontmatter(f.read())
             except OSError:
                 continue
-            title = fm.get('title') or slug.rsplit('/', 1)[-1]
+            title = (fm.get('title') or slug.rsplit('/', 1)[-1]).strip()
             desc = (fm.get('description') or '')[:160]
-            entry = {"slug": slug, "title": title, "description": desc}
-            seg = slug.split('/', 1)[0] if '/' in slug else ''
-            if (folder and seg == folder) or '/' not in slug:
-                prio.append(entry)
-            else:
-                rest.append(entry)
-    return (prio + rest)[:limit]
+            aliases = fm.get('aliases') or []
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            aliases = [a for a in aliases if isinstance(a, str) and a.strip()]
+            alias_str = f" (aka {'; '.join(aliases)})" if aliases else ""
+            lines.append(f"[{slug}] {title}{alias_str} :: {desc}")
+            if title:
+                name_to_slug.setdefault(title.casefold(), slug)
+            for a in aliases:
+                name_to_slug.setdefault(a.casefold(), slug)
+            count += 1
+            if count >= limit:
+                return ("\n".join(lines), name_to_slug)
+    return ("\n".join(lines) or "(none yet)", name_to_slug)
 
 
-def _resolve_doc_slug(agent_id: str, slug_hint: str, title: str, folder: str):
+def _resolve_doc_slug2(agent_id: str, slug_hint: str, title: str, folder: str,
+                       name_to_slug: dict = None):
     """Resolve to an existing doc slug to update, or None to create a new doc.
 
-    Tries the model's slug hint, then the title-slug inside the active folder,
-    then the title-slug at root — the first that exists on disk wins.
+    Tries, in order: the model's slug hint → an exact title/alias match in
+    ``name_to_slug`` → the title-slug inside the active folder → the title-slug at
+    root. The first that exists on disk wins. Adds title/alias resolution that the
+    old slug-only ``_resolve_doc_slug`` lacked (the duplicate-doc root cause).
     """
     folder = (folder or "").strip("/")
     cands = []
     if slug_hint:
         cands.append(slug_hint.strip("/"))
+    if name_to_slug:
+        hit = name_to_slug.get((title or "").strip().casefold())
+        if hit:
+            cands.append(hit)
     tslug = evomem_writer.slugify(title)
     if tslug:
         if folder:
             cands.append(f"{folder}/{tslug}")
         cands.append(tslug)
+    seen = set()
     for c in cands:
-        if c and evomem_writer.read_doc(agent_id, c) is not None:
-            return c
+        if c and c not in seen:
+            seen.add(c)
+            if evomem_writer.read_doc(agent_id, c) is not None:
+                return c
     return None
 
 
-def _doc_delta(agent_id: str, slug: str, new_body: str,
-               llm_lock: threading.Lock):
-    """Return only the genuinely-new prose to append to an existing doc, or None
-    if the doc already covers it (idempotency guard)."""
-    doc = evomem_writer.read_doc(agent_id, slug)
-    if doc is None:
-        return new_body
-    snippet = _kb_llm_text(
-        _KB_MERGE_SNIPPET_PROMPT.format(existing=doc["body"], content=new_body),
-        llm_lock)
-    if not snippet or snippet.strip().upper() == "NONE":
+def _iter_balanced_json(text: str):
+    """Yield every balanced top-level ``{...}`` substring in ``text``.
+
+    String/escape-aware, so braces inside string literals don't break balancing.
+    Lets us pull the real JSON object out of prose that also contains braces
+    (e.g. "Here's the result: {...}. I've filed it.")."""
+    depth, start, in_str, esc = 0, -1, False, False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                yield text[start:i + 1]
+                start = -1
+
+
+def _loads_lenient(s: str):
+    """json.loads, retrying once with trailing commas stripped (a common LLM slip)."""
+    for variant in (s, re.sub(r',(\s*[}\]])', r'\1', s)):
+        try:
+            return json.loads(variant)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
+
+
+def _coerce_docs(data):
+    """Normalize parsed JSON into a list of doc-ops, or None if it isn't one.
+
+    Accepts the canonical ``{"docs": [...]}``, a bare ``[...]`` array of ops, or a
+    single bare op object — so a model that drops the wrapper still works."""
+    if isinstance(data, dict):
+        if isinstance(data.get("docs"), list):
+            return data["docs"]
+        if data.get("action") or data.get("title"):  # a single, unwrapped op
+            return [data]
+    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
+        return data
+    return None
+
+
+def _parse_organizer_docs(findings: str):
+    """Extract the ``docs`` list of write-ops from the organizer's free-text answer.
+
+    Robust to thinking tags, code fences, surrounding prose, multiple JSON objects,
+    trailing commas, and a missing ``{"docs": ...}`` wrapper. Returns the list
+    (possibly empty) on success, or ``None`` if no valid ops JSON is found.
+    """
+    if not findings or not isinstance(findings, str):
         return None
-    return snippet
+    raw, _ = strip_thinking_tags(findings)
+    raw = _strip_code_fences(raw).strip()
+    # Try the whole payload first, then each balanced {...} object embedded in prose;
+    # return the FIRST candidate that yields a usable ops list.
+    for candidate in (raw, *_iter_balanced_json(raw)):
+        data = _loads_lenient(candidate)
+        if data is not None:
+            docs = _coerce_docs(data)
+            if docs is not None:
+                return docs
+    return None
+
+
+def _kb_organizer_infra_ok() -> bool:
+    """True if the DirExplorer worker skill (the organizer's tools) is enabled."""
+    try:
+        from backend.agent_runtime import explorer
+        return explorer.worker_skill_enabled()
+    except Exception:
+        return False
+
+
+def _format_recent_messages(recent_messages, n: int = 6, max_chars: int = 4000) -> str:
+    """Format the last ``n`` conversation turns as 'User: ... / Assistant: ...' text.
+
+    Gives the organizer the verbatim recent turns (the summarizer's ``tail_messages``,
+    not yet folded into the summary) so it doesn't lose context that a thin summary or
+    single fact would miss.
+    """
+    if not recent_messages:
+        return ""
+    lines = []
+    for m in recent_messages[-n:]:
+        if not isinstance(m, dict):
+            continue
+        role = m.get('role') or ('user' if m.get('type') == 'user' else 'assistant')
+        content = (m.get('content') or '').strip()
+        if not content:
+            continue
+        lines.append(f"{'User' if role == 'user' else 'Assistant'}: {content}")
+    text = "\n".join(lines)
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+# Per-agent organizer concurrency control: at most ONE organizer sub-agent runs
+# per agent at a time (no double-spawn), rate-limited to one run per debounce
+# window (default 60s; EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS to tune, 0 disables).
+_organizer_running: set = set()
+_organizer_last_start: dict = {}
+_organizer_guard = threading.Lock()
+
+
+def _organizer_debounce_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get('EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS', '60')))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _organizer_try_claim(agent_id: str, debounce_s: float) -> bool:
+    """Claim the single per-agent organizer slot. Returns False (skip) if one is
+    already running for this agent or the last run started within the debounce
+    window; otherwise marks it running + records the start and returns True."""
+    now = time.monotonic()
+    with _organizer_guard:
+        if agent_id in _organizer_running:
+            return False  # an instance is already running for this agent
+        if debounce_s > 0 and (now - _organizer_last_start.get(agent_id, 0.0)) < debounce_s:
+            return False  # ran too recently
+        _organizer_running.add(agent_id)
+        _organizer_last_start[agent_id] = now
+        return True
+
+
+def _organizer_release(agent_id: str) -> None:
+    with _organizer_guard:
+        _organizer_running.discard(agent_id)
+
+
+def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
+    """Run the Knowledge Organizer sub-agent over the agent's server-local KB and
+    return the parsed ``docs`` list of write-ops, or ``None`` on any failure/timeout.
+
+    The organizer is a real agent: its workspace is ``agents/{id}/kb`` (resolved via
+    the ``/_self/kb`` virtual path), so it EXPLORES the vault with Grep/Read/Glob —
+    we hand it the recent conversation + the latest note, NOT a pre-built doc list.
+    Read-only, confined to the KB dir; reuses the explorer sub-agent machinery.
+
+    Deadlock-safety: the caller MUST NOT hold an ``_llm_lock`` permit here — the
+    spawned sub-agent's own LLM loop acquires the same BoundedSemaphore.
+    """
+    import threading as _threading
+    try:
+        from backend.subagent_manager import subagent_manager
+        from backend.agent_runtime import explorer
+        from backend.agent_runtime.notifier import notify_agent
+        from backend.tools._workspace import resolve_self_path, effective_agent_id
+        from backend.event_stream import event_stream
+    except Exception:
+        return None
+
+    agent_id = agent.get('id', '')
+    if not agent_id:
+        return None
+
+    # Server-local KB path (works even when the agent runs on a remote/tunnel
+    # workplace — direxplorer Grep/Read/Glob do in-process I/O on the server).
+    kb_abs = resolve_self_path(effective_agent_id(agent), '/_self/kb')
+    if not kb_abs or not os.path.isdir(kb_abs):
+        return None
+
+    tool_ids, tool_err = explorer.resolve_tool_ids('')
+    if tool_err:
+        return None
+
+    timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '120'))
+    skill_cfg = {
+        'system_prompt': _KB_ORGANIZER_SYSTEM_PROMPT,
+        'model_id': os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None,
+    }
+
+    def _build(eid):
+        cfg = explorer.build_config(agent, eid, kb_abs, skill_cfg, tool_ids)
+        # Force server-local execution regardless of the parent's workplace.
+        cfg['workplace_id'] = None
+        cfg['sandbox_enabled'] = 0
+        cfg['run_as_user'] = None
+        # Tag as the KB organizer: a distinct identity from the Explore-tool
+        # explorer so (a) token usage can be categorized clearly by the token
+        # monitor and (b) we can diverge its behaviour later. The read-only
+        # tool restriction itself comes from the generic explorer rule in
+        # build_tools (all explorers get only direxplorer tools).
+        cfg['is_kb_organizer'] = True
+        cfg['name'] = f"{agent.get('name', agent_id)} · kb organizer"
+        return cfg
+
+    try:
+        explorer_id = subagent_manager.spawn_explorer(agent, _build, id_kind='organizer')
+    except Exception:
+        return None
+
+    parent_name = agent.get('name', agent_id)
+    # The organizer is a SILENT background process — it must NOT report its JSON
+    # back to the user's chat. Passing no report_to makes the auto-forward skip.
+    report_to_id, report_to_channel_id = None, None
+
+    answer_box, done = {}, _threading.Event()
+
+    def _on_done(data):
+        if data.get('agent_id') == explorer_id:
+            answer_box['answer'] = data.get('answer', '')
+            done.set()
+
+    event_stream.on('final_answer', _on_done)
+    try:
+        parts = []
+        if recent_text and recent_text.strip():
+            parts.append("RECENT CONVERSATION (latest turns):\n" + recent_text.strip())
+        if source_text and source_text.strip():
+            parts.append("SUMMARY / NOTE (what to file):\n" + source_text.strip())
+        task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
+                    "Grep/Glob/Read and file any durable knowledge from the conversation "
+                    "above into the right docs. Output ONLY the JSON object.")
+        res = notify_agent(
+            agent_id=explorer_id, tag=f"AGENT/{parent_name}", message=task_msg,
+            external_user_id=f"__agent__{agent_id}", channel_id=None, dedup=False,
+            trigger_llm=True,
+            metadata={'agent_message': True, 'from_agent_id': agent_id,
+                      'from_agent_name': parent_name, 'agent_message_depth': 1,
+                      'subagent_spawn': True, 'injected_system_vars': {},
+                      'report_to_id': report_to_id,
+                      'report_to_channel_id': report_to_channel_id})
+        session_id = res.get('session_id')
+        if not res.get('success') or not session_id:
+            return None
+        if not done.wait(timeout=timeout):
+            return None
+        docs = _parse_organizer_docs(answer_box.get('answer', ''))
+        if docs is not None:
+            return docs
+        # One retry: re-prompt the same session for clean JSON.
+        done.clear()
+        answer_box.clear()
+        res2 = notify_agent(
+            agent_id=explorer_id, tag=f"AGENT/{parent_name}",
+            message=("Your previous answer was not valid JSON. Reply with ONLY the "
+                     'JSON object {"docs":[...]} — no prose, no code fences.'),
+            session_id=session_id, dedup=False, trigger_llm=True,
+            metadata={'agent_message': True, 'from_agent_id': agent_id,
+                      'agent_message_depth': 1})
+        if not res2.get('success') or not done.wait(timeout=timeout):
+            return None
+        return _parse_organizer_docs(answer_box.get('answer', ''))
+    except Exception:
+        logger.debug("kb organizer failed for %s", agent_id, exc_info=True)
+        return None
+    finally:
+        event_stream.off('final_answer', _on_done)
+        # Do NOT destroy here: the agent loop may still have trailing activity
+        # (a final context build), and rmtree'ing its DB mid-flight throws
+        # "unable to open database file". Idle cleanup reaps it safely; the
+        # single-instance + debounce guard keeps the per-parent count low.
 
 
 def _author_docs(agent: dict, session_id: str, source_text: str,
-                 llm_lock: threading.Lock) -> None:
-    """Unified knowledge authoring: turn a summary or a remembered fact into
-    rich, inline-linked docs in the active collection.
+                 llm_lock: threading.Lock, recent_messages=None) -> None:
+    """Organize a conversation into the agent's knowledge vault.
 
-    One LLM call authors/updates docs (each rich prose about one subject, with
-    inline ``[[Doc Title]]`` links). New docs are created via ``upsert_doc`` in
-    the active collection folder (root by default); existing docs are appended to
-    (delta only). Emits ``doc_updated`` so the evomem sync wires the graph from
-    the inline links. Best-effort, runs in a background thread.
+    By default a Knowledge Organizer sub-agent EXPLORES the vault itself (Grep/Read/
+    Glob over its workspace) and returns the write-ops (create/update with inline
+    ``[[links]]``); new docs are created via ``upsert_doc`` in the active collection
+    folder (root by default), existing docs are appended to (delta only). Emits
+    ``doc_updated`` so the evomem sync wires the graph. Best-effort, background thread.
+
+    ``recent_messages`` is the summarizer's ``tail_messages`` (latest turns) handed to
+    the organizer as conversation context so freshly-mentioned info isn't lost.
     """
     agent_id = agent['id']
     if get_engine() != 'evomem':
         return
     try:
         folder = _get_active_collection(agent_id, session_id)
-        existing = _list_existing_docs(agent_id, folder, source_text=source_text)
-        existing_text = "\n".join(
-            f"[{d['slug']}] {d['title']} :: {d['description']}" for d in existing
-        ) or "(none yet)"
-        # Fixed authoring guidance for deterministic output — the agent's
-        # summarize_prompt governs *summary style*, not *what to file as knowledge*.
-        prompt = _AUTHOR_DOCS_PROMPT.format(
-            guidance=_DEFAULT_KB_GUIDANCE, existing=existing_text, source=source_text)
-        data = _kb_llm_json(prompt, llm_lock)
-        if not isinstance(data, dict):
-            return
-        docs = data.get('docs')
+
+        # Organize strategy. ON (default): the Knowledge Organizer sub-agent — a real
+        # agent whose workspace IS the KB — explores the vault itself and returns
+        # write-ops, spawned with NO llm_lock held (deadlock-safe). On failure we SKIP
+        # (never fall through to a duplicate-prone author). OFF/legacy (or DirExplorer
+        # unavailable): a single, non-agentic author call that needs the doc list
+        # pre-built (it can't explore).
+        mode = os.environ.get('EVOMEM_KB_ORGANIZER', 'on').strip().lower()
+        use_organizer = mode not in ('0', 'off', 'no', 'legacy')
+        docs = None
+        name_to_slug = {}
+        if use_organizer and _kb_organizer_infra_ok():
+            # One organizer per agent at a time, debounced — never double-spawn.
+            if not _organizer_try_claim(agent_id, _organizer_debounce_seconds()):
+                logger.debug("[MemoryManager] author_docs[%s]: organizer busy or "
+                             "debounced; skipping this run", agent_id)
+                return
+            try:
+                recent_text = _format_recent_messages(recent_messages)
+                docs = _spawn_kb_organizer(agent, source_text, recent_text)
+            finally:
+                _organizer_release(agent_id)
+            if docs is None:
+                logger.info("[MemoryManager] author_docs[%s]: organizer returned nothing "
+                            "(skipping to avoid duplicates)", agent_id)
+                return
+        else:
+            # Legacy author can't explore — give it the full vault listing + a
+            # title/alias map for alias-aware resolution.
+            listing_text, name_to_slug = _kb_doc_listing(agent_id)
+            prompt = _AUTHOR_DOCS_PROMPT.format(
+                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
+            data = _kb_llm_json(prompt, llm_lock)
+            if not isinstance(data, dict):
+                return
+            docs = data.get('docs')
         if not isinstance(docs, list) or not docs:
             return
 
-        modified, created, updated = [], 0, 0
+        modified, created, updated, renamed = [], 0, 0, 0
         for d in docs[:12]:
             if not isinstance(d, dict):
                 continue
+            action = (d.get('action') or '').strip().lower()
             title = (d.get('title') or '').strip()
             body = (d.get('body') or '').strip()
+            slug_hint = (d.get('slug') or '').strip()
+
+            # Rename: fix a typo'd doc name (existing slug -> corrected title).
+            if action == 'rename':
+                new_title = (d.get('new_title') or '').strip()
+                if not slug_hint or not new_title:
+                    continue
+                with _kb_page_lock(agent_id, slug_hint):
+                    new_rel = evomem_writer.rename_doc(agent_id, slug_hint, new_title)
+                    if new_rel:
+                        renamed += 1
+                        modified.append(new_rel)
+                        if body:  # also fold in any new info from the same op
+                            cur = (evomem_writer.read_doc(agent_id, new_rel) or {}).get('body') or ''
+                            if body not in cur:
+                                evomem_writer.append_to_doc(agent_id, new_rel, body)
+                continue
+
             if not title or not body:
                 continue
             doc_type = (d.get('type') or 'note').strip()
             description = (d.get('description') or '').strip()
             tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
-            slug_hint = (d.get('slug') or '').strip()
 
             base_slug = evomem_writer.slugify(title)
             lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
             with _kb_page_lock(agent_id, lock_key):
-                target = _resolve_doc_slug(agent_id, slug_hint, title, folder)
+                # Collision guard: resolve by slug hint -> title/alias -> slug. A
+                # create whose title/alias already exists becomes an update here, so
+                # a duplicate is never minted even if the resolver mislabels the op.
+                target = _resolve_doc_slug2(agent_id, slug_hint, title, folder, name_to_slug)
                 if target:
-                    delta = _doc_delta(agent_id, target, body, llm_lock)
+                    # The resolver already returns delta-only prose; guard against
+                    # re-appending content the doc already contains (no LLM call).
+                    existing_doc = evomem_writer.read_doc(agent_id, target)
+                    existing_body = (existing_doc or {}).get('body') or ''
+                    delta = None if (body and body in existing_body) else body
                     if delta and evomem_writer.append_to_doc(agent_id, target, delta):
                         modified.append(target)
                         updated += 1
@@ -425,18 +746,19 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         if modified:
             evomem_writer.mark_dirty(agent_id)
             _emit_doc_updated(agent_id, modified)
-        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated (folder=%s)",
-                    agent_id, created, updated, folder or 'root')
+        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed (folder=%s)",
+                    agent_id, created, updated, renamed, folder or 'root')
     except Exception:
         logger.debug("author_docs exception (non-fatal) for %s", agent_id)
 
 
 def process_knowledge(agent: dict, session_id: str, summary: str,
-                      llm_lock: threading.Lock) -> None:
-    """Author/update rich, inline-linked knowledge docs from a conversation
-    summary. Triggered on ``summary_updated``; runs in the background extraction
-    thread. Best-effort; non-fatal on any error."""
-    _author_docs(agent, session_id, summary, llm_lock)
+                      llm_lock: threading.Lock, recent_messages=None) -> None:
+    """Author/update rich, inline-linked knowledge docs from a conversation.
+    Triggered on ``summary_updated``; runs in the background extraction thread.
+    ``recent_messages`` is the summarizer's ``tail_messages`` (latest turns) passed
+    to the organizer as context. Best-effort; non-fatal on any error."""
+    _author_docs(agent, session_id, summary, llm_lock, recent_messages=recent_messages)
 
 
 def _extract_dimension(content: str, category: str,
@@ -621,20 +943,6 @@ _DEFAULT_KB_GUIDANCE = (
     "future conversations."
 )
 
-_KB_MERGE_SNIPPET_PROMPT = """An existing KB page already holds some knowledge. You are given new information. Output ONLY the part of the new information that is NOT already present on the page, as a concise markdown snippet (a short sentence or a few bullet points) ready to append to the page.
-
-Rules:
-- Do NOT restate anything already on the page.
-- Do NOT rewrite or return the existing content — output only the genuinely new delta.
-- If the new information is already fully covered by the page, output exactly: NONE
-
-Existing page body:
-{existing}
-
-New information:
-{content}
-
-New delta to append (or NONE):"""
 
 
 def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
@@ -661,31 +969,6 @@ def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
         return json.loads(raw)
     except (json.JSONDecodeError, KeyError, ValueError):
         return None
-    except Exception:
-        return None
-
-
-def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
-    """Run a free-text LLM call; return stripped text or None.
-
-    max_tokens defaults to None (model default) so a thinking model has room to
-    reason before producing the answer (a small cap finishes on length).
-    """
-    try:
-        with llm_lock:
-            result = llm_client.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                tools=None, temperature=0.0, enable_thinking=False,
-                max_tokens=max_tokens)
-        if not result.get('success'):
-            return None
-        choice = result['response'].get('choices', [{}])[0]
-        if choice.get('finish_reason') == 'length':
-            return None
-        raw = choice.get('message', {}).get('content', '')
-        raw, _ = strip_thinking_tags(raw)
-        raw = _strip_code_fences(raw).strip()
-        return raw or None
     except Exception:
         return None
 

@@ -312,6 +312,45 @@ def read_doc(agent_id: str, slug: str) -> dict | None:
     return {"title": fm.get("title", ""), "body": body.strip(), "frontmatter": fm}
 
 
+def rename_doc(agent_id: str, old_slug: str, new_title: str, add_alias: bool = True) -> str:
+    """Rename a doc to fix a typo/misspelled name. Returns the new slug, or ''.
+
+    Renames the file (slug follows the new title) inside the same folder and sets
+    the new ``title``, preserving body/type/description/tags/created. The OLD title
+    is kept as an alias (so existing inline ``[[Old Name]]`` links still resolve)
+    unless ``add_alias`` is False. Old file is removed when the slug actually changes.
+    """
+    doc = read_doc(agent_id, old_slug)
+    if doc is None:
+        return ""
+    fm, body = doc["frontmatter"], doc["body"]
+    old_slug = (old_slug or "").strip("/")
+    folder, _, _base = old_slug.rpartition("/")  # folder == '' when no slash
+    new_base = slugify(new_title)
+    if not new_base:
+        return ""
+    new_rel = f"{folder}/{new_base}" if folder else new_base
+
+    aliases = list(fm.get("aliases") or [])
+    old_title = (fm.get("title") or "").strip()
+    if add_alias and old_title and old_title.casefold() != new_title.strip().casefold() \
+            and old_title not in aliases:
+        aliases.append(old_title)
+
+    rel = upsert_doc(agent_id, title=new_title, body=body,
+                     doc_type=fm.get("type") or "note", description=fm.get("description"),
+                     folder=folder, tags=fm.get("tags") or [], aliases=aliases, slug=new_base)
+    if not rel:
+        return ""
+    if new_rel != old_slug:
+        try:
+            os.remove(_doc_path(agent_id, old_slug))
+        except OSError:
+            pass
+    vlog("writer[%s]: rename_doc %s -> %s", agent_id, old_slug, new_rel)
+    return new_rel
+
+
 def _do_sync(agent_id: str) -> None:
     with _sync_lock:
         _sync_timers.pop(agent_id, None)

@@ -546,53 +546,6 @@ def _build_kb_listing(effective_id: str) -> list:
         "`recall(query='<doc>.md', mode='links')` to explore a doc's link "
         "neighborhood."
     )
-
-    # Inject notes.md instructions only if notes.md exists in KB
-    if 'notes.md' in files:
-        lines.append("")
-        lines.append("### Notes.md - User Preferences & Instructions")
-        lines.append(
-            "You have a `notes.md` file in your KB. This file is your primary "
-            "location for storing your user's personal preferences, tastes, "
-            "language preferences, and communication style instructions."
-        )
-        lines.append("")
-        lines.append("**Use notes.md for:**")
-        lines.append(
-            "- User's preferred language (e.g., 'User prefers Bahasa Indonesia')"
-        )
-        lines.append(
-            "- Communication style preferences (e.g., 'User likes concise "
-            "answers', 'User dislikes emoji')"
-        )
-        lines.append("- Personal instructions (e.g., 'Call the user Pak')")
-        lines.append(
-            "- Tastes and preferences (e.g., 'User prefers bullet points "
-            "over paragraphs')"
-        )
-        lines.append("")
-        lines.append("**Do NOT put in notes.md -- use `remember` instead:**")
-        lines.append(
-            "- Factual/memorization data: addresses, phone numbers, email, birthday"
-        )
-        lines.append(
-            "- Secret/sensitive data: passwords, tokens, PINs, secret codes, "
-            "bank accounts"
-        )
-        lines.append("")
-        lines.append("**Usage rules:**")
-        lines.append('- Read this file: `read(\"notes.md\")`')
-        lines.append(
-            "- Update via `write_file` with path `/_self/kb/notes.md`"
-        )
-        lines.append(
-            "- Update immediately when the user communicates a new preference"
-        )
-        lines.append(
-            "- Prioritize notes.md over `remember` for non-factual preference "
-            "information"
-        )
-
     return lines
 
 
@@ -669,7 +622,7 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
     parts.append(
         "2. If found: store it immediately via remember() (factual data), "
-        "update notes.md (tastes/preferences/style), or update SYSTEM.md (critical rules)."
+        "store it as a preference via remember() for non-factual style notes, or update SYSTEM.md (critical rules)."
     )
     parts.append(
         "3. This applies to BOTH explicit and implicit cues. Even casual mentions count."

@@ -124,38 +124,6 @@ LANGUAGE_PRESETS = {
 }
 
 
-
-# ---------------------------------------------------------------------------
-# Notes.md template
-# ---------------------------------------------------------------------------
-
-_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
-
-This file stores your user's personal preferences, tastes, language
-preferences, and communication style instructions.
-
-## What to store here
-
-- User's preferred language (e.g. "User prefers Bahasa Indonesia")
-- Communication style preferences (e.g. "User likes concise answers",
-  "User dislikes emoji")
-- Personal instructions (e.g. "Call the user 'Pak'")
-- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
-- Execution instructions (e.g. "Always use tmux/screen/nohup for long-running programs like cmake/make build, unit testing, benchmarking, etc.")
-
-## What NOT to store here (use `remember` instead)
-
-- Factual/memorization data: addresses, phone numbers, email, birthday
-- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
-
-## Usage
-
-- Read this file: read("notes.md")
-- Update via write_file with path /_self/kb/notes.md
-- Update immediately when the user gives a new preference
-- Prioritize notes.md over `remember` for non-factual preference information
-"""
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -451,13 +419,6 @@ def run_setup(
             _kb_dir = os.path.join(config.BASE_DIR, "agents", agent_id, "kb")
             os.makedirs(_kb_dir, exist_ok=True)
             shutil.copy2(_evonet_kb, os.path.join(_kb_dir, "evonet.md"))
-
-        # 4.6 Create notes.md template for user preferences
-        _notes_md_path = os.path.join(config.BASE_DIR, "agents", agent_id, "kb", "notes.md")
-        if not os.path.isfile(_notes_md_path):
-            os.makedirs(os.path.dirname(_notes_md_path), exist_ok=True)
-            with open(_notes_md_path, 'w', encoding='utf-8') as _f:
-                _f.write(_NOTES_MD_TEMPLATE)
 
         # 5. Assign default tools
         db.set_agent_tools(

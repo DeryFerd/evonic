@@ -151,6 +151,6 @@ def test_execute():
     assert ".md" in result["error"]
 
     # Missing agent_id
-    result = execute({}, {"filename": "notes.md"})
+    result = execute({}, {"filename": "evonic.md"})
     assert "error" in result
     assert "agent_id" in result["error"]

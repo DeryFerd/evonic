@@ -42,8 +42,8 @@ _PASSIVE_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_PASSIVE", "conservativ
 _RECALL_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_RECALL", "tokenmax")
 
 # Cross-session entity coreference uses one LLM call PER extracted entity to
-# decide if a variant name ("Robin") is the same as an existing page ("Robin
-# Syihab"). On a slow/thinking model that dominates graph-extraction latency, so
+# decide if a variant name ("Andi") is the same as an existing page ("Andi
+# Wijaya"). On a slow/thinking model that dominates graph-extraction latency, so
 # it is OFF by default — exact-slug dedup still merges identical names without an
 # LLM call. Set EVOMEM_ENTITY_COREF=1 to re-enable (only worth it on a fast model).
 _ENTITY_COREF_LLM = os.environ.get("EVOMEM_ENTITY_COREF", "0").strip().lower() \
@@ -94,7 +94,7 @@ The dimension is a dot-separated path that uniquely identifies WHAT aspect of kn
 Examples:
 - "User prefers Javanese language" → "user.language_preference"
 - "User's phone number is 08123456" → "user.phone_number"
-- "User's name is Robin" → "user.name"
+- "User's name is Andi" → "user.name"
 - "User prefers dark mode" → "user.ui_preference.theme"
 - "Always respond in formal tone" → "instruction.tone"
 - "User decided to use PostgreSQL for the project" → "decision.database_choice"
@@ -162,7 +162,7 @@ LINKING IS MANDATORY — every named entity you mention in a `body` MUST be wrap
 IMAGES — there is NO separate images field. If the conversation provides a relevant photo/image URL for a subject, you MUST embed it INLINE in that doc's `body` as Markdown: `![brief description](image-url)` (put it near the top of the body or in the relevant paragraph). An image is saved ONLY if it is in the `body` — a URL placed anywhere else is lost. Only embed photos directly relevant to the subject; skip generic/unrelated ones.
 
 Given the conversation below, file any durable, long-term knowledge into the vault. For each subject:
-- EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Robin" is "Robin Syihab"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
+- EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Andi" is "Andi Wijaya"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
 - KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
 - NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
 - WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.

@@ -119,6 +119,7 @@ How to write a document:
 - Weave Obsidian-style [[Wiki Links]] INLINE into your sentences for every OTHER named subject you mention (the link text is that subject's display name). The link is part of the prose — NEVER a separate "Relations"/"Links" list at the bottom.
   GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
   BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
+- If the SOURCE mentions or includes relevant photos/images, embed them inline in the `body` using Markdown: `![brief description](image-url)`. Only include photos that are directly relevant to the document's subject — skip unrelated or generic images.
 - Choose a `type` for each document from: note, person, place, venue, event, organization, company, product, contact.
 - The user is always referred to as "User".
 
@@ -127,10 +128,10 @@ Deduplication:
 
 Skip ephemeral chatter, pleasantries, and transient/in-progress task status.
 
-Return STRICT JSON only, no prose:
+Return STRICT JSON only, no prose. Each doc may optionally include an `images` array of relevant photo URLs to attach:
 {{"docs": [
-  {{"action": "create", "title": "Jakarta", "type": "place", "description": "Capital of Indonesia; User's home city.", "tags": ["place"], "body": "Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]]."}},
-  {{"action": "update", "slug": "<existing slug>", "title": "...", "type": "note", "description": "...", "tags": ["..."], "body": "<only the new prose to append, with inline [[links]]>"}}
+  {{"action": "create", "title": "Jakarta", "type": "place", "description": "Capital of Indonesia; User's home city.", "tags": ["place"], "images": [], "body": "Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]]."}},
+  {{"action": "update", "slug": "<existing slug>", "title": "...", "type": "note", "description": "...", "tags": ["..."], "images": [], "body": "<only the new prose to append, with inline [[links]]>"}}
 ]}}
 If nothing is worth keeping long-term, return: {{"docs": []}}
 

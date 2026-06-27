@@ -576,12 +576,12 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
             <!-- Overlay: Search bar (top-left) -->
             <div class="absolute top-4 left-4 z-10">
                 <div class="relative">
-                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-                    </svg>
                     <input type="text" id="kb-graph-search" placeholder="Search nodes..." autocomplete="off"
-                           class="pl-9 pr-3 py-2 w-48 sm:w-64 bg-white/80 dark:bg-gray-800 backdrop-blur-sm border border-gray-200 dark:border-gray-600 rounded-lg text-sm shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/50 dark:text-gray-100 dark:placeholder-gray-400"
+                           class="pl-3 pr-8 py-2 w-48 sm:w-64 bg-white/80 dark:bg-gray-800 backdrop-blur-sm border border-gray-200 dark:border-gray-600 rounded-lg text-sm shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/50 dark:text-gray-100 dark:placeholder-gray-400"
                            oninput="searchKBGraph(this.value)">
+                    <button id="kb-graph-search-clear" onclick="clearKBGraphSearch()" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer hidden" type="button">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
                 </div>
             </div>
 
@@ -2438,6 +2438,8 @@ let kbGraphMode = 'graph';
 let kbGraphData = null;
 let kbGraphSimulation = null;
 let kbGraphShowOrphans = true;
+let kbGraphZoom = null;
+let kbGraphSvg = null;
 
 async function loadKBGraph() {
     try {
@@ -2502,8 +2504,16 @@ function toggleOrphans() {
 
 let _kbSearchTimer = null;
 function searchKBGraph(query) {
+    const clearBtn = document.getElementById('kb-graph-search-clear');
+    if (clearBtn) clearBtn.classList.toggle('hidden', !query);
     clearTimeout(_kbSearchTimer);
     _kbSearchTimer = setTimeout(() => _applyKBGraphSearch(query), 150);
+}
+
+function clearKBGraphSearch() {
+    const input = document.getElementById('kb-graph-search');
+    if (input) { input.value = ''; input.focus(); }
+    searchKBGraph('');
 }
 
 function _applyKBGraphSearch(query) {
@@ -2537,6 +2547,25 @@ function _applyKBGraphSearch(query) {
             const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
             return !matchIds.has(srcId) && !matchIds.has(tgtId);
         });
+
+    // Pan viewport to center on the first match
+    if (matchIds.size > 0 && kbGraphZoom && kbGraphSvg) {
+        let target = null;
+        svg.selectAll('.kb-node').each(function(d) {
+            if (!target && matchIds.has(d.id)) target = d;
+        });
+        if (target && target.x != null && target.y != null) {
+            const container = document.getElementById('kb-graph-container');
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            const currentTransform = d3.zoomTransform(kbGraphSvg.node());
+            const scale = currentTransform.k;
+            const tx = w / 2 - target.x * scale;
+            const ty = h / 2 - target.y * scale;
+            kbGraphSvg.transition().duration(400)
+                .call(kbGraphZoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        }
+    }
 }
 
 // Enable/disable the custom summarizer prompt textarea based on the override checkbox.
@@ -2660,6 +2689,8 @@ function renderKBGraph() {
             g.attr('transform', event.transform);
         });
     svg.call(zoom);
+    kbGraphZoom = zoom;
+    kbGraphSvg = svg;
 
     // Dark mode detection
     const isDark = document.documentElement.classList.contains('dark');

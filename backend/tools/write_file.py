@@ -118,8 +118,28 @@ def write_file(
             'edit_recipe': recipe,
         }
 
-    # Create parent directories
+    # Name-collision check: warn when creating a file that has a sibling
+    # file or directory with the same stem name. Non-blocking — the write
+    # still proceeds, but the agent gets a nudge to reconsider.
     parent = os.path.dirname(abs_path)
+    stem = os.path.splitext(os.path.basename(abs_path))[0]
+    sibling_dir = os.path.join(parent, stem)
+    sibling_md = os.path.join(parent, f"{stem}.md")
+    collision_warning = None
+    if os.path.isdir(sibling_dir):
+        collision_warning = (
+            f"Sibling directory '{stem}' already exists at this level. "
+            f"Did you mean to update an existing file inside that directory "
+            f"using str_replace/patch instead of creating a new file?"
+        )
+    elif os.path.exists(sibling_md):
+        collision_warning = (
+            f"Sibling file '{stem}.md' already exists at this level. "
+            f"Did you mean to update the existing file using str_replace/patch "
+            f"instead of creating a new directory entry?"
+        )
+
+    # Create parent directories
     if parent:
         if not os.path.exists(parent):
             if create_dirs:
@@ -149,11 +169,14 @@ def write_file(
     except Exception as e:
         return {'error': f"Error writing file: {e}"}
 
-    return {
+    result = {
         'result': 'success',
         'bytes_written': len(encoded),
         'created': not already_exists,
     }
+    if collision_warning:
+        result['warning'] = collision_warning
+    return result
 
 
 def execute(agent, args: dict) -> dict:

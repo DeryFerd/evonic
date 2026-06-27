@@ -354,16 +354,16 @@ def _builtin_read_factory(agent_context: dict):
     _is_remote = bool(workplace_id)
     _desc = (
         "Read a file from this agent's knowledge base (KB). "
-        + ("Pass a bare filename (e.g. 'notes.md') or a /_self/ path (e.g. '/_self/kb/notes.md'). "
+        + ("Pass a bare filename (e.g. 'evonic.md') or a /_self/ path (e.g. '/_self/kb/evonic.md'). "
            if _is_remote else
-           "Pass a bare filename only — no paths (e.g. 'notes.md', not '/kb/notes.md'). ")
+           "Pass a bare filename only — no paths (e.g. 'evonic.md', not '/kb/evonic.md'). ")
         + "This tool is ONLY for KB files. "
         "To read any other file (source code, logs, workspace files), use read_file instead."
     )
     _param_desc = (
-        "Bare KB filename (e.g. 'notes.md') or /_self/ path (e.g. '/_self/kb/notes.md')."
+        "Bare KB filename (e.g. 'evonic.md') or /_self/ path (e.g. '/_self/kb/evonic.md')."
         if _is_remote else
-        "Bare KB filename, e.g. 'notes.md'. No slashes or paths."
+        "Bare KB filename, e.g. 'evonic.md'. No slashes or paths."
     )
     tool_def = {
         "type": "function",
@@ -409,7 +409,7 @@ def _builtin_read_factory(agent_context: dict):
 
         # Security: only bare filenames allowed
         if '/' in filename or '\\' in filename or '..' in filename:
-            return {"error": "This tool only reads KB files by bare filename (e.g. 'notes.md'). To read workspace or other files use the read_file tool instead."}
+            return {"error": "This tool only reads KB files by bare filename (e.g. 'evonic.md'). To read workspace or other files use the read_file tool instead."}
         filepath = os.path.join(base_dir, filename)
         filepath = os.path.normpath(filepath)
         # Double-check we're still inside the KB dir
@@ -847,18 +847,18 @@ def _builtin_recall_factory(agent_context: dict):
                 "(here 'query' is the entity name; use edge_type/hops to steer); "
                 "mode='links' to view a KB document's link neighborhood — outgoing/"
                 "incoming references, broken links, and same-tag docs (here 'query' "
-                "is the KB filename, e.g. 'notes.md'). "
+                "is the KB filename, e.g. 'evonic.md'). "
                 "Examples: recall(query='user phone number'); "
                 "recall(query='what do I know about Acme Corp?', mode='think'); "
                 "recall(query='Andi Wijaya', mode='graph'); "
-                "recall(query='notes.md', mode='links')"
+                "recall(query='evonic.md', mode='links')"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Keywords to search for; the entity name when mode='graph'; or the KB filename (e.g. 'notes.md') when mode='links'."
+                        "description": "Keywords to search for; the entity name when mode='graph'; or the KB filename (e.g. 'evonic.md') when mode='links'."
                     },
                     "mode": {
                         "type": "string",

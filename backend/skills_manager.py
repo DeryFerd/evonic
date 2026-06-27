@@ -22,6 +22,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(BASE_DIR, 'skills')
 CONFIG_PATH = os.path.join(SKILLS_DIR, 'config.json')
 
+# Core skills that power the Explore agent. They cannot be uninstalled or
+# disabled: explorer provides the Explore() tool, direxplorer provides the
+# read-only Grep/Read/Glob worker tools the explorer sub-agent depends on.
+CORE_SKILL_IDS = {"explorer", "direxplorer"}
+
 
 def _load_global_config() -> Dict[str, Any]:
     """Load the global skills config (disabled_skills list)."""
@@ -103,6 +108,7 @@ class SkillsManager:
                 manifest['_dir'] = skill_dir
                 manifest['tool_count'] = len(self._load_tool_defs(skill_dir, manifest))
                 manifest['enabled'] = self.is_skill_enabled(name)
+                manifest['protected'] = name in CORE_SKILL_IDS
                 skills.append(manifest)
             except KeyError:
                 continue
@@ -139,6 +145,7 @@ class SkillsManager:
         with open(manifest_path, encoding='utf-8') as f:
             manifest = json.load(f)
         manifest['enabled'] = self.is_skill_enabled(skill_id)
+        manifest['protected'] = skill_id in CORE_SKILL_IDS
         tool_defs = self._load_tool_defs(skill_dir, manifest)
         manifest['_dir'] = skill_dir
         manifest['tools'] = [
@@ -339,6 +346,9 @@ class SkillsManager:
         if not re.match(r'^[a-zA-Z0-9_-]+$', skill_id):
             return {'error': 'Invalid skill id'}
 
+        if skill_id in CORE_SKILL_IDS:
+            return {'error': f'Cannot uninstall core skill "{skill_id}" (required by the Explore agent).'}
+
         skill_dir = os.path.join(SKILLS_DIR, skill_id)
         if not os.path.isdir(skill_dir):
             return {'error': f'Skill not found: {skill_id}'}
@@ -379,6 +389,9 @@ class SkillsManager:
         manifest_path = os.path.join(skill_dir, 'skill.json')
         if not os.path.isfile(manifest_path):
             return {'error': f'Skill not found: {skill_id}'}
+
+        if not enabled and skill_id in CORE_SKILL_IDS:
+            return {'error': f'Cannot disable core skill "{skill_id}" (required by the Explore agent).'}
 
         with open(manifest_path, encoding='utf-8') as f:
             manifest = json.load(f)

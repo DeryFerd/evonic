@@ -11,9 +11,9 @@
             <span id="skill-version" class="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded font-mono"></span>
         </div>
         <div class="flex items-center gap-3">
-            <label class="inline-flex items-center cursor-pointer gap-2">
+            <label class="inline-flex items-center cursor-pointer gap-2" id="skill-enabled-label">
                 {{ toggle_widget(id='skill-enabled', onchange='toggleEnabled(this.checked)') }}
-                <span class="text-sm text-gray-600 dark:text-gray-400">Enabled</span>
+                <span class="text-sm text-gray-600 dark:text-gray-400" id="skill-enabled-text">Enabled</span>
             </label>
         </div>
     </div>
@@ -149,6 +149,17 @@ async function loadSkill() {
     document.getElementById('skill-title').textContent = skillData.name || skillData.id;
     document.getElementById('skill-version').textContent = 'v' + (skillData.version || '?');
     document.getElementById('skill-enabled').checked = skillData.enabled;
+
+    // Core skills cannot be disabled — lock the toggle and label it accordingly.
+    if (skillData.protected) {
+        const toggle = document.getElementById('skill-enabled');
+        toggle.disabled = true;
+        const label = document.getElementById('skill-enabled-label');
+        label.classList.remove('cursor-pointer');
+        label.classList.add('opacity-60', 'cursor-not-allowed');
+        label.title = 'Core skill — required by the Explore agent and cannot be disabled.';
+        document.getElementById('skill-enabled-text').textContent = 'Core skill (always on)';
+    }
 
     const meta = [];
     if (skillData.author) meta.push('by ' + esc(skillData.author));

@@ -220,6 +220,39 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
         return ""
 
 
+# A YAML frontmatter delimiter followed by a frontmatter key — finding this INSIDE
+# a body means a whole copy of the file was concatenated into it (self-duplication).
+_EMBEDDED_FRONTMATTER_RE = re.compile(
+    r'\n-{3,}[ \t]*\n[ \t]*(?:title|type|aliases|description|tags|created|updated)[ \t]*:')
+
+
+def _dedupe_body(body: str, min_block: int = 40) -> str:
+    """Remove self-concatenation duplication from a doc body:
+
+    1. If a second YAML frontmatter block got concatenated in (the whole file was
+       appended to itself), cut it and everything after.
+    2. Drop any later paragraph block that VERBATIM-duplicates an earlier
+       substantial block (>= ``min_block`` chars), keeping the first occurrence.
+
+    Conservative: only exact duplicates of substantial blocks are removed, so
+    legitimate short/again-different content is never touched.
+    """
+    if not body:
+        return body
+    m = _EMBEDDED_FRONTMATTER_RE.search(body)
+    if m:
+        body = body[:m.start()]
+    seen, out = set(), []
+    for block in re.split(r'\n[ \t]*\n', body):
+        key = block.strip()
+        if len(key) >= min_block and key in seen:
+            continue
+        if len(key) >= min_block:
+            seen.add(key)
+        out.append(block.rstrip())
+    return "\n\n".join(b for b in out if b.strip()).strip()
+
+
 def append_to_doc(agent_id: str, slug: str, delta_prose: str) -> bool:
     """Append a new inline-linked paragraph to an existing doc, preserving the
     body and refreshing ``updated``. Returns True if written.
@@ -237,7 +270,9 @@ def append_to_doc(agent_id: str, slug: str, delta_prose: str) -> bool:
         doc_type = fm.get("type") or "note"
         description = fm.get("description") or title
         created = fm.get("created") or _now_iso()
-        new_body = body.rstrip() + "\n\n" + delta
+        # Dedupe the result so a delta that restates existing content can't
+        # concatenate a duplicate copy into the doc.
+        new_body = _dedupe_body(body.rstrip() + "\n\n" + delta)
         _atomic_write(path, _render_doc(title, doc_type, description,
                                         fm.get("tags", []) or [],
                                         fm.get("aliases", []) or [],
@@ -404,6 +439,32 @@ def add_to_collection_index(agent_id: str, folder: str, doc_title: str) -> bool:
         return True
     except Exception as e:
         logger.debug("add_to_collection_index failed for %s/%s: %s", agent_id, folder, e)
+        return False
+
+
+def dedupe_doc(agent_id: str, slug: str) -> bool:
+    """Clean a doc that got self-duplicated (a copy of its content concatenated into
+    the body). Rewrites the body via :func:`_dedupe_body`, preserving frontmatter.
+    Returns True if the doc changed, False if it was already clean / missing.
+    """
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        cleaned = _dedupe_body(body)
+        if cleaned.strip() == (body or "").strip():
+            return False  # already clean
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        _atomic_write(path, _render_doc(title, fm.get("type") or "note",
+                                        fm.get("description") or title,
+                                        fm.get("tags", []) or [], fm.get("aliases", []) or [],
+                                        fm.get("created") or _now_iso(), _now_iso(), cleaned))
+        vlog("writer[%s]: dedupe_doc %s (%d -> %d chars)", agent_id, slug, len(body), len(cleaned))
+        return True
+    except Exception as e:
+        logger.debug("dedupe_doc failed for %s/%s: %s", agent_id, slug, e)
         return False
 
 

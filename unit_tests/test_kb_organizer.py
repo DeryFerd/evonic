@@ -294,6 +294,43 @@ def test_author_docs_edit_action(brain):
     assert "[[Abdurrahman Wahid]]" in W.read_doc(AGENT, "x")["body"]
 
 
+# ── dedupe self-duplicated docs ──────────────────────────────────────────────
+
+def test_dedupe_body():
+    d = W._dedupe_body
+    para = "Gus Dur adalah Presiden RI ke-4 yang dikenal sebagai tokoh pluralis besar."
+    # a substantial block that repeats verbatim is dropped (keep first)
+    assert d(f"{para}\n\n{para}") == para
+    # an embedded second YAML frontmatter (whole file concatenated) is cut
+    body = (f"{para}\n\n---\ntitle: \"X\"\ntype: person\naliases: [\"Y\"]\n---\n\n{para}")
+    out = d(body)
+    assert "title:" not in out and out.startswith("Gus Dur")
+    # short repeated lines (< min_block) are NOT touched
+    assert d("- a\n\n- a").count("- a") == 2
+
+
+def test_dedupe_doc(brain):
+    para = "Gus Dur adalah Presiden RI ke-4 yang dikenal sebagai tokoh pluralis besar."
+    W.upsert_doc(AGENT, title="GD", doc_type="person", description="d", body=f"{para}\n\n{para}")
+    assert W.dedupe_doc(AGENT, "gd") is True
+    assert W.read_doc(AGENT, "gd")["body"].count(para) == 1
+    assert W.dedupe_doc(AGENT, "gd") is False          # already clean -> no rewrite
+
+
+def test_append_to_doc_auto_dedupes(brain):
+    para = "Gus Dur adalah Presiden RI ke-4 yang dikenal sebagai tokoh pluralis besar."
+    W.upsert_doc(AGENT, title="GD", doc_type="person", description="d", body=para)
+    W.append_to_doc(AGENT, "gd", para)                 # appending a duplicate
+    assert W.read_doc(AGENT, "gd")["body"].count(para) == 1   # not doubled
+
+
+def test_author_docs_dedupe_action(brain):
+    para = "Gus Dur adalah Presiden RI ke-4 yang dikenal sebagai tokoh pluralis besar."
+    W.upsert_doc(AGENT, title="GD", doc_type="person", description="d", body=f"{para}\n\n{para}")
+    _run_author([{"action": "dedupe", "slug": "gd"}])
+    assert W.read_doc(AGENT, "gd")["body"].count(para) == 1
+
+
 # ── single-instance + debounce ───────────────────────────────────────────────
 
 def test_organizer_single_instance_and_debounce():

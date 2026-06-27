@@ -167,6 +167,7 @@ Given the conversation below, file any durable, long-term knowledge into the vau
 - NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
 - WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.
 - WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
+- DUPLICATED CONTENT in an existing doc (the same section, or the whole body, appears TWICE — e.g. it was concatenated to itself) → DEDUPE it: action "dedupe" with just the doc's `slug`. This safely removes verbatim repeated blocks; do NOT try to fix duplication with `edit`.
 - Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
 
 OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
@@ -174,9 +175,10 @@ OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
  {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
  {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Gus Dur / SBY, else omit>"],"body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
  {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<replacement text>"},
- {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"}
+ {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"},
+ {"action":"dedupe","slug":"<existing slug with duplicated content>"}
 ]}
-RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str; rename=existing slug + corrected new_title; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}.
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str; rename=existing slug + corrected new_title; dedupe=existing slug; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}.
 
 Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
@@ -841,7 +843,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         if not isinstance(docs, list) or not docs:
             return
 
-        modified, created, updated, renamed, edited = [], 0, 0, 0, 0
+        modified, created, updated, renamed, edited, deduped = [], 0, 0, 0, 0, 0
         for d in docs[:12]:
             if not isinstance(d, dict):
                 continue
@@ -849,6 +851,15 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             title = (d.get('title') or '').strip()
             body = (d.get('body') or '').strip()
             slug_hint = (d.get('slug') or '').strip()
+
+            # Dedupe: clean a doc whose content got duplicated (self-concatenation).
+            if action in ('dedupe', 'dedup'):
+                if slug_hint:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.dedupe_doc(agent_id, slug_hint):
+                            modified.append(slug_hint)
+                            deduped += 1
+                continue
 
             # Edit: surgical exact-unique-match replacement (fix a wrong [[link]]).
             if action in ('edit', 'patch'):
@@ -918,8 +929,8 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             evomem_writer.mark_dirty(agent_id)
             _emit_doc_updated(agent_id, modified)
         logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed, "
-                    "%d edited (folder=%s)", agent_id, created, updated, renamed, edited,
-                    folder or 'root')
+                    "%d edited, %d deduped (folder=%s)", agent_id, created, updated, renamed,
+                    edited, deduped, folder or 'root')
     except Exception:
         logger.debug("author_docs exception (non-fatal) for %s", agent_id)
 

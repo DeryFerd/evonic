@@ -1847,6 +1847,27 @@ def run_tool_loop(agent: Dict[str, Any],
                 _rtk_failed = True
                 compressed_str = result_str
 
+            # --- Base64 blob filtering ---
+            # Strips long base64 sequences (images, PDFs, binary data) from ALL
+            # tool outputs before injection into LLM context.  This is a universal
+            # pass that runs regardless of whether a TOML filter matched.
+            # The full base64 data remains in result_str (DB + chatlog + timeline).
+            try:
+                from backend.token_compressor.base64_filter import strip_base64_blobs
+                _before_b64 = len(compressed_str)
+                compressed_str = strip_base64_blobs(compressed_str)
+                _after_b64 = len(compressed_str)
+                if _before_b64 != _after_b64:
+                    _logger.info(
+                        "base64_filter: %r saved %d chars",
+                        fn_name, _before_b64 - _after_b64,
+                    )
+            except Exception:
+                _logger.warning(
+                    "base64_filter failed for %r — skipping",
+                    fn_name, exc_info=True,
+                )
+
             # --- Hard truncation safety net ---
             # Runs even when RTK succeeded but returned uncompressed oversized
             # output (e.g. no filter matched).  This is the final backstop

@@ -546,6 +546,29 @@ def _build_kb_listing(effective_id: str) -> list:
         "`recall(query='<doc>.md', mode='links')` to explore a doc's link "
         "neighborhood."
     )
+    lines.append("")
+    lines.append(
+        "**Image embedding in KB docs**: To embed an image in a KB document "
+        "(`.md` file), you MUST use renderable markdown image syntax — NOT HTML "
+        "`<img>` tags, NOT local filesystem paths, and NOT plain text mentions. "
+        "The correct procedure:"
+    )
+    lines.append(
+        "1. Save the image as an artifact first using "
+        "`save_artifact(source_path=\"...\")`"
+    )
+    lines.append(
+        "2. Reference it using markdown image format: "
+        "`![description](/api/agents/<agent_id>/artifacts/<filename>)`"
+    )
+    lines.append(
+        "3. NEVER use local filesystem paths (`data/attachments/...`) — they "
+        "won't render in the KB viewer"
+    )
+    lines.append(
+        "4. NEVER just mention \"ada foto\" without embedding it — always use "
+        "the proper `![...](...)` markdown syntax"
+    )
     return lines
 
 

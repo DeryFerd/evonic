@@ -1063,6 +1063,22 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build the OpenAI function tool list for this agent."""
     tools = []
 
+    # Explorer sub-agents (the Explore tool's explorers AND the KB organizer) are
+    # isolated workers: they get ONLY their configured tools — the direxplorer
+    # read-only set (Grep/Read/Glob) plus any EXTRAS the user added in the explorer
+    # skill settings. They must NOT receive built-ins (remember/read/recall/...),
+    # universal, messaging, or parent tools. Resolve FIRST and return; their tools
+    # may come from a LAZY skill, hence resolving directly via _explorer.tool_defs.
+    if agent.get('is_explorer'):
+        from backend.agent_runtime import explorer as _explorer
+        seen_fn_names = set()
+        for tool_def in _explorer.tool_defs(agent):
+            fn_name = tool_def.get('function', {}).get('name', '')
+            if fn_name and fn_name not in seen_fn_names:
+                seen_fn_names.add(fn_name)
+                tools.append(tool_def)
+        return tools
+
     # Built-in tools (read, use_skill, set_mode, remember, recall, etc.)
     # Can be disabled per-agent via builtin_tools_enabled advanced setting.
     # Pass workplace_id so built-in factories can tailor descriptions for remote agents
@@ -1119,20 +1135,6 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     if agent.get('is_super') or agent.get('agent_messaging_enabled') != 0:
         from backend.tools.agent_messaging import get_agent_messaging_tool_defs
         tools.extend(get_agent_messaging_tool_defs())
-
-    # Explorers use their own configured tool set (no parent inheritance), and
-    # their tools may come from a LAZY skill — so resolve the defs directly
-    # (get_all_tool_defs omits lazy skills) and return.
-    if agent.get('is_explorer'):
-        from backend.agent_runtime import explorer as _explorer
-        seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
-        for tool_def in _explorer.tool_defs(agent):
-            fn_name = tool_def.get('function', {}).get('name', '')
-            if not fn_name or fn_name in seen_fn_names:
-                continue
-            seen_fn_names.add(fn_name)
-            tools.append(tool_def)
-        return tools
 
     # Add assigned tools from the registry (including skill tools)
     # Sub-agents inherit parent's tool assignments.

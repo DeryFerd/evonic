@@ -145,6 +145,8 @@ class TurnPrefetcher:
                 'run_as_user': agent.get('run_as_user'),
                 'vision_model_id': agent.get('vision_model_id'),
                 'vision_enabled': agent.get('vision_enabled', 1),
+                'messaging_acl': agent.get('messaging_acl'),
+                'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
             }
 
             # Re-load messages from JSONL (most expensive I/O, ~10-200ms)

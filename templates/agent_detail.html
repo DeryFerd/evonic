@@ -151,6 +151,14 @@ html.dark #system-prompt-modal .bg-gray-900 { background: #111827; }
 html.dark #system-prompt-modal .hover\:bg-gray-200:hover { background: #4b5563; }
 html.dark #system-prompt-modal .hover\:bg-gray-600:hover { background: #4b5563; }
 html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
+/* KB Graph search highlight transitions */
+#kb-graph-svg circle { transition: opacity 0.3s, r 0.15s; }
+#kb-graph-svg text   { transition: opacity 0.3s; }
+#kb-graph-svg line   { transition: opacity 0.3s; }
+.kb-node-dimmed circle { opacity: 0.15 !important; }
+.kb-node-dimmed text   { opacity: 0.1 !important; }
+.kb-link-dimmed        { opacity: 0.05 !important; }
+.kb-node-match circle  { stroke: #6366f1 !important; stroke-width: 3 !important; }
 
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
@@ -424,6 +432,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                                 <p class="text-xs text-gray-400 mt-0.5">Allow this agent to send messages to other agents. Enables <code>send_agent_message</code>, <code>escalate_to_user</code>, and <code>resolve_agent_approval</code> tools automatically.</p>
                             </div>
                         </label>
+                        <button type="button" onclick="openMessagingAclModal()" class="flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300 mt-1 transition-colors" style="margin-left:3rem"><svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/></svg>Messaging Access Control</button>
                     </div>
                     <div>
                         <label class="flex items-center gap-3 cursor-pointer select-none">
@@ -559,41 +568,82 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
     </div>
 
     <!-- Knowledge Tab -->
-    <div id="tab-knowledge" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
-        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 w-full">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="hidden sm:block text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
-                <div class="flex gap-2">
-                    <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
-                    <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
-                    {% if memory_engine == 'evomem' %}
-                    <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600" title="Force a full evomem memory sync">Sync</button>
-                    {% endif %}
-                    <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors">
-                        Upload
-                        <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
-                    </label>
+    <div id="tab-knowledge" class="tab-content hidden flex-1 min-h-0 relative">
+
+        <!-- Graph View (default, fills entire tab) -->
+        <div id="kb-graph-container" class="absolute inset-0">
+            <div id="kb-graph-svg" class="w-full h-full bg-gray-50 dark:bg-gray-900 rounded-lg"></div>
+
+            <!-- Overlay: Search bar (top-left) -->
+            <div class="absolute top-4 left-4 z-10">
+                <div class="relative">
+                    <input type="text" id="kb-graph-search" placeholder="Search nodes..." autocomplete="off"
+                           class="pl-3 pr-8 py-2 w-48 sm:w-64 bg-white/80 dark:bg-gray-800 backdrop-blur-sm border border-gray-200 dark:border-gray-600 rounded-lg text-sm shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/50 dark:text-gray-100 dark:placeholder-gray-400"
+                           oninput="searchKBGraph(this.value)">
+                    <button id="kb-graph-search-clear" onclick="clearKBGraphSearch()" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 cursor-pointer hidden" type="button">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
                 </div>
             </div>
-            <input type="text" id="kb-filter" placeholder="Filter files..." autocomplete="off"
-                   class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400 mb-4"
-                   oninput="filterKBFiles()">
-            <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
-            <div id="kb-list" class="space-y-2">
-                <!-- Files loaded dynamically -->
+
+            <!-- Overlay: Action buttons (top-right) -->
+            <div class="absolute top-4 right-4 z-10 flex gap-2">
+                <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm shadow-lg transition-colors flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    New
+                </button>
+                <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    List
+                </button>
+                {% if memory_engine == 'evomem' %}
+                <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors" title="Force a full evomem memory sync">Sync</button>
+                {% endif %}
+                <label class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 cursor-pointer transition-colors">
+                    Upload
+                    <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
+                </label>
             </div>
-            <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
-            <div id="kb-graph-container" class="hidden" style="height: 70vh; min-height: 400px;">
-                <div id="kb-graph-svg" class="w-full h-full border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800"></div>
-                <div id="kb-graph-legend" class="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 bg-gray-400 dark:bg-gray-500"></span> Link</span>
-                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 border-t-2 border-dashed border-red-400"></span> Dangling</span>
-                    <label class="flex items-center gap-1 cursor-pointer">
-                        <input type="checkbox" id="kb-graph-show-orphans" checked onchange="toggleOrphans()">
-                        <span>Show orphans</span>
-                    </label>
+
+            <!-- Overlay: Legend (bottom-left) -->
+            <div id="kb-graph-legend" class="absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 bg-white/80 dark:bg-gray-800 backdrop-blur-sm rounded-lg px-3 py-2 text-xs text-gray-500 dark:text-gray-400 shadow-lg border border-gray-200 dark:border-gray-600">
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 bg-gray-400 dark:bg-gray-500"></span> Link</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 border-t-2 border-dashed border-red-400"></span> Dangling</span>
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" id="kb-graph-show-orphans" checked onchange="toggleOrphans()">
+                    <span>Show orphans</span>
+                </label>
+            </div>
+
+            <!-- Tooltip -->
+            <div id="kb-graph-tooltip" class="absolute hidden bg-gray-900 text-white text-xs px-2 py-1 rounded shadow-lg pointer-events-none z-20 dark:bg-gray-700"></div>
+        </div>
+
+        <!-- List View (hidden by default) -->
+        <div id="kb-list-container" class="hidden overflow-y-auto h-full p-6">
+            <div class="max-w-3xl mx-auto">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="hidden sm:block text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
+                    <div class="flex gap-2">
+                        <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
+                        <button onclick="toggleKBGraphView()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
+                        {% if memory_engine == 'evomem' %}
+                        <button onclick="syncKB(this)" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Sync</button>
+                        {% endif %}
+                        <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">
+                            Upload
+                            <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
+                        </label>
+                    </div>
                 </div>
-                <div id="kb-graph-tooltip" class="absolute hidden bg-gray-900 text-white text-xs px-2 py-1 rounded shadow pointer-events-none dark:bg-gray-700"></div>
+                <input type="text" id="kb-filter" placeholder="Filter files..." autocomplete="off"
+                       class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400 mb-4"
+                       oninput="filterKBFiles()">
+                <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
+                <div id="kb-list" class="space-y-2">
+                    <!-- Files loaded dynamically -->
+                </div>
+                <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
             </div>
         </div>
 
@@ -1596,7 +1646,14 @@ function showTab(name) {
     $(`[data-tab="${name}"]`).addClass('border-indigo-500 text-indigo-600')
                               .removeClass('border-transparent text-gray-500');
 
-    if (name === 'knowledge') loadKBFiles();
+    if (name === 'knowledge') {
+        if (kbGraphMode === 'graph') {
+            if (kbGraphData) renderKBGraph();
+            else loadKBGraph();
+        } else {
+            loadKBFiles();
+        }
+    }
     if (name === 'tools') loadTools();
     if (name === 'skills') loadSkills();
     if (name === 'channels') loadChannels();
@@ -2291,6 +2348,8 @@ async function saveFile() {
     }
     closeEditor();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
     } finally {
         setSaveLoading(btnId, false);
     }
@@ -2328,6 +2387,8 @@ async function deleteFile(filename) {
     await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`, {method: 'DELETE'});
     if (currentEditFile === filename) closeEditor();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
 }
 
 async function uploadFile(input) {
@@ -2338,6 +2399,8 @@ async function uploadFile(input) {
     await fetch(`/api/agents/${AGENT_ID}/kb`, {method: 'POST', body: form});
     input.value = '';
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
 }
 
 function showNewFileModal() {
@@ -2365,15 +2428,19 @@ async function createNewFile() {
     }
     closeNewFileModal();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
     editFile(fname);
 }
 
 
 // ==================== KB Graph View ====================
-let kbGraphMode = 'list';
+let kbGraphMode = 'graph';
 let kbGraphData = null;
 let kbGraphSimulation = null;
 let kbGraphShowOrphans = true;
+let kbGraphZoom = null;
+let kbGraphSvg = null;
 
 async function loadKBGraph() {
     try {
@@ -2412,37 +2479,94 @@ async function syncKB(btn) {
 
 function toggleKBGraphView() {
     const toggleBtn = document.getElementById('kb-graph-toggle');
-    const kbList = document.getElementById('kb-list');
-    const kbEmpty = document.getElementById('kb-empty');
-    const kbFilter = document.getElementById('kb-filter');
     const graphContainer = document.getElementById('kb-graph-container');
+    const listContainer = document.getElementById('kb-list-container');
 
-    if (kbGraphMode === 'list') {
-        kbGraphMode = 'graph';
-        if (toggleBtn) toggleBtn.textContent = 'List View';
-        if (kbList) kbList.classList.add('hidden');
-        if (kbEmpty) kbEmpty.classList.add('hidden');
-        if (kbFilter) kbFilter.classList.add('hidden');
-        if (graphContainer) graphContainer.classList.remove('hidden');
-
-        if (kbGraphData) {
-            renderKBGraph();
-        } else {
-            loadKBGraph();
-        }
-    } else {
+    if (kbGraphMode === 'graph') {
         kbGraphMode = 'list';
-        if (toggleBtn) toggleBtn.textContent = 'Graph View';
-        if (kbList) kbList.classList.remove('hidden');
-        if (kbFilter) kbFilter.classList.remove('hidden');
-        if (graphContainer) graphContainer.classList.add('hidden');
+        if (toggleBtn) toggleBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg> Graph';
+        graphContainer.classList.add('hidden');
+        listContainer.classList.remove('hidden');
         loadKBFiles();
+    } else {
+        kbGraphMode = 'graph';
+        if (toggleBtn) toggleBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg> List';
+        listContainer.classList.add('hidden');
+        graphContainer.classList.remove('hidden');
+        if (kbGraphData) renderKBGraph();
+        else loadKBGraph();
     }
 }
 
 function toggleOrphans() {
     kbGraphShowOrphans = document.getElementById('kb-graph-show-orphans').checked;
     if (kbGraphMode === 'graph' && kbGraphData) renderKBGraph();
+}
+
+let _kbSearchTimer = null;
+function searchKBGraph(query) {
+    const clearBtn = document.getElementById('kb-graph-search-clear');
+    if (clearBtn) clearBtn.classList.toggle('hidden', !query);
+    clearTimeout(_kbSearchTimer);
+    _kbSearchTimer = setTimeout(() => _applyKBGraphSearch(query), 150);
+}
+
+function clearKBGraphSearch() {
+    const input = document.getElementById('kb-graph-search');
+    if (input) { input.value = ''; input.focus(); }
+    searchKBGraph('');
+}
+
+function _applyKBGraphSearch(query) {
+    const q = (query || '').toLowerCase().trim();
+    const svg = d3.select('#kb-graph-svg svg');
+    if (!svg.node()) return;
+
+    if (!q) {
+        svg.selectAll('.kb-node').classed('kb-node-dimmed', false).classed('kb-node-match', false);
+        svg.selectAll('line').classed('kb-link-dimmed', false);
+        return;
+    }
+
+    const matchIds = new Set();
+    svg.selectAll('.kb-node').each(function(d) {
+        if (d && (
+            (d.fullTitle || '').toLowerCase().includes(q) ||
+            (d.id || '').toLowerCase().includes(q) ||
+            (d.tags || []).some(t => t.toLowerCase().includes(q)) ||
+            (d.type || '').toLowerCase().includes(q)
+        )) matchIds.add(d.id);
+    });
+
+    svg.selectAll('.kb-node')
+        .classed('kb-node-dimmed', d => !matchIds.has(d.id))
+        .classed('kb-node-match', d => matchIds.has(d.id));
+
+    svg.selectAll('line')
+        .classed('kb-link-dimmed', d => {
+            const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+            const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+            return !matchIds.has(srcId) && !matchIds.has(tgtId);
+        });
+
+    // Pan viewport to center on the first match
+    if (matchIds.size > 0 && kbGraphZoom && kbGraphSvg) {
+        let target = null;
+        svg.selectAll('.kb-node').each(function(d) {
+            if (!target && matchIds.has(d.id)) target = d;
+        });
+        if (target && target.x != null && target.y != null) {
+            const container = document.getElementById('kb-graph-container');
+            const w = container.clientWidth;
+            const h = container.clientHeight;
+            const currentTransform = d3.zoomTransform(kbGraphSvg.node());
+            const scale = currentTransform.k;
+            const tx = w / 2 - target.x * scale;
+            const ty = h / 2 - target.y * scale;
+            kbGraphSvg.transition().duration(400)
+                .call(kbGraphZoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+        }
+    }
 }
 
 // Enable/disable the custom summarizer prompt textarea based on the override checkbox.
@@ -2566,6 +2690,8 @@ function renderKBGraph() {
             g.attr('transform', event.transform);
         });
     svg.call(zoom);
+    kbGraphZoom = zoom;
+    kbGraphSvg = svg;
 
     // Dark mode detection
     const isDark = document.documentElement.classList.contains('dark');
@@ -2577,7 +2703,7 @@ function renderKBGraph() {
         .force('link', d3.forceLink(links).id(d => d.id).distance(80))
         .force('charge', d3.forceManyBody().strength(-300))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collide', d3.forceCollide().radius(30));
+        .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 12));
 
     kbGraphSimulation = simulation;
 
@@ -2609,6 +2735,7 @@ function renderKBGraph() {
         .selectAll('g')
         .data(nodes)
         .join('g')
+        .attr('class', 'kb-node')
         .call(d3.drag()
             .on('start', (event, d) => {
                 if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -2626,9 +2753,15 @@ function renderKBGraph() {
             })
         );
 
-    // Node circles
+    // Node circles — size scales with edge count, clamped to [6, 24]
+    function nodeRadius(d) {
+        if (d.isDangling) return 3;
+        const edges = (d.incoming || 0) + (d.outgoing || 0);
+        if (edges === 0) return 4;
+        return Math.min(10, 4 + Math.log2(edges) * 1.5);
+    }
     node.append('circle')
-        .attr('r', d => d.isDangling ? 5 : 8)
+        .attr('r', d => nodeRadius(d))
         .attr('fill', d => getNodeColor(d))
         .attr('stroke', d => d.isDangling ? '#dc2626' : (getNodeColor(d) === '#ffffff' ? '#9ca3af' : '#fff'))
         .attr('stroke-width', 1.5)
@@ -2692,16 +2825,6 @@ function renderKBGraph() {
         node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     });
 }
-
-// Initialize on tab switch
-const _origShowTab = showTab;
-showTab = function(name) {
-    _origShowTab(name);
-    if (name === 'knowledge' && kbGraphMode === 'graph') {
-        if (kbGraphData) renderKBGraph();
-        else loadKBGraph();
-    }
-};
 
 // Debounced resize handler for graph
 let _kbGraphResizeTimer = null;
@@ -6202,5 +6325,216 @@ document.addEventListener('keydown', function(e) {
     </div>
 </div>
 
+
+<!-- Messaging Access Control Modal -->
+<div id="messaging-acl-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[150]" onclick="if(event.target===this)closeMessagingAclModal()">
+    <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[480px] shadow-xl flex flex-col overflow-hidden" style="max-height: 80vh;">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-200">Messaging Access Control</h3>
+            <button onclick="closeMessagingAclModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" aria-label="Close">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+            <!-- Mode selector -->
+            <div>
+                <label class="block mb-2 text-gray-600 dark:text-gray-300 text-sm font-medium">Mode</label>
+                <div class="flex gap-2">
+                    <button type="button" id="acl-mode-whitelist" onclick="setAclMode('whitelist')"
+                        class="flex-1 px-3 py-2 text-sm font-medium rounded-lg border transition-colors">
+                        Whitelist
+                    </button>
+                    <button type="button" id="acl-mode-blacklist" onclick="setAclMode('blacklist')"
+                        class="flex-1 px-3 py-2 text-sm font-medium rounded-lg border transition-colors">
+                        Blacklist
+                    </button>
+                </div>
+                <p id="acl-mode-desc" class="text-xs text-gray-400 mt-1.5"></p>
+            </div>
+            <!-- Search -->
+            <div>
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Add Agent</label>
+                <div class="relative">
+                    <input type="text" id="acl-search-input" placeholder="Search agents..." autocomplete="off"
+                        oninput="aclSearchAgents()" onfocus="aclSearchAgents()"
+                        class="w-full p-2.5 border border-gray-300 rounded-lg text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
+                    <div id="acl-search-dropdown" class="hidden absolute left-0 right-0 top-full mt-1 bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg max-h-48 overflow-y-auto z-10">
+                    </div>
+                </div>
+            </div>
+            <!-- Agent list -->
+            <div>
+                <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Agents in list</label>
+                <div id="acl-agent-list" class="space-y-1.5">
+                    <p id="acl-empty-msg" class="text-xs text-gray-400 text-center py-3">No agents added — all agents are allowed.</p>
+                </div>
+            </div>
+        </div>
+        <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end gap-2 flex-shrink-0">
+            <button onclick="closeMessagingAclModal()" class="px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">Cancel</button>
+            <button onclick="saveMessagingAcl()" id="acl-save-btn" class="px-4 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 rounded-lg transition-colors">Save</button>
+        </div>
+    </div>
+</div>
+
+<script>
+(function() {
+    let _aclMode = {{ (agent.messaging_acl_mode or 'whitelist') | tojson }};
+    let _aclList = [];
+    try { _aclList = JSON.parse({{ (agent.messaging_acl or '[]') | tojson }}) || []; } catch(e) { _aclList = []; }
+    let _allAgents = [];
+    let _aclAgentNames = {};
+
+    window.openMessagingAclModal = async function() {
+        const modal = document.getElementById('messaging-acl-modal');
+        modal.classList.remove('hidden');
+        try {
+            const [agentsRes, agentRes] = await Promise.all([
+                fetch('/api/agents'),
+                fetch('/api/agents/' + AGENT_ID)
+            ]);
+            const agentsData = await agentsRes.json();
+            _allAgents = (agentsData.agents || agentsData || []).filter(a => a.id !== AGENT_ID && !a.is_super);
+            _allAgents.forEach(a => { _aclAgentNames[a.id] = a.name || a.id; });
+            const agentData = await agentRes.json();
+            if (agentData.id) {
+                try { _aclList = agentData.messaging_acl ? JSON.parse(agentData.messaging_acl) : []; } catch(e) { _aclList = []; }
+                _aclMode = agentData.messaging_acl_mode || 'whitelist';
+            }
+        } catch(e) { _allAgents = []; }
+        setAclMode(_aclMode);
+        renderAclList();
+        document.getElementById('acl-search-input').value = '';
+        document.getElementById('acl-search-dropdown').classList.add('hidden');
+    };
+
+    window.closeMessagingAclModal = function() {
+        document.getElementById('messaging-acl-modal').classList.add('hidden');
+    };
+
+    window.setAclMode = function(mode) {
+        _aclMode = mode;
+        const wBtn = document.getElementById('acl-mode-whitelist');
+        const bBtn = document.getElementById('acl-mode-blacklist');
+        const desc = document.getElementById('acl-mode-desc');
+        if (mode === 'whitelist') {
+            wBtn.className = 'flex-1 px-3 py-2 text-sm font-medium rounded-lg border border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-400 transition-colors';
+            bBtn.className = 'flex-1 px-3 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors';
+            desc.textContent = 'Only agents in this list can be messaged. Leave empty to allow all.';
+        } else {
+            bBtn.className = 'flex-1 px-3 py-2 text-sm font-medium rounded-lg border border-indigo-500 bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-400 transition-colors';
+            wBtn.className = 'flex-1 px-3 py-2 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors';
+            desc.textContent = 'Agents in this list are blocked from being messaged. All others are allowed.';
+        }
+        renderAclList();
+    };
+
+    function renderAclList() {
+        const container = document.getElementById('acl-agent-list');
+        const emptyMsg = _aclMode === 'whitelist'
+            ? 'No agents added — all agents are allowed.'
+            : 'No agents added — no agents are blocked.';
+        if (!_aclList.length) {
+            container.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">' + emptyMsg + '</p>';
+            return;
+        }
+        container.innerHTML = _aclList.map(id => {
+            const name = _aclAgentNames[id] || id;
+            return '<div class="flex items-center justify-between px-3 py-2 bg-gray-50 dark:bg-gray-700/50 rounded-lg">'
+                + '<div class="flex items-center gap-2 min-w-0">'
+                + '<span class="text-sm text-gray-700 dark:text-gray-200 truncate">' + escapeHtml(name) + '</span>'
+                + '<span class="text-xs text-gray-400 font-mono">' + escapeHtml(id) + '</span>'
+                + '</div>'
+                + '<button onclick="aclRemoveAgent(\'' + escapeHtml(id) + '\')" class="text-gray-400 hover:text-red-500 transition-colors flex-shrink-0 p-0.5" title="Remove">'
+                + '<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>'
+                + '</button>'
+                + '</div>';
+        }).join('');
+    }
+
+    window.aclSearchAgents = function() {
+        const query = (document.getElementById('acl-search-input').value || '').toLowerCase().trim();
+        const dropdown = document.getElementById('acl-search-dropdown');
+        const available = _allAgents.filter(a => !_aclList.includes(a.id));
+        let filtered = available;
+        if (query) {
+            filtered = available.filter(a =>
+                (a.name || '').toLowerCase().includes(query) ||
+                a.id.toLowerCase().includes(query)
+            );
+        }
+        if (!filtered.length) {
+            dropdown.classList.add('hidden');
+            return;
+        }
+        dropdown.innerHTML = filtered.slice(0, 20).map(a =>
+            '<button type="button" onclick="aclAddAgent(\'' + escapeHtml(a.id) + '\',\'' + escapeHtml(a.name || a.id) + '\')"'
+            + ' class="w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 transition-colors flex items-center gap-2">'
+            + '<span class="truncate">' + escapeHtml(a.name || a.id) + '</span>'
+            + '<span class="text-xs text-gray-400 font-mono flex-shrink-0">' + escapeHtml(a.id) + '</span>'
+            + '</button>'
+        ).join('');
+        dropdown.classList.remove('hidden');
+    };
+
+    window.aclAddAgent = function(id, name) {
+        if (!_aclList.includes(id)) {
+            _aclList.push(id);
+            _aclAgentNames[id] = name;
+        }
+        document.getElementById('acl-search-input').value = '';
+        document.getElementById('acl-search-dropdown').classList.add('hidden');
+        renderAclList();
+    };
+
+    window.aclRemoveAgent = function(id) {
+        _aclList = _aclList.filter(x => x !== id);
+        renderAclList();
+    };
+
+    window.saveMessagingAcl = async function() {
+        const btn = document.getElementById('acl-save-btn');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+            const res = await fetch('/api/agents/' + AGENT_ID, {
+                method: 'PUT',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    messaging_acl: _aclList.length ? _aclList : null,
+                    messaging_acl_mode: _aclMode
+                })
+            });
+            const data = await res.json();
+            if (!data.success) {
+                showToast('Failed to save ACL: ' + (data.error || 'Unknown error'), 'error');
+                return;
+            }
+            showToast('Messaging access control saved!', 'success');
+            closeMessagingAclModal();
+        } catch(e) {
+            showToast('Failed to save ACL.', 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Save';
+        }
+    };
+
+    function escapeHtml(s) {
+        const d = document.createElement('div');
+        d.textContent = s;
+        return d.innerHTML;
+    }
+
+    // Close dropdown on click outside
+    document.addEventListener('click', function(e) {
+        const dropdown = document.getElementById('acl-search-dropdown');
+        const input = document.getElementById('acl-search-input');
+        if (dropdown && input && !dropdown.contains(e.target) && e.target !== input) {
+            dropdown.classList.add('hidden');
+        }
+    });
+})();
+</script>
 
 {% endblock %}

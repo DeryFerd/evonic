@@ -715,8 +715,9 @@ the handler logic in `handler.py`.
 
 # ─── Skill Management ──────────────────────────────────────────────────────────
 
-# Built-in/core skills that cannot be removed via CLI
-_SKILL_CORE_IDS = {"hello_world"}
+# Built-in/core skills that cannot be removed via CLI. Mirrors the backend's
+# CORE_SKILL_IDS (which is the real enforcement point for CLI + API + UI).
+from backend.skills_manager import CORE_SKILL_IDS as _SKILL_CORE_IDS
 
 
 def _get_skills_manager():
@@ -3435,6 +3436,110 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                   "(commonly a rename/drop that left a query un-updated).")
     except Exception as e:
         results.append(_fail(f"Database schema check failed: {e}"))
+
+
+    # ── 14. Core Explore Skills Check ─────────────────────────
+    _section("14. Core Explore Skills Check")
+    try:
+        from backend.skills_manager import SkillsManager, CORE_SKILL_IDS
+
+        sm = SkillsManager()
+        for sid in sorted(CORE_SKILL_IDS):
+            manifest_path = os.path.join(ROOT, "skills", sid, "skill.json")
+            if not os.path.isfile(manifest_path):
+                results.append(_fail(
+                    f"Core skill '{sid}' is missing — the Explore agent requires it. "
+                    f"Reinstall it under skills/{sid}/."
+                ))
+            elif not sm.is_skill_enabled(sid):
+                results.append(_fail(
+                    f"Core skill '{sid}' is installed but disabled — the Explore agent "
+                    f"requires it. Re-enable it (it cannot normally be disabled)."
+                ))
+            else:
+                results.append(_ok(f"Core skill '{sid}' present and enabled"))
+    except Exception as e:
+        results.append(_fail(f"Core skill check failed: {e}"))
+
+
+    # ── 15. Skill/Plugin Requirements Check ───────────────────
+    _section("15. Skill/Plugin Requirements Check")
+    try:
+        import logging as _logging
+        from cli import requirements_check as _rc
+
+        # gather_requirements() imports the plugin manager, which emits noisy
+        # apscheduler INFO logs on first import — quiet them for a clean report.
+        _aps = _logging.getLogger("apscheduler")
+        _aps_level = _aps.level
+        _aps.setLevel(_logging.WARNING)
+        try:
+            records = _rc.gather_requirements()
+        finally:
+            _aps.setLevel(_aps_level)
+
+        if not records:
+            _info("  No additional skill/plugin requirements declared")
+        for rec in records:
+            binary = rec["binary"]
+            name = binary["name"]
+            src = f"{rec['source_type']} '{rec['source_id']}'"
+            res = _rc.check_binary(binary)
+
+            if res["status"] == "ok":
+                ver = f" {res['current']}" if res["current"] else ""
+                results.append(_ok(f"{name}{ver} — required by {src}"))
+                continue
+
+            if res["status"] == "outdated":
+                problem = (f"{name} {res['current']} installed; {res['required']}+ "
+                           f"required by {src}")
+            elif res["status"] == "unknown":
+                problem = (f"{name} found but its version could not be determined "
+                           f"({res['required']}+ required by {src})")
+            else:  # missing
+                problem = f"{name} not found on PATH — required by {src}"
+
+            has_script = bool(binary.get("fix_script"))
+            if fix and has_script:
+                # Stream the fix_script's real-time stdout/stderr in a left-rail
+                # gutter — a clean header, a dim "│" margin per line, and a
+                # closing tick. A gutter (vs. a closed box) stays aligned even
+                # when long lines wrap.
+                print(f"  {_DIM}╭─{_RESET} {_BOLD}{name}{_RESET} {_DIM}install · {rec['source_id']}/{binary['fix_script']}{_RESET}")
+                # Truncate each streamed line to the terminal width so long lines
+                # (URLs, paths) stay on one row instead of wrapping and breaking
+                # the rail. Prefix "  │ " is 4 visible columns.
+                _rail_w = max(20, shutil.get_terminal_size((100, 24)).columns - 4)
+
+                def _rail(ln):
+                    if len(ln) > _rail_w:
+                        ln = ln[:_rail_w - 1] + "…"
+                    print(f"  {_DIM}│{_RESET} {ln}")
+
+                outcome = _rc.run_fix_script(binary, rec["dir"], on_output=_rail)
+                recheck = _rc.check_binary(binary)
+                # Close the rail with the outcome — the rail terminator doubles
+                # as the result line, so there's no duplicate status line.
+                if outcome.get("ran") and recheck["status"] == "ok":
+                    ver = f" {recheck['current']}" if recheck["current"] else ""
+                    print(f"  {_DIM}╰─{_RESET} {_G}✓{_RESET} Installed {name}{ver} "
+                          f"(required by {src})")
+                    results.append("pass")
+                    fixes_applied.append(f"Installed {name} for {src}")
+                else:
+                    detail = outcome.get("error") or "see output above"
+                    print(f"  {_DIM}╰─{_RESET} {_Y}⚠{_RESET} {problem}; "
+                          f"fix_script did not resolve it ({detail})")
+                    results.append("warn")
+            else:
+                results.append(_warn(problem))
+                if has_script:
+                    _info(f"  Run `evonic doctor --fix` to install {name} automatically.")
+                else:
+                    _info(f"  Install {name} manually (no fix_script declared by {src}).")
+    except Exception as e:
+        results.append(_fail(f"Requirements check failed: {e}"))
 
 
     _section("Summary")

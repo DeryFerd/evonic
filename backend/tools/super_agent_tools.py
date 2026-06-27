@@ -440,6 +440,9 @@ def _exec_update_agent(args: dict, agent_context: dict = None) -> dict:
     update_data = {k: v for k, v in args.items() if k != 'agent_id'}
     if 'system_prompt' in update_data:
         _write_system_prompt(agent_id, update_data.pop('system_prompt'))
+    if 'messaging_acl' in update_data and isinstance(update_data['messaging_acl'], list):
+        import json as _json
+        update_data['messaging_acl'] = _json.dumps(update_data['messaging_acl'])
     if update_data:
         db.update_agent(agent_id, update_data)
     return {'success': True, 'message': f"Agent '{agent_id}' updated."}

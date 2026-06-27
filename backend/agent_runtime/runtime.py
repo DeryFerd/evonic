@@ -1903,6 +1903,8 @@ class AgentRuntime:
                 'run_as_user': agent.get('run_as_user'),
                 'vision_model_id': agent.get('vision_model_id'),
                 'vision_enabled': agent.get('vision_enabled', 1),
+                'messaging_acl': agent.get('messaging_acl'),
+                'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
             }
         # Propagate agent_message_depth and from_agent_id from incoming message metadata
         if ctx.external_user_id.startswith("__agent__"):
@@ -2049,7 +2051,12 @@ class AgentRuntime:
 
         try:
             from backend.llm_usage_events import usage_context
-            _usage_source = 'explorer' if agent.get('is_explorer') else 'agent_turn'
+            if agent.get('is_kb_organizer'):
+                _usage_source = 'kb_organizer'   # distinct usage category for the token monitor
+            elif agent.get('is_explorer'):
+                _usage_source = 'explorer'
+            else:
+                _usage_source = 'agent_turn'
             with usage_context(_usage_source, agent_id, agent.get('name'), ctx.session_id):
                 response_raw, tool_trace, timeline = _loop.run_tool_loop(
                     agent=agent,

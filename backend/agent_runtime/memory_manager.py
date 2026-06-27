@@ -21,6 +21,8 @@ and the evomem static binary via subprocess.
 import os
 import re
 import json
+import time
+import difflib
 import logging
 import threading
 from typing import List, Optional
@@ -41,8 +43,8 @@ _PASSIVE_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_PASSIVE", "conservativ
 _RECALL_SEARCH_MODE = os.environ.get("EVOMEM_SEARCH_MODE_RECALL", "tokenmax")
 
 # Cross-session entity coreference uses one LLM call PER extracted entity to
-# decide if a variant name ("Robin") is the same as an existing page ("Robin
-# Syihab"). On a slow/thinking model that dominates graph-extraction latency, so
+# decide if a variant name ("Andi") is the same as an existing page ("Andi
+# Wijaya"). On a slow/thinking model that dominates graph-extraction latency, so
 # it is OFF by default — exact-slug dedup still merges identical names without an
 # LLM call. Set EVOMEM_ENTITY_COREF=1 to re-enable (only worth it on a fast model).
 _ENTITY_COREF_LLM = os.environ.get("EVOMEM_ENTITY_COREF", "0").strip().lower() \
@@ -93,7 +95,7 @@ The dimension is a dot-separated path that uniquely identifies WHAT aspect of kn
 Examples:
 - "User prefers Javanese language" → "user.language_preference"
 - "User's phone number is 08123456" → "user.phone_number"
-- "User's name is Robin" → "user.name"
+- "User's name is Andi" → "user.name"
 - "User prefers dark mode" → "user.ui_preference.theme"
 - "Always respond in formal tone" → "instruction.tone"
 - "User decided to use PostgreSQL for the project" → "decision.database_choice"
@@ -142,6 +144,45 @@ SOURCE:
 {source}
 
 Return only the JSON object:"""
+
+
+# ---- Knowledge Organizer sub-agent -----------------------------------------
+# A librarian sub-agent that organizes incoming knowledge into the vault. It is a
+# real agent: its WORKSPACE is the KB directory, so it EXPLORES the vault itself
+# with Grep/Glob/Read — we do NOT pre-list docs for it. It returns the write-ops
+# the pipeline applies. Single-brace JSON below is literal (NOT .format()'d).
+_KB_ORGANIZER_SYSTEM_PROMPT = """You are the Knowledge Organizer — a librarian who keeps an AI assistant's personal knowledge vault tidy. The vault is YOUR WORKSPACE: a directory of Markdown docs, each with YAML frontmatter (title, aliases, type, description, tags) and a prose body with inline [[Wiki Links]]. There is NO pre-made index — use your tools (Glob, Grep, Read) to explore the vault and discover what already exists.
+
+NAMING — the `title` is the subject's PURE canonical name ONLY. Put nicknames, abbreviations, gelar, or short forms in `aliases`, NEVER in the title (the title becomes the filename, so it must stay clean). Examples:
+  - title "Abdurrahman Wahid", aliases ["Gus Dur"]   (NOT title "Abdurrahman Wahid (Gus Dur)")
+  - title "Susilo Bambang Yudhoyono", aliases ["SBY"]
+The aliases let other names still resolve to this one doc.
+
+LINKING IS MANDATORY — every named entity you mention in a `body` MUST be wrapped in an inline [[Wiki Link]]: people, places, organizations, companies, products, venues, events. This is how the knowledge graph connects — a body with no links is WRONG. ESPECIALLY every PERSON's name MUST be a [[link]] — never leave a person as plain text. Link the entity's canonical name, e.g. "User bertemu [[Budi Santoso]] di [[Jakarta]] di kantor [[Nuwaira]]." Do NOT wrap "User" in a link.
+
+IMAGES — there is NO separate images field. If the conversation provides a relevant photo/image URL for a subject, you MUST embed it INLINE in that doc's `body` as Markdown: `![brief description](image-url)` (put it near the top of the body or in the relevant paragraph). An image is saved ONLY if it is in the `body` — a URL placed anywhere else is lost. Only embed photos directly relevant to the subject; skip generic/unrelated ones.
+
+Given the conversation below, file any durable, long-term knowledge into the vault. For each subject:
+- EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Andi" is "Andi Wijaya"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
+- KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
+- NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
+- WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.
+- RETRO-LINK existing docs (IMPORTANT — frequently the MOST valuable work, and easy to miss): once a subject HAS a doc (you just created it, or it already existed), OTHER docs often still mention that subject as PLAIN TEXT because its doc didn't exist when they were written. Your job is to connect them: Grep the vault for the subject's name + aliases, and for each bare mention in another doc's body that is NOT already inside [[ ]], EDIT that doc (action "edit") to wrap it as a [[link]]. Keep `old_str` short and UNIQUE (include a couple of surrounding words so it matches exactly one spot). E.g. old_str "Komisaris Independen Grace Natalie" → new_str "Komisaris Independen [[Grace Natalie]]". Leaving a plain-text mention of an entity that HAS a doc is WRONG — emit one "edit" op per doc that needs linking (it is normal and good for a run to return ONLY edit ops, even when nothing new is created).
+- WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
+- DUPLICATED CONTENT in an existing doc (the same section, or the whole body, appears TWICE — e.g. it was concatenated to itself) → DEDUPE it: action "dedupe" with just the doc's `slug`. This safely removes verbatim repeated blocks; do NOT try to fix duplication with `edit`.
+- Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
+
+OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
+{"docs":[
+ {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
+ {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Gus Dur / SBY, else omit>"],"body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
+ {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<replacement text>"},
+ {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"},
+ {"action":"dedupe","slug":"<existing slug with duplicated content>"}
+]}
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str (also used to RETRO-LINK plain-text mentions in other docs to a subject that now has a doc); rename=existing slug + corrected new_title; dedupe=existing slug; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "edit" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
+
+Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
 
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
@@ -263,45 +304,22 @@ def switch_collection_tool(agent_id: str, session_id: str, name: str) -> dict:
     return {"result": f"Active collection is now '{folder}'.", "folder": folder}
 
 
-def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80,
-                        source_text: str = "") -> list:
-    """List existing docs as dedupe candidates: [{slug, title, description}].
+def _kb_doc_listing(agent_id: str, limit: int = 400):
+    """Walk the server-local KB and return ``(listing_text, name_to_slug)``.
 
-    Primary path: evomem hybrid search using source_text as query — surfaces docs
-    semantically similar to the content being authored.
-    Fallback: filesystem walk, prioritising active collection + root docs.
+    ``listing_text``: one line per doc — ``[slug] Title (aka a1; a2) :: description`` —
+    shown to the resolver (and the legacy author) as the COMPLETE set of existing
+    docs (replaces the old top-80 ranked search that hid docs from the LLM).
+    ``name_to_slug``: ``{casefold(title|alias): slug}`` — the create-collision guard
+    that keeps an exact title/alias dupe from being minted even if the resolver errs.
     """
-    # --- Primary: evomem hybrid search ---
-    if source_text and get_engine() == 'evomem':
-        try:
-            # Truncate for safety — evomem handles long queries natively,
-            # but we cap at 2000 chars to avoid pathological CLI args.
-            q = source_text[:2000].strip()
-            if q:
-                result = evomem_search(agent_id, q, limit=limit, mode="balanced")
-                if isinstance(result, dict):
-                    hits = result.get("hits")
-                    if hits:
-                        docs = []
-                        for h in hits:
-                            slug = (h.get("slug") or "").strip()
-                            title = (h.get("title") or slug.rsplit('/', 1)[-1]).strip()
-                            desc = (h.get("snippet") or h.get("description") or "")[:160]
-                            docs.append({"slug": slug, "title": title, "description": desc})
-                        if docs:
-                            return docs[:limit]
-        except Exception:
-            logger.debug("_list_existing_docs: evomem search failed for %s, falling back", agent_id)
-
-    # --- Fallback: filesystem walk ---
     kb_dir = f"agents/{agent_id}/kb"
     if not os.path.isdir(kb_dir):
-        return []
-    folder = (folder or "").strip("/")
-    prio, rest = [], []
+        return "(none yet)", {}
+    lines, name_to_slug, count = [], {}, 0
     for root, dirs, fnames in os.walk(kb_dir):
         dirs[:] = [d for d in dirs if not d.startswith('.') and d != 'inbox']
-        for fn in fnames:
+        for fn in sorted(fnames):
             if not fn.endswith('.md') or fn.startswith('.'):
                 continue
             full = os.path.join(root, fn)
@@ -312,110 +330,758 @@ def _list_existing_docs(agent_id: str, folder: str = "", limit: int = 80,
                     fm, _ = evomem_writer._parse_frontmatter(f.read())
             except OSError:
                 continue
-            title = fm.get('title') or slug.rsplit('/', 1)[-1]
+            title = (fm.get('title') or slug.rsplit('/', 1)[-1]).strip()
             desc = (fm.get('description') or '')[:160]
-            entry = {"slug": slug, "title": title, "description": desc}
-            seg = slug.split('/', 1)[0] if '/' in slug else ''
-            if (folder and seg == folder) or '/' not in slug:
-                prio.append(entry)
-            else:
-                rest.append(entry)
-    return (prio + rest)[:limit]
+            aliases = fm.get('aliases') or []
+            if isinstance(aliases, str):
+                aliases = [aliases]
+            aliases = [a for a in aliases if isinstance(a, str) and a.strip()]
+            alias_str = f" (aka {'; '.join(aliases)})" if aliases else ""
+            lines.append(f"[{slug}] {title}{alias_str} :: {desc}")
+            if title:
+                name_to_slug.setdefault(title.casefold(), slug)
+            for a in aliases:
+                name_to_slug.setdefault(a.casefold(), slug)
+            count += 1
+            if count >= limit:
+                return ("\n".join(lines), name_to_slug)
+    return ("\n".join(lines) or "(none yet)", name_to_slug)
 
 
-def _resolve_doc_slug(agent_id: str, slug_hint: str, title: str, folder: str):
+def _resolve_doc_slug2(agent_id: str, slug_hint: str, title: str, folder: str,
+                       name_to_slug: dict = None):
     """Resolve to an existing doc slug to update, or None to create a new doc.
 
-    Tries the model's slug hint, then the title-slug inside the active folder,
-    then the title-slug at root — the first that exists on disk wins.
+    Tries, in order: the model's slug hint → an exact title/alias match in
+    ``name_to_slug`` → the title-slug inside the active folder → the title-slug at
+    root. The first that exists on disk wins. Adds title/alias resolution that the
+    old slug-only ``_resolve_doc_slug`` lacked (the duplicate-doc root cause).
     """
     folder = (folder or "").strip("/")
     cands = []
     if slug_hint:
         cands.append(slug_hint.strip("/"))
+    if name_to_slug:
+        hit = name_to_slug.get((title or "").strip().casefold())
+        if hit:
+            cands.append(hit)
     tslug = evomem_writer.slugify(title)
     if tslug:
         if folder:
             cands.append(f"{folder}/{tslug}")
         cands.append(tslug)
+    seen = set()
     for c in cands:
-        if c and evomem_writer.read_doc(agent_id, c) is not None:
-            return c
+        if c and c not in seen:
+            seen.add(c)
+            if evomem_writer.read_doc(agent_id, c) is not None:
+                return c
     return None
 
 
-def _doc_delta(agent_id: str, slug: str, new_body: str,
-               llm_lock: threading.Lock):
-    """Return only the genuinely-new prose to append to an existing doc, or None
-    if the doc already covers it (idempotency guard)."""
-    doc = evomem_writer.read_doc(agent_id, slug)
-    if doc is None:
-        return new_body
-    snippet = _kb_llm_text(
-        _KB_MERGE_SNIPPET_PROMPT.format(existing=doc["body"], content=new_body),
-        llm_lock)
-    if not snippet or snippet.strip().upper() == "NONE":
+def _iter_balanced_json(text: str):
+    """Yield every balanced top-level ``{...}`` substring in ``text``.
+
+    String/escape-aware, so braces inside string literals don't break balancing.
+    Lets us pull the real JSON object out of prose that also contains braces
+    (e.g. "Here's the result: {...}. I've filed it.")."""
+    depth, start, in_str, esc = 0, -1, False, False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                yield text[start:i + 1]
+                start = -1
+
+
+# Smart/curly double-quotes LLMs sometimes emit for the JSON structure itself
+# (e.g. {“docs“:[]}), which json.loads rejects. Normalized only as a fallback.
+_SMART_DQUOTES = {0x201C: '"', 0x201D: '"', 0x201E: '"', 0x201F: '"', 0x2033: '"'}
+
+
+def _loads_lenient(s: str):
+    """json.loads, tolerant of the most common LLM JSON slips:
+    - literal control chars (newlines/tabs) INSIDE string values — very common for
+      multi-line ``body``/``old_str`` content — handled via ``strict=False``;
+    - a trailing comma before ``}``/``]``;
+    - smart/curly double-quotes used for the JSON structure (tried LAST so valid
+      JSON with curly quotes inside string values is parsed verbatim first).
+    """
+    smart = s.translate(_SMART_DQUOTES)
+    variants = (
+        s,
+        re.sub(r',(\s*[}\]])', r'\1', s),
+        smart,
+        re.sub(r',(\s*[}\]])', r'\1', smart),
+    )
+    for variant in variants:
+        try:
+            return json.loads(variant, strict=False)
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return None
+
+
+def _coerce_docs(data):
+    """Normalize parsed JSON into a list of doc-ops, or None if it isn't one.
+
+    Accepts the canonical ``{"docs": [...]}``, a bare ``[...]`` array of ops, or a
+    single bare op object — so a model that drops the wrapper still works."""
+    if isinstance(data, dict):
+        if isinstance(data.get("docs"), list):
+            return data["docs"]
+        if data.get("action") or data.get("title"):  # a single, unwrapped op
+            return [data]
+    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
+        return data
+    return None
+
+
+def _reconstruct_json(text: str) -> str:
+    """Best-effort RECONSTRUCTION of malformed JSON (last resort) — rebuilds a
+    parseable string from the first top-level ``{``/``[`` to its close, fixing the
+    common ways an LLM breaks JSON:
+
+    - unescaped inner double-quotes inside string values (escaped via a lookahead:
+      a ``"`` is a closing quote only if the next non-space char is ``,:}]`` or EOF,
+      otherwise it's an inner quote);
+    - stray literal control chars (newline/tab/CR) inside strings -> escaped;
+    - trailing commas -> dropped;
+    - TRUNCATED output -> any unterminated string and still-open ``{[`` are closed.
+
+    Leading prose and anything after the top-level container are ignored. Returns a
+    candidate string (not guaranteed valid) for one more parse attempt.
+    """
+    start = next((k for k, c in enumerate(text) if c in '{['), -1)
+    if start == -1:
+        return ''
+    out, stack, in_str, esc, started = [], [], False, False, False
+    i, n = start, len(text)
+    _ctrl = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+    while i < n:
+        c = text[i]
+        if in_str:
+            if esc:
+                out.append(c); esc = False
+            elif c == '\\':
+                out.append(c); esc = True
+            elif c == '"':
+                j = i + 1
+                while j < n and text[j] in ' \t\r\n':
+                    j += 1
+                if j >= n or text[j] in ',:}]':
+                    out.append('"'); in_str = False          # closing quote
+                else:
+                    out.append('\\"')                        # inner quote -> escape
+            elif c in _ctrl:
+                out.append(_ctrl[c])                          # escape literal control char
+            else:
+                out.append(c)
+        elif c == '"':
+            in_str = True; out.append(c)
+        elif c in '{[':
+            stack.append(c); started = True; out.append(c)
+        elif c in '}]':
+            if stack:
+                stack.pop()
+            out.append(c)
+            if started and not stack:
+                break                                        # top-level container closed
+        else:
+            out.append(c)
+        i += 1
+    if in_str:
+        out.append('"')                                      # close an unterminated string
+    repaired = re.sub(r',(\s*[}\]])', r'\1', ''.join(out))   # drop trailing commas
+    while stack:                                             # close truncated containers
+        repaired += ']' if stack.pop() == '[' else '}'
+    return repaired
+
+
+def _parse_organizer_docs(findings: str):
+    """Extract the ``docs`` list of write-ops from the organizer's free-text answer.
+
+    Robust to thinking tags, code fences, surrounding prose, multiple JSON objects,
+    trailing commas, literal control chars, and a missing ``{"docs": ...}`` wrapper.
+    As a LAST resort, reconstructs malformed/truncated JSON. Returns the list
+    (possibly empty) on success, or ``None`` if nothing usable can be recovered.
+    """
+    if not findings or not isinstance(findings, str):
         return None
-    return snippet
+    raw, _ = strip_thinking_tags(findings)
+    raw = _strip_code_fences(raw).strip()
+    # 1) Try the whole payload, then each balanced {...} object embedded in prose.
+    for candidate in (raw, *_iter_balanced_json(raw)):
+        data = _loads_lenient(candidate)
+        if data is not None:
+            docs = _coerce_docs(data)
+            if docs is not None:
+                return docs
+    # 2) Last resort: reconstruct malformed/truncated JSON and parse that.
+    data = _loads_lenient(_reconstruct_json(raw))
+    if data is not None:
+        docs = _coerce_docs(data)
+        if docs is not None:
+            return docs
+    return None
+
+
+def _kb_organizer_infra_ok() -> bool:
+    """True if the DirExplorer worker skill (the organizer's tools) is enabled."""
+    try:
+        from backend.agent_runtime import explorer
+        return explorer.worker_skill_enabled()
+    except Exception:
+        return False
+
+
+def _format_recent_messages(recent_messages, n: int = 6, max_chars: int = 4000) -> str:
+    """Format the last ``n`` conversation turns as 'User: ... / Assistant: ...' text.
+
+    Gives the organizer the verbatim recent turns (the summarizer's ``tail_messages``,
+    not yet folded into the summary) so it doesn't lose context that a thin summary or
+    single fact would miss.
+    """
+    if not recent_messages:
+        return ""
+    lines = []
+    for m in recent_messages[-n:]:
+        if not isinstance(m, dict):
+            continue
+        role = m.get('role') or ('user' if m.get('type') == 'user' else 'assistant')
+        content = (m.get('content') or '').strip()
+        if not content:
+            continue
+        lines.append(f"{'User' if role == 'user' else 'Assistant'}: {content}")
+    text = "\n".join(lines)
+    return text[-max_chars:] if len(text) > max_chars else text
+
+
+# ── KB organizer delta: feed only what's new since the organizer last filed ──
+# The rolling summary is LLM-regenerated (and re-lists every entity) on each
+# summarization, so handing the organizer the whole thing every run buries the
+# genuinely-new bits. Instead we diff the current summary against the snapshot
+# the organizer last successfully processed (an organizer-OWN cursor, robust to
+# the debounce skips), and feed only the changed regions + a little context.
+
+def _delta_enabled() -> bool:
+    return os.environ.get('EVOMEM_KB_ORGANIZER_DELTA', 'on').strip().lower() \
+        not in ('0', 'off', 'no', 'false')
+
+
+def _delta_context() -> int:
+    """Lines of surrounding context to keep around each changed hunk."""
+    try:
+        return max(0, int(os.environ.get('EVOMEM_KB_ORGANIZER_DELTA_CONTEXT', '2')))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _delta_min_score() -> int:
+    """Minimum delta score (count of genuinely-new content lines) required to
+    bother spawning the organizer. Below this, the run is skipped and the cursor
+    is left un-advanced so small changes accumulate until they're worth a run."""
+    try:
+        return max(0, int(os.environ.get('EVOMEM_KB_ORGANIZER_DELTA_MIN', '3')))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _summary_delta(prev: str, curr: str, context: int):
+    """Return ``(delta_text, score)`` describing what's new in ``curr`` vs ``prev``.
+
+    ``delta_text`` is the inserted/replaced regions of ``curr``, each prefixed with
+    its nearest preceding markdown header and padded with ``context`` lines, hunks
+    joined by an ``…`` separator. ``score`` counts the new-side lines whose stripped
+    content is non-empty AND absent from ``prev`` — so pure reordering / re-listing
+    of existing entities does not inflate it.
+
+    ``prev`` empty (cold start) → ``("", 0)``: the caller feeds the full summary and
+    skips the score gate so the vault still gets seeded.
+    """
+    if not (prev or "").strip() or not (curr or "").strip():
+        return "", 0
+
+    prev_lines = prev.splitlines()
+    curr_lines = curr.splitlines()
+    prev_set = {ln.strip() for ln in prev_lines if ln.strip()}
+
+    sm = difflib.SequenceMatcher(None, prev_lines, curr_lines, autojunk=False)
+    score = 0
+    ranges = []  # (start, end) on curr_lines, context-padded
+    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
+        if tag not in ('insert', 'replace'):
+            continue
+        for ln in curr_lines[j1:j2]:
+            s = ln.strip()
+            if s and s not in prev_set:
+                score += 1
+        ranges.append((max(0, j1 - context), min(len(curr_lines), j2 + context)))
+
+    if not ranges:
+        return "", score
+
+    # Merge overlapping/adjacent padded ranges.
+    ranges.sort()
+    merged = [list(ranges[0])]
+    for s, e in ranges[1:]:
+        if s <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+
+    def _header_above(idx):
+        for k in range(idx - 1, -1, -1):
+            if curr_lines[k].lstrip().startswith('#'):
+                return curr_lines[k]
+        return None
+
+    out = []
+    last_header = None  # the section header most recently emitted
+    for s, e in merged:
+        chunk = curr_lines[s:e]
+        hdr = _header_above(s)
+        if out:
+            out.append("…")  # separator between non-adjacent hunks
+        # Prepend the section header only when it differs from the one already
+        # emitted — otherwise every hunk inside the same section would repeat
+        # "## Entities & Relationships" (the bug seen in organizer prompts).
+        if hdr and hdr != last_header and hdr not in chunk:
+            out.append(hdr)
+        out.extend(chunk)
+        inner_headers = [ln for ln in chunk if ln.lstrip().startswith('#')]
+        if inner_headers:
+            last_header = inner_headers[-1]
+        elif hdr:
+            last_header = hdr
+
+    return ("\n".join(out).strip(), score)
+
+
+def _organized_snapshot_key(agent_id: str, session_id: str) -> str:
+    return f"kb_organizer_last_summary:{agent_id}:{session_id}"
+
+
+def _load_organized_snapshot(agent_id: str, session_id: str) -> str:
+    """Summary the organizer last successfully processed for this (agent, session)."""
+    try:
+        return db.get_setting(_organized_snapshot_key(agent_id, session_id)) or ""
+    except Exception:  # noqa: BLE001 — best-effort; treat as cold start
+        return ""
+
+
+def _save_organized_snapshot(agent_id: str, session_id: str, summary: str) -> None:
+    """Advance the organizer cursor to the full current summary (the new baseline)."""
+    try:
+        db.set_setting(_organized_snapshot_key(agent_id, session_id), summary or "")
+    except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
+        logger.debug("[MemoryManager] could not save organizer snapshot: %s", e)
+
+
+# Per-agent organizer concurrency control: at most ONE organizer sub-agent runs
+# per agent at a time (no double-spawn), rate-limited to one run per debounce
+# window (default 60s; EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS to tune, 0 disables).
+_organizer_running: set = set()
+_organizer_last_start: dict = {}
+_organizer_guard = threading.Lock()
+
+
+def _organizer_debounce_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get('EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS', '60')))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _organizer_try_claim(agent_id: str, debounce_s: float) -> bool:
+    """Claim the single per-agent organizer slot. Returns False (skip) if one is
+    already running for this agent or the last run started within the debounce
+    window; otherwise marks it running + records the start and returns True."""
+    now = time.monotonic()
+    with _organizer_guard:
+        if agent_id in _organizer_running:
+            return False  # an instance is already running for this agent
+        if debounce_s > 0 and (now - _organizer_last_start.get(agent_id, 0.0)) < debounce_s:
+            return False  # ran too recently
+        _organizer_running.add(agent_id)
+        _organizer_last_start[agent_id] = now
+        return True
+
+
+def _organizer_release(agent_id: str) -> None:
+    with _organizer_guard:
+        _organizer_running.discard(agent_id)
+
+
+def _read_last_assistant_message(agent_id: str, session_id: str):
+    """Return the last non-empty assistant message in a session — the GROUND TRUTH
+    of the organizer's final output. The ``final_answer`` event field can carry an
+    intermediate/short turn ("Now I'll build the JSON...") instead of the real ops,
+    so this is the reliable source."""
+    if not session_id:
+        return None
+    try:
+        from models.db import db
+        msgs = db.get_session_messages(session_id, limit=30, agent_id=agent_id) or []
+        for m in reversed(msgs):
+            if m.get('role') == 'assistant' and (m.get('content') or '').strip():
+                return m['content']
+    except Exception:
+        logger.debug("read last assistant failed for %s/%s", agent_id, session_id, exc_info=True)
+    return None
+
+
+def _organizer_docs_from(agent_id, explorer_id, session_id, event_answer):
+    """Parse the organizer's ops: prefer the final_answer event text, else fall back
+    to the session's last assistant message (the event field is unreliable)."""
+    docs = _parse_organizer_docs(event_answer)
+    if docs is not None:
+        return docs
+    db_ans = _read_last_assistant_message(explorer_id, session_id)
+    if db_ans and db_ans != (event_answer or ''):
+        logger.info("[MemoryManager] organizer[%s]: event answer (%d chars) unparsed; using "
+                    "session last-assistant (%d chars)", agent_id, len(event_answer or ''), len(db_ans))
+        return _parse_organizer_docs(db_ans)
+    return None
+
+
+def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
+                        source_label: str = "SUMMARY / NOTE (what to file)"):
+    """Run the Knowledge Organizer sub-agent over the agent's server-local KB and
+    return the parsed ``docs`` list of write-ops, or ``None`` on any failure/timeout.
+
+    The organizer is a real agent: its workspace is ``agents/{id}/kb`` (resolved via
+    the ``/_self/kb`` virtual path), so it EXPLORES the vault with Grep/Read/Glob —
+    we hand it the recent conversation + the latest note, NOT a pre-built doc list.
+    Read-only, confined to the KB dir; reuses the explorer sub-agent machinery.
+
+    Deadlock-safety: the caller MUST NOT hold an ``_llm_lock`` permit here — the
+    spawned sub-agent's own LLM loop acquires the same BoundedSemaphore.
+    """
+    import threading as _threading
+    try:
+        from backend.subagent_manager import subagent_manager
+        from backend.agent_runtime import explorer
+        from backend.agent_runtime.notifier import notify_agent
+        from backend.tools._workspace import resolve_self_path, effective_agent_id
+        from backend.event_stream import event_stream
+    except Exception:
+        return None
+
+    agent_id = agent.get('id', '')
+    if not agent_id:
+        return None
+
+    # Server-local KB path (works even when the agent runs on a remote/tunnel
+    # workplace — direxplorer Grep/Read/Glob do in-process I/O on the server).
+    kb_abs = resolve_self_path(effective_agent_id(agent), '/_self/kb')
+    if not kb_abs or not os.path.isdir(kb_abs):
+        return None
+
+    tool_ids, tool_err = explorer.resolve_tool_ids('')
+    if tool_err:
+        return None
+
+    # Generous default: the organizer is a tool-heavy agent loop on a possibly-slow
+    # local model. This runs in a background daemon thread (debounced + single-
+    # instance), so a long blocking wait is fine — and far better than discarding a
+    # result that arrives a few seconds late. Tune via EVOMEM_KB_ORGANIZER_TIMEOUT.
+    timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
+    skill_cfg = {
+        'system_prompt': _KB_ORGANIZER_SYSTEM_PROMPT,
+        'model_id': os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None,
+    }
+
+    def _build(eid):
+        cfg = explorer.build_config(agent, eid, kb_abs, skill_cfg, tool_ids)
+        # Force server-local execution regardless of the parent's workplace.
+        cfg['workplace_id'] = None
+        cfg['sandbox_enabled'] = 0
+        cfg['run_as_user'] = None
+        # Tag as the KB organizer: a distinct identity from the Explore-tool
+        # explorer so (a) token usage can be categorized clearly by the token
+        # monitor and (b) we can diverge its behaviour later. The read-only
+        # tool restriction itself comes from the generic explorer rule in
+        # build_tools (all explorers get only direxplorer tools).
+        cfg['is_kb_organizer'] = True
+        cfg['name'] = f"{agent.get('name', agent_id)} · kb organizer"
+        return cfg
+
+    try:
+        explorer_id = subagent_manager.spawn_explorer(agent, _build, id_kind='organizer')
+    except Exception:
+        return None
+
+    parent_name = agent.get('name', agent_id)
+    # The organizer is a SILENT background process — it must NOT report its JSON
+    # back to the user's chat. Passing no report_to makes the auto-forward skip.
+    report_to_id, report_to_channel_id = None, None
+
+    answer_box, done = {}, _threading.Event()
+
+    def _on_done(data):
+        if data.get('agent_id') == explorer_id:
+            answer_box['answer'] = data.get('answer', '')
+            done.set()
+
+    event_stream.on('final_answer', _on_done)
+    try:
+        parts = []
+        if recent_text and recent_text.strip():
+            parts.append("RECENT CONVERSATION (latest turns):\n" + recent_text.strip())
+        if source_text and source_text.strip():
+            parts.append(f"{source_label}:\n" + source_text.strip())
+        task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
+                    "Grep/Glob/Read and file any durable knowledge from the conversation "
+                    "above into the right docs. Output ONLY the JSON object.")
+        # Let notify auto-create/resolve the session (get_or_create_session). A
+        # made-up session_id is rejected as "not found", so we must NOT force one.
+        # Within a run each spawn has a fresh agent_id (organizer_1/2/...) -> a fresh
+        # session anyway; the DB-read fallback handles capture even if reused.
+        res = notify_agent(
+            agent_id=explorer_id, tag=f"AGENT/{parent_name}", message=task_msg,
+            external_user_id=f"__agent__{agent_id}", channel_id=None, dedup=False,
+            trigger_llm=True,
+            metadata={'agent_message': True, 'from_agent_id': agent_id,
+                      'from_agent_name': parent_name, 'agent_message_depth': 1,
+                      'subagent_spawn': True, 'injected_system_vars': {},
+                      'report_to_id': report_to_id,
+                      'report_to_channel_id': report_to_channel_id})
+        session_id = res.get('session_id')
+        if not res.get('success') or not session_id:
+            return None
+        if not done.wait(timeout=timeout):
+            logger.warning("[MemoryManager] organizer[%s]: timed out after %ds — result "
+                           "discarded (raise EVOMEM_KB_ORGANIZER_TIMEOUT)", agent_id, timeout)
+            return None
+        # The event 'answer' can be an intermediate turn; fall back to the session's
+        # last assistant message (ground truth).
+        docs = _organizer_docs_from(agent_id, explorer_id, session_id, answer_box.get('answer', ''))
+        if docs is not None:
+            return docs
+        ans = answer_box.get('answer', '') or ''
+        logger.warning("[MemoryManager] organizer[%s]: could not parse ops JSON (event %d "
+                       "chars); retrying. head=%r", agent_id, len(ans), ans[:300])
+        # One retry: re-prompt the same session for clean JSON.
+        done.clear()
+        answer_box.clear()
+        res2 = notify_agent(
+            agent_id=explorer_id, tag=f"AGENT/{parent_name}",
+            message=("Your previous answer was not valid JSON. Reply with ONLY the "
+                     'JSON object {"docs":[...]} — no prose, no code fences.'),
+            session_id=session_id, dedup=False, trigger_llm=True,
+            metadata={'agent_message': True, 'from_agent_id': agent_id,
+                      'agent_message_depth': 1})
+        if not res2.get('success') or not done.wait(timeout=timeout):
+            return None
+        docs = _organizer_docs_from(agent_id, explorer_id, session_id, answer_box.get('answer', ''))
+        if docs is None:
+            logger.warning("[MemoryManager] organizer[%s]: ops JSON still unparseable after "
+                           "retry", agent_id)
+        return docs
+    except Exception:
+        logger.debug("kb organizer failed for %s", agent_id, exc_info=True)
+        return None
+    finally:
+        event_stream.off('final_answer', _on_done)
+        # Do NOT destroy here: the agent loop may still have trailing activity
+        # (a final context build), and rmtree'ing its DB mid-flight throws
+        # "unable to open database file". Idle cleanup reaps it safely; the
+        # single-instance + debounce guard keeps the per-parent count low.
+
+
+_TITLE_PAREN_ALIAS_RE = re.compile(r'\s*[\(\[]([^)\]]{1,60})[\)\]]\s*$')
+
+
+def _split_title_aliases(title: str):
+    """Split a trailing parenthetical nickname off a title so the slug stays the
+    PURE name. 'Abdurrahman Wahid (Gus Dur)' -> ('Abdurrahman Wahid', ['Gus Dur']);
+    'Susilo Bambang Yudhoyono (SBY)' -> ('Susilo Bambang Yudhoyono', ['SBY']).
+    Returns (clean_title, [aliases]); a whole-parenthetical title is left as-is.
+    """
+    title = (title or '').strip()
+    m = _TITLE_PAREN_ALIAS_RE.search(title)
+    if not m:
+        return title, []
+    clean = title[:m.start()].strip()
+    if not clean:
+        return title, []
+    aliases = [a.strip() for a in re.split(r'[;,/]', m.group(1)) if a.strip()]
+    return clean, aliases
 
 
 def _author_docs(agent: dict, session_id: str, source_text: str,
-                 llm_lock: threading.Lock) -> None:
-    """Unified knowledge authoring: turn a summary or a remembered fact into
-    rich, inline-linked docs in the active collection.
+                 llm_lock: threading.Lock, recent_messages=None) -> None:
+    """Organize a conversation into the agent's knowledge vault.
 
-    One LLM call authors/updates docs (each rich prose about one subject, with
-    inline ``[[Doc Title]]`` links). New docs are created via ``upsert_doc`` in
-    the active collection folder (root by default); existing docs are appended to
-    (delta only). Emits ``doc_updated`` so the evomem sync wires the graph from
-    the inline links. Best-effort, runs in a background thread.
+    By default a Knowledge Organizer sub-agent EXPLORES the vault itself (Grep/Read/
+    Glob over its workspace) and returns the write-ops (create/update with inline
+    ``[[links]]``); new docs are created via ``upsert_doc`` in the active collection
+    folder (root by default), existing docs are appended to (delta only). Emits
+    ``doc_updated`` so the evomem sync wires the graph. Best-effort, background thread.
+
+    ``recent_messages`` is the summarizer's ``tail_messages`` (latest turns) handed to
+    the organizer as conversation context so freshly-mentioned info isn't lost.
     """
     agent_id = agent['id']
     if get_engine() != 'evomem':
         return
     try:
         folder = _get_active_collection(agent_id, session_id)
-        existing = _list_existing_docs(agent_id, folder, source_text=source_text)
-        existing_text = "\n".join(
-            f"[{d['slug']}] {d['title']} :: {d['description']}" for d in existing
-        ) or "(none yet)"
-        # Fixed authoring guidance for deterministic output — the agent's
-        # summarize_prompt governs *summary style*, not *what to file as knowledge*.
-        prompt = _AUTHOR_DOCS_PROMPT.format(
-            guidance=_DEFAULT_KB_GUIDANCE, existing=existing_text, source=source_text)
-        data = _kb_llm_json(prompt, llm_lock)
-        if not isinstance(data, dict):
-            return
-        docs = data.get('docs')
+
+        # Organize strategy. ON (default): the Knowledge Organizer sub-agent — a real
+        # agent whose workspace IS the KB — explores the vault itself and returns
+        # write-ops, spawned with NO llm_lock held (deadlock-safe). On failure we SKIP
+        # (never fall through to a duplicate-prone author). OFF/legacy (or DirExplorer
+        # unavailable): a single, non-agentic author call that needs the doc list
+        # pre-built (it can't explore).
+        mode = os.environ.get('EVOMEM_KB_ORGANIZER', 'on').strip().lower()
+        use_organizer = mode not in ('0', 'off', 'no', 'legacy')
+        docs = None
+        name_to_slug = {}
+        if use_organizer and _kb_organizer_infra_ok():
+            # Diff the current summary against what the organizer last filed and
+            # feed only that delta (+ context). Skip the spawn when too little is
+            # new — leaving the cursor un-advanced so small changes accumulate.
+            delta_mode = _delta_enabled()
+            prev_snapshot = _load_organized_snapshot(agent_id, session_id) if delta_mode else ""
+            if delta_mode:
+                delta_text, delta_score = _summary_delta(
+                    prev_snapshot, source_text, _delta_context())
+                if prev_snapshot and delta_score < _delta_min_score():
+                    logger.debug("[MemoryManager] author_docs[%s]: delta score %d < %d; "
+                                 "skipping organizer (not enough new to file)",
+                                 agent_id, delta_score, _delta_min_score())
+                    return
+            else:
+                delta_text = ""
+
+            # One organizer per agent at a time, debounced — never double-spawn.
+            if not _organizer_try_claim(agent_id, _organizer_debounce_seconds()):
+                logger.debug("[MemoryManager] author_docs[%s]: organizer busy or "
+                             "debounced; skipping this run", agent_id)
+                return
+            try:
+                recent_text = _format_recent_messages(recent_messages)
+                if delta_mode and delta_text.strip():
+                    feed_text, source_label = delta_text, "WHAT'S NEW SINCE LAST FILING"
+                else:
+                    feed_text, source_label = source_text, "SUMMARY / NOTE (what to file)"
+                docs = _spawn_kb_organizer(agent, feed_text, recent_text,
+                                           source_label=source_label)
+            finally:
+                _organizer_release(agent_id)
+            if docs is None:
+                logger.info("[MemoryManager] author_docs[%s]: organizer returned nothing "
+                            "(skipping to avoid duplicates)", agent_id)
+                return
+            # Organizer ran (returned ops, possibly empty) — advance the cursor to
+            # the full current summary so the next run diffs against this point.
+            if delta_mode:
+                _save_organized_snapshot(agent_id, session_id, source_text)
+        else:
+            # Legacy author can't explore — give it the full vault listing + a
+            # title/alias map for alias-aware resolution.
+            listing_text, name_to_slug = _kb_doc_listing(agent_id)
+            prompt = _AUTHOR_DOCS_PROMPT.format(
+                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
+            data = _kb_llm_json(prompt, llm_lock)
+            if not isinstance(data, dict):
+                return
+            docs = data.get('docs')
         if not isinstance(docs, list) or not docs:
             return
 
-        modified, created, updated = [], 0, 0
+        modified, created, updated, renamed, edited, deduped = [], 0, 0, 0, 0, 0
         for d in docs[:12]:
             if not isinstance(d, dict):
                 continue
+            action = (d.get('action') or '').strip().lower()
             title = (d.get('title') or '').strip()
             body = (d.get('body') or '').strip()
+            slug_hint = (d.get('slug') or '').strip()
+
+            # Dedupe: clean a doc whose content got duplicated (self-concatenation).
+            if action in ('dedupe', 'dedup'):
+                if slug_hint:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.dedupe_doc(agent_id, slug_hint):
+                            modified.append(slug_hint)
+                            deduped += 1
+                continue
+
+            # Edit: surgical exact-unique-match replacement (fix a wrong [[link]]).
+            if action in ('edit', 'patch'):
+                old_str = d.get('old_str') or d.get('old') or ''
+                new_str = d.get('new_str') or d.get('new') or ''
+                if slug_hint and old_str:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
+                            modified.append(slug_hint)
+                            edited += 1
+                continue
+
+            # Rename: fix a typo'd / alias-polluted doc name.
+            if action == 'rename':
+                new_title, _ = _split_title_aliases((d.get('new_title') or '').strip())
+                if not slug_hint or not new_title:
+                    continue
+                with _kb_page_lock(agent_id, slug_hint):
+                    new_rel = evomem_writer.rename_doc(agent_id, slug_hint, new_title)
+                    if new_rel:
+                        renamed += 1
+                        modified.append(new_rel)
+                        if body:  # also fold in any new info from the same op
+                            cur = (evomem_writer.read_doc(agent_id, new_rel) or {}).get('body') or ''
+                            if body not in cur:
+                                evomem_writer.append_to_doc(agent_id, new_rel, body)
+                continue
+
             if not title or not body:
                 continue
+            # Keep the slug = PURE name: strip a trailing parenthetical nickname into
+            # aliases, and merge any aliases the model supplied.
+            title, paren_aliases = _split_title_aliases(title)
+            aliases = [a for a in (d.get('aliases') or []) if isinstance(a, str) and a.strip()]
+            aliases = list(dict.fromkeys(aliases + paren_aliases))
             doc_type = (d.get('type') or 'note').strip()
             description = (d.get('description') or '').strip()
             tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
-            slug_hint = (d.get('slug') or '').strip()
 
             base_slug = evomem_writer.slugify(title)
             lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
             with _kb_page_lock(agent_id, lock_key):
-                target = _resolve_doc_slug(agent_id, slug_hint, title, folder)
+                # Collision guard: resolve by slug hint -> title/alias -> slug. A
+                # create whose title/alias already exists becomes an update here, so
+                # a duplicate is never minted even if the resolver mislabels the op.
+                target = _resolve_doc_slug2(agent_id, slug_hint, title, folder, name_to_slug)
                 if target:
-                    delta = _doc_delta(agent_id, target, body, llm_lock)
+                    # The resolver already returns delta-only prose; guard against
+                    # re-appending content the doc already contains (no LLM call).
+                    existing_doc = evomem_writer.read_doc(agent_id, target)
+                    existing_body = (existing_doc or {}).get('body') or ''
+                    delta = None if (body and body in existing_body) else body
                     if delta and evomem_writer.append_to_doc(agent_id, target, delta):
                         modified.append(target)
                         updated += 1
                 else:
                     rel = evomem_writer.upsert_doc(
                         agent_id, title=title, body=body, doc_type=doc_type,
-                        description=description, folder=folder, tags=tags)
+                        description=description, folder=folder, tags=tags, aliases=aliases)
                     if rel:
                         modified.append(rel)
                         created += 1
@@ -425,18 +1091,20 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         if modified:
             evomem_writer.mark_dirty(agent_id)
             _emit_doc_updated(agent_id, modified)
-        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated (folder=%s)",
-                    agent_id, created, updated, folder or 'root')
+        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed, "
+                    "%d edited, %d deduped (folder=%s)", agent_id, created, updated, renamed,
+                    edited, deduped, folder or 'root')
     except Exception:
         logger.debug("author_docs exception (non-fatal) for %s", agent_id)
 
 
 def process_knowledge(agent: dict, session_id: str, summary: str,
-                      llm_lock: threading.Lock) -> None:
-    """Author/update rich, inline-linked knowledge docs from a conversation
-    summary. Triggered on ``summary_updated``; runs in the background extraction
-    thread. Best-effort; non-fatal on any error."""
-    _author_docs(agent, session_id, summary, llm_lock)
+                      llm_lock: threading.Lock, recent_messages=None) -> None:
+    """Author/update rich, inline-linked knowledge docs from a conversation.
+    Triggered on ``summary_updated``; runs in the background extraction thread.
+    ``recent_messages`` is the summarizer's ``tail_messages`` (latest turns) passed
+    to the organizer as context. Best-effort; non-fatal on any error."""
+    _author_docs(agent, session_id, summary, llm_lock, recent_messages=recent_messages)
 
 
 def _extract_dimension(content: str, category: str,
@@ -621,20 +1289,6 @@ _DEFAULT_KB_GUIDANCE = (
     "future conversations."
 )
 
-_KB_MERGE_SNIPPET_PROMPT = """An existing KB page already holds some knowledge. You are given new information. Output ONLY the part of the new information that is NOT already present on the page, as a concise markdown snippet (a short sentence or a few bullet points) ready to append to the page.
-
-Rules:
-- Do NOT restate anything already on the page.
-- Do NOT rewrite or return the existing content — output only the genuinely new delta.
-- If the new information is already fully covered by the page, output exactly: NONE
-
-Existing page body:
-{existing}
-
-New information:
-{content}
-
-New delta to append (or NONE):"""
 
 
 def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
@@ -661,31 +1315,6 @@ def _kb_llm_json(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
         return json.loads(raw)
     except (json.JSONDecodeError, KeyError, ValueError):
         return None
-    except Exception:
-        return None
-
-
-def _kb_llm_text(prompt: str, llm_lock: threading.Lock, max_tokens: int = None):
-    """Run a free-text LLM call; return stripped text or None.
-
-    max_tokens defaults to None (model default) so a thinking model has room to
-    reason before producing the answer (a small cap finishes on length).
-    """
-    try:
-        with llm_lock:
-            result = llm_client.chat_completion(
-                messages=[{"role": "user", "content": prompt}],
-                tools=None, temperature=0.0, enable_thinking=False,
-                max_tokens=max_tokens)
-        if not result.get('success'):
-            return None
-        choice = result['response'].get('choices', [{}])[0]
-        if choice.get('finish_reason') == 'length':
-            return None
-        raw = choice.get('message', {}).get('content', '')
-        raw, _ = strip_thinking_tags(raw)
-        raw = _strip_code_fences(raw).strip()
-        return raw or None
     except Exception:
         return None
 

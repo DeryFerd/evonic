@@ -1652,10 +1652,11 @@ function explorerDisplayName(s) {
     //   Regular agent (human ↔ agent):   "Linus"
     //   Sub-agent   (agent ↔ sub):       "Linus Torvalds - Sub-agent #1"
     //   Explorer    (agent ↔ explorer):  "Linus Torvalds - Explorer #1"
+    //   Organizer   (agent ↔ organizer): "Linus Torvalds - Organizer #1"
 
-    const KIND = /_(explorer|sub)_(\d+)/;           // anywhere in string
-    const KIND_END = /_(explorer|sub)_(\d+)$/;      // at end only (agent_name fallback)
-    const labelFor = k => k === 'explorer' ? 'Explorer' : 'Sub-agent';
+    const KIND = /_(explorer|organizer|sub)_(\d+)/;           // anywhere in string
+    const KIND_END = /_(explorer|organizer|sub)_(\d+)$/;      // at end only (agent_name fallback)
+    const labelFor = k => k === 'explorer' ? 'Explorer' : k === 'organizer' ? 'Organizer' : 'Sub-agent';
 
     const an = s.agent_name || 'Unknown';
     const pn = s.peer_agent_name;  // null/undefined when peer not in agents table

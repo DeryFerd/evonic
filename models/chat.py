@@ -422,6 +422,10 @@ class AgentChatDB:
             conn.commit()
 
     def get_agent_state(self) -> Optional[str]:
+        # A cached handle can outlive its DB file (an ephemeral sub-agent whose
+        # /tmp chat dir was rmtree'd on destroy). No file → no state.
+        if not os.path.exists(self.db_path):
+            return None
         with self._connect() as conn:
             # Try global key first
             row = conn.execute(
@@ -458,6 +462,8 @@ class AgentChatDB:
         global agent_state (__agent__): copies mode/tasks/plan_file/states/auto_trivial
         to session_state while leaving focus/focus_reason in agent_state.
         """
+        if not os.path.exists(self.db_path):
+            return None  # DB removed (e.g. destroyed ephemeral sub-agent)
         with self._connect() as conn:
             # Try session-specific state first
             row = conn.execute(

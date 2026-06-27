@@ -36,9 +36,15 @@ AGENT = "aisyah_kb_test"
 
 @pytest.fixture
 def brain(monkeypatch, tmp_path):
-    """Isolate the evomem knowledge root under a temp cwd + force the evomem engine."""
+    """Isolate the evomem knowledge root under a temp cwd + force the evomem engine.
+
+    Disables the Knowledge Organizer sub-agent so these tests exercise the
+    deterministic author→write→sync→graph path with a mocked ``_kb_llm_json`` (the
+    organizer is covered separately in test_kb_organizer.py).
+    """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "evomem")
+    monkeypatch.setenv("EVOMEM_KB_ORGANIZER", "off")
     return tmp_path
 
 
@@ -221,8 +227,7 @@ def test_dedupe_appends_to_existing_doc(brain):
     with patch.object(M, "_kb_llm_json", return_value={"docs": [
             {"action": "update", "slug": "jakarta", "title": "Jakarta",
              "type": "place", "description": "Ibu kota.", "tags": ["place"],
-             "body": new_prose}]}), \
-         patch.object(M, "_kb_llm_text", return_value=new_prose):
+             "body": new_prose}]}):
         M.process_knowledge({"id": AGENT}, "s", "Lebih banyak tentang Jakarta.", threading.Lock())
     assert W.sync_now(AGENT)
     after = _read("jakarta")

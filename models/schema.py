@@ -529,6 +529,16 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add messaging_acl and messaging_acl_mode for per-agent outbound ACL
+            for col, defn in [
+                ("messaging_acl", "TEXT DEFAULT NULL"),
+                ("messaging_acl_mode", "TEXT DEFAULT 'whitelist'"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass
+
             # Agent Variables (per-agent key-value config used by tools/skills)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS agent_variables (

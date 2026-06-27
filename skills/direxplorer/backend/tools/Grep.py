@@ -6,7 +6,12 @@ Returns matching lines grouped by file with line numbers.
 import os
 import json
 import subprocess
-from ._utils import _auto_correct_path, _validate_workspace_boundary, _resolve_workspace
+from ._utils import (
+    _auto_correct_path,
+    _validate_workspace_boundary,
+    _resolve_workspace,
+    _is_kb_vault_path,
+)
 
 _MAX_MATCHES = 500
 # Cap total output size (~50KB) to prevent context overflow when the
@@ -45,6 +50,12 @@ def execute(agent: dict, args: dict) -> dict:
 
     # Build ripgrep command
     cmd = ['rg', '--json', '--no-heading', '--max-count', str(_MAX_MATCHES)]
+
+    # An agent's KB vault lives under the gitignored agents/ tree; ripgrep honors
+    # .gitignore by default and would skip every doc (0 matches). Search it in
+    # full. Normal code workspaces keep respecting ignore files.
+    if _is_kb_vault_path(search_path):
+        cmd.append('--no-ignore')
 
     if include:
         cmd.extend(['--glob', include])

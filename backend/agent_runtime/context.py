@@ -29,6 +29,7 @@ def _token_count(text: str) -> int:
 
 from models.db import db
 from backend.tools import tool_registry
+from backend.tools.registry import BUILTIN_TOOL_IDS
 from backend.skills_manager import SkillsManager, skills_manager
 from backend.agent_runtime.evomem_client import (
     get_kb_graph_metadata,
@@ -1097,6 +1098,25 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     }
     if agent.get('builtin_tools_enabled', True):
         tools.extend(tool_registry.get_builtin_tools(agent_context))
+
+    # Universal tools — always available to all agents without explicit assignment.
+    # These are regular backend/tools/.py implementations (save_artifact, send_file)
+    # that should behave like built-in tools but don't use the built-in factory pattern.
+    seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
+    for tool_def in tool_registry.get_all_tool_defs():
+        fn_name = tool_def.get('function', {}).get('name', '')
+        tool_id = tool_def.get('id', '')
+        if not fn_name or tool_id.startswith('skill:'):
+            continue
+        if fn_name not in BUILTIN_TOOL_IDS:
+            continue
+        if fn_name in seen_fn_names:
+            continue
+        seen_fn_names.add(fn_name)
+        tools.append({
+            "type": "function",
+            "function": tool_def['function']
+        })
 
     # Super agent gets its own administrative built-in tools
     if agent.get('is_super'):

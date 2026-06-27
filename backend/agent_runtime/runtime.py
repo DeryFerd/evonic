@@ -1838,6 +1838,11 @@ class AgentRuntime:
                     if _tid not in _existing:
                         assigned_tool_ids.append(_tid)
 
+            # Auto-assign save_artifact to all agents so they can save files.
+            # No DB assignment needed — every agent can create and store artifacts.
+            if 'save_artifact' not in assigned_tool_ids:
+                assigned_tool_ids.append('save_artifact')
+
             # Agents with save_artifact automatically get list_artifacts + fetch_artifact.
             # No DB assignment needed — every artifacts-enabled agent can search and fetch their files.
             if 'save_artifact' in assigned_tool_ids:

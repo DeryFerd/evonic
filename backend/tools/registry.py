@@ -21,6 +21,10 @@ TOOLS_DIR = os.path.join(os.path.dirname(__file__))
 # Directory containing tool definition JSON files (for eval mock responses)
 TOOL_DEFS_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'tools')
 
+# Tools that are always available to all agents — no explicit assignment needed.
+# These are regular backend/tools/.py implementations, not built-in factories.
+BUILTIN_TOOL_IDS = {"save_artifact", "send_file"}
+
 
 class ToolRegistry:
     def __init__(self):
@@ -177,19 +181,21 @@ class ToolRegistry:
             # Authorization guard: tool must be in assigned_tool_ids
             _assigned = set(ctx.get('assigned_tool_ids', []))
             if function_name not in _assigned:
-                # Also check namespaced IDs like skill:skill_id:fn_name
-                _namespaced_match = any(
-                    tid.endswith(f':{function_name}')
-                    for tid in _assigned
-                )
-                if not _namespaced_match:
-                    return {
-                        "error": (
-                            f"Tool '{function_name}' is not assigned to this agent. "
-                            "Only explicitly assigned tools can be used."
-                        ),
-                        "blocked_by": "authorization",
-                    }
+                # BUILTIN_TOOL_IDS are always allowed — no explicit assignment needed
+                if function_name not in BUILTIN_TOOL_IDS:
+                    # Also check namespaced IDs like skill:skill_id:fn_name
+                    _namespaced_match = any(
+                        tid.endswith(f':{function_name}')
+                        for tid in _assigned
+                    )
+                    if not _namespaced_match:
+                        return {
+                            "error": (
+                                f"Tool '{function_name}' is not assigned to this agent. "
+                                "Only explicitly assigned tools can be used."
+                            ),
+                            "blocked_by": "authorization",
+                        }
 
             # Agent state guard: block write tools when in plan mode or state-blocked
             # Exception: /_self/ paths are always allowed (agent's own config dir).

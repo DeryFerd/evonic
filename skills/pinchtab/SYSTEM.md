@@ -58,7 +58,21 @@ PinchTab manages Chrome browser instances with tabs. The typical workflow:
 ### Visual Capture
 | Tool | Description |
 |------|-------------|
-| `pinchtab_screenshot` | Take a screenshot (base64-encoded image) |
+| `pinchtab_screenshot` | Take a screenshot. Returns base64 by default; use `output_mode="file"` to save to disk instead. |
+
+### Screenshot `output_mode`
+
+`pinchtab_screenshot` accepts an optional `output_mode` parameter:
+
+- **`output_mode="inline"`** (default, backward compatible) — returns the screenshot as a base64-encoded string in the JSON response. Example: `{"screenshot": "/9j/4AAQ...", "format": "jpeg"}`.
+- **`output_mode="file"`** — decodes the base64 data and writes the screenshot to a temporary file on disk. Returns only the file path and format. Example: `{"file_path": "/tmp/pinchtab_screenshot_<uuid>.jpeg", "format": "jpeg"}`.
+
+**When to use `output_mode="file"`:**
+- When the screenshot is large and would flood the context window with base64 data
+- When you need to reference the same screenshot multiple times without duplicating base64
+- When you are taking many screenshots in a single session
+
+**Important:** The temporary file is NOT deleted after the tool returns — the caller is responsible for reading or processing it. The file persists until the system cleans up `/tmp`.
 
 ## Selectors for Click & Type
 

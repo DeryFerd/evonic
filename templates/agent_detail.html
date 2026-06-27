@@ -151,6 +151,14 @@ html.dark #system-prompt-modal .bg-gray-900 { background: #111827; }
 html.dark #system-prompt-modal .hover\:bg-gray-200:hover { background: #4b5563; }
 html.dark #system-prompt-modal .hover\:bg-gray-600:hover { background: #4b5563; }
 html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
+/* KB Graph search highlight transitions */
+#kb-graph-svg circle { transition: opacity 0.3s, r 0.15s; }
+#kb-graph-svg text   { transition: opacity 0.3s; }
+#kb-graph-svg line   { transition: opacity 0.3s; }
+.kb-node-dimmed circle { opacity: 0.15 !important; }
+.kb-node-dimmed text   { opacity: 0.1 !important; }
+.kb-link-dimmed        { opacity: 0.05 !important; }
+.kb-node-match circle  { stroke: #6366f1 !important; stroke-width: 3 !important; }
 
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
@@ -559,41 +567,82 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
     </div>
 
     <!-- Knowledge Tab -->
-    <div id="tab-knowledge" class="tab-content hidden flex-1 min-h-0 overflow-y-auto">
-        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6 w-full">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="hidden sm:block text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
-                <div class="flex gap-2">
-                    <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
-                    <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
-                    {% if memory_engine == 'evomem' %}
-                    <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600" title="Force a full evomem memory sync">Sync</button>
-                    {% endif %}
-                    <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors">
-                        Upload
-                        <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
-                    </label>
+    <div id="tab-knowledge" class="tab-content hidden flex-1 min-h-0 relative">
+
+        <!-- Graph View (default, fills entire tab) -->
+        <div id="kb-graph-container" class="absolute inset-0">
+            <div id="kb-graph-svg" class="w-full h-full bg-gray-50 dark:bg-gray-900 rounded-lg"></div>
+
+            <!-- Overlay: Search bar (top-left) -->
+            <div class="absolute top-4 left-4 z-10">
+                <div class="relative">
+                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <input type="text" id="kb-graph-search" placeholder="Search nodes..." autocomplete="off"
+                           class="pl-9 pr-3 py-2 w-48 sm:w-64 bg-white/80 dark:bg-gray-800 backdrop-blur-sm border border-gray-200 dark:border-gray-600 rounded-lg text-sm shadow-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/50 dark:text-gray-100 dark:placeholder-gray-400"
+                           oninput="searchKBGraph(this.value)">
                 </div>
             </div>
-            <input type="text" id="kb-filter" placeholder="Filter files..." autocomplete="off"
-                   class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400 mb-4"
-                   oninput="filterKBFiles()">
-            <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
-            <div id="kb-list" class="space-y-2">
-                <!-- Files loaded dynamically -->
+
+            <!-- Overlay: Action buttons (top-right) -->
+            <div class="absolute top-4 right-4 z-10 flex gap-2">
+                <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm shadow-lg transition-colors flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+                    New
+                </button>
+                <button onclick="toggleKBGraphView()" id="kb-graph-toggle" class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors flex items-center gap-1.5">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+                    List
+                </button>
+                {% if memory_engine == 'evomem' %}
+                <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors" title="Force a full evomem memory sync">Sync</button>
+                {% endif %}
+                <label class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 cursor-pointer transition-colors">
+                    Upload
+                    <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
+                </label>
             </div>
-            <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
-            <div id="kb-graph-container" class="hidden" style="height: 70vh; min-height: 400px;">
-                <div id="kb-graph-svg" class="w-full h-full border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800"></div>
-                <div id="kb-graph-legend" class="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500 dark:text-gray-400">
-                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 bg-gray-400 dark:bg-gray-500"></span> Link</span>
-                    <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 border-t-2 border-dashed border-red-400"></span> Dangling</span>
-                    <label class="flex items-center gap-1 cursor-pointer">
-                        <input type="checkbox" id="kb-graph-show-orphans" checked onchange="toggleOrphans()">
-                        <span>Show orphans</span>
-                    </label>
+
+            <!-- Overlay: Legend (bottom-left) -->
+            <div id="kb-graph-legend" class="absolute bottom-4 left-4 z-10 flex flex-wrap items-center gap-3 bg-white/80 dark:bg-gray-800 backdrop-blur-sm rounded-lg px-3 py-2 text-xs text-gray-500 dark:text-gray-400 shadow-lg border border-gray-200 dark:border-gray-600">
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 bg-gray-400 dark:bg-gray-500"></span> Link</span>
+                <span class="flex items-center gap-1"><span class="inline-block w-3 h-0.5 border-t-2 border-dashed border-red-400"></span> Dangling</span>
+                <label class="flex items-center gap-1 cursor-pointer">
+                    <input type="checkbox" id="kb-graph-show-orphans" checked onchange="toggleOrphans()">
+                    <span>Show orphans</span>
+                </label>
+            </div>
+
+            <!-- Tooltip -->
+            <div id="kb-graph-tooltip" class="absolute hidden bg-gray-900 text-white text-xs px-2 py-1 rounded shadow-lg pointer-events-none z-20 dark:bg-gray-700"></div>
+        </div>
+
+        <!-- List View (hidden by default) -->
+        <div id="kb-list-container" class="hidden overflow-y-auto h-full p-6">
+            <div class="max-w-3xl mx-auto">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="hidden sm:block text-base font-semibold text-gray-800 dark:text-gray-100">Knowledge Base Files</h3>
+                    <div class="flex gap-2">
+                        <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-md text-sm transition-colors">+ New File</button>
+                        <button onclick="toggleKBGraphView()" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Graph View</button>
+                        {% if memory_engine == 'evomem' %}
+                        <button onclick="syncKB(this)" class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">Sync</button>
+                        {% endif %}
+                        <label class="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-md text-sm cursor-pointer transition-colors dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600">
+                            Upload
+                            <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
+                        </label>
+                    </div>
                 </div>
-                <div id="kb-graph-tooltip" class="absolute hidden bg-gray-900 text-white text-xs px-2 py-1 rounded shadow pointer-events-none dark:bg-gray-700"></div>
+                <input type="text" id="kb-filter" placeholder="Filter files..." autocomplete="off"
+                       class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400 mb-4"
+                       oninput="filterKBFiles()">
+                <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
+                <div id="kb-list" class="space-y-2">
+                    <!-- Files loaded dynamically -->
+                </div>
+                <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
             </div>
         </div>
 
@@ -1596,7 +1645,14 @@ function showTab(name) {
     $(`[data-tab="${name}"]`).addClass('border-indigo-500 text-indigo-600')
                               .removeClass('border-transparent text-gray-500');
 
-    if (name === 'knowledge') loadKBFiles();
+    if (name === 'knowledge') {
+        if (kbGraphMode === 'graph') {
+            if (kbGraphData) renderKBGraph();
+            else loadKBGraph();
+        } else {
+            loadKBFiles();
+        }
+    }
     if (name === 'tools') loadTools();
     if (name === 'skills') loadSkills();
     if (name === 'channels') loadChannels();
@@ -2291,6 +2347,8 @@ async function saveFile() {
     }
     closeEditor();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
     } finally {
         setSaveLoading(btnId, false);
     }
@@ -2328,6 +2386,8 @@ async function deleteFile(filename) {
     await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`, {method: 'DELETE'});
     if (currentEditFile === filename) closeEditor();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
 }
 
 async function uploadFile(input) {
@@ -2338,6 +2398,8 @@ async function uploadFile(input) {
     await fetch(`/api/agents/${AGENT_ID}/kb`, {method: 'POST', body: form});
     input.value = '';
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
 }
 
 function showNewFileModal() {
@@ -2365,12 +2427,14 @@ async function createNewFile() {
     }
     closeNewFileModal();
     loadKBFiles();
+    kbGraphData = null;
+    if (kbGraphMode === 'graph') loadKBGraph();
     editFile(fname);
 }
 
 
 // ==================== KB Graph View ====================
-let kbGraphMode = 'list';
+let kbGraphMode = 'graph';
 let kbGraphData = null;
 let kbGraphSimulation = null;
 let kbGraphShowOrphans = true;
@@ -2412,37 +2476,67 @@ async function syncKB(btn) {
 
 function toggleKBGraphView() {
     const toggleBtn = document.getElementById('kb-graph-toggle');
-    const kbList = document.getElementById('kb-list');
-    const kbEmpty = document.getElementById('kb-empty');
-    const kbFilter = document.getElementById('kb-filter');
     const graphContainer = document.getElementById('kb-graph-container');
+    const listContainer = document.getElementById('kb-list-container');
 
-    if (kbGraphMode === 'list') {
-        kbGraphMode = 'graph';
-        if (toggleBtn) toggleBtn.textContent = 'List View';
-        if (kbList) kbList.classList.add('hidden');
-        if (kbEmpty) kbEmpty.classList.add('hidden');
-        if (kbFilter) kbFilter.classList.add('hidden');
-        if (graphContainer) graphContainer.classList.remove('hidden');
-
-        if (kbGraphData) {
-            renderKBGraph();
-        } else {
-            loadKBGraph();
-        }
-    } else {
+    if (kbGraphMode === 'graph') {
         kbGraphMode = 'list';
-        if (toggleBtn) toggleBtn.textContent = 'Graph View';
-        if (kbList) kbList.classList.remove('hidden');
-        if (kbFilter) kbFilter.classList.remove('hidden');
-        if (graphContainer) graphContainer.classList.add('hidden');
+        if (toggleBtn) toggleBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101M10.172 13.828a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"/></svg> Graph';
+        graphContainer.classList.add('hidden');
+        listContainer.classList.remove('hidden');
         loadKBFiles();
+    } else {
+        kbGraphMode = 'graph';
+        if (toggleBtn) toggleBtn.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg> List';
+        listContainer.classList.add('hidden');
+        graphContainer.classList.remove('hidden');
+        if (kbGraphData) renderKBGraph();
+        else loadKBGraph();
     }
 }
 
 function toggleOrphans() {
     kbGraphShowOrphans = document.getElementById('kb-graph-show-orphans').checked;
     if (kbGraphMode === 'graph' && kbGraphData) renderKBGraph();
+}
+
+let _kbSearchTimer = null;
+function searchKBGraph(query) {
+    clearTimeout(_kbSearchTimer);
+    _kbSearchTimer = setTimeout(() => _applyKBGraphSearch(query), 150);
+}
+
+function _applyKBGraphSearch(query) {
+    const q = (query || '').toLowerCase().trim();
+    const svg = d3.select('#kb-graph-svg svg');
+    if (!svg.node()) return;
+
+    if (!q) {
+        svg.selectAll('.kb-node').classed('kb-node-dimmed', false).classed('kb-node-match', false);
+        svg.selectAll('line').classed('kb-link-dimmed', false);
+        return;
+    }
+
+    const matchIds = new Set();
+    svg.selectAll('.kb-node').each(function(d) {
+        if (d && (
+            (d.fullTitle || '').toLowerCase().includes(q) ||
+            (d.id || '').toLowerCase().includes(q) ||
+            (d.tags || []).some(t => t.toLowerCase().includes(q)) ||
+            (d.type || '').toLowerCase().includes(q)
+        )) matchIds.add(d.id);
+    });
+
+    svg.selectAll('.kb-node')
+        .classed('kb-node-dimmed', d => !matchIds.has(d.id))
+        .classed('kb-node-match', d => matchIds.has(d.id));
+
+    svg.selectAll('line')
+        .classed('kb-link-dimmed', d => {
+            const srcId = typeof d.source === 'object' ? d.source.id : d.source;
+            const tgtId = typeof d.target === 'object' ? d.target.id : d.target;
+            return !matchIds.has(srcId) && !matchIds.has(tgtId);
+        });
 }
 
 // Enable/disable the custom summarizer prompt textarea based on the override checkbox.
@@ -2577,7 +2671,7 @@ function renderKBGraph() {
         .force('link', d3.forceLink(links).id(d => d.id).distance(80))
         .force('charge', d3.forceManyBody().strength(-300))
         .force('center', d3.forceCenter(width / 2, height / 2))
-        .force('collide', d3.forceCollide().radius(30));
+        .force('collide', d3.forceCollide().radius(d => nodeRadius(d) + 12));
 
     kbGraphSimulation = simulation;
 
@@ -2609,6 +2703,7 @@ function renderKBGraph() {
         .selectAll('g')
         .data(nodes)
         .join('g')
+        .attr('class', 'kb-node')
         .call(d3.drag()
             .on('start', (event, d) => {
                 if (!event.active) simulation.alphaTarget(0.3).restart();
@@ -2626,9 +2721,15 @@ function renderKBGraph() {
             })
         );
 
-    // Node circles
+    // Node circles — size scales with edge count, clamped to [6, 24]
+    function nodeRadius(d) {
+        if (d.isDangling) return 3;
+        const edges = (d.incoming || 0) + (d.outgoing || 0);
+        if (edges === 0) return 4;
+        return Math.min(10, 4 + Math.log2(edges) * 1.5);
+    }
     node.append('circle')
-        .attr('r', d => d.isDangling ? 5 : 8)
+        .attr('r', d => nodeRadius(d))
         .attr('fill', d => getNodeColor(d))
         .attr('stroke', d => d.isDangling ? '#dc2626' : (getNodeColor(d) === '#ffffff' ? '#9ca3af' : '#fff'))
         .attr('stroke-width', 1.5)
@@ -2692,16 +2793,6 @@ function renderKBGraph() {
         node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
     });
 }
-
-// Initialize on tab switch
-const _origShowTab = showTab;
-showTab = function(name) {
-    _origShowTab(name);
-    if (name === 'knowledge' && kbGraphMode === 'graph') {
-        if (kbGraphData) renderKBGraph();
-        else loadKBGraph();
-    }
-};
 
 // Debounced resize handler for graph
 let _kbGraphResizeTimer = null;

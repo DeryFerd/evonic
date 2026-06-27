@@ -311,10 +311,9 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] sessrecap log write failed (non-fatal): {e}")
 
         from backend.event_stream import event_stream
-        tail_entries = all_entries[cut_index:]
-        tail_messages = [{'role': 'user' if e['type'] == 'user' else 'assistant',
-                          'content': e.get('content', '')}
-                         for e in tail_entries]
+        # REAL message turns only (user + assistant), so the organizer's recent
+        # conversation isn't crowded out by tool/thinking entries.
+        tail_messages = _tail_messages_from_entries(all_entries[cut_index:])
         event_stream.emit('summary_updated', {
             'agent_id': agent_id,
             'agent_name': agent.get('name', ''),
@@ -444,8 +443,10 @@ def _do_summarize_sqlite(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] sessrecap log write failed (non-fatal): {e}")
 
         from backend.event_stream import event_stream
-        tail_messages = [{'role': m['role'], 'content': m.get('content', '')}
-                         for m in all_messages[cut_index:]]
+        tail_messages = [{'role': m['role'], 'content': (m.get('content') or '').strip()}
+                         for m in all_messages[cut_index:]
+                         if m.get('role') in ('user', 'assistant')
+                         and (m.get('content') or '').strip()]
         event_stream.emit('summary_updated', {
             'agent_id': agent_id,
             'agent_name': agent.get('name', ''),
@@ -502,6 +503,36 @@ def _format_messages_for_summary(messages: list) -> str:
             continue
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _tail_messages_from_entries(entries: list) -> list:
+    """Build tail messages (for the KB organizer's recent-conversation context) from
+    JSONL entries — REAL message turns ONLY, preserving role:
+
+    - ``type == 'user'`` -> role 'user'
+    - ``type in ('final','intermediate')`` -> role 'assistant'
+    - everything else (thinking/tool_call/tool_output/system/error) -> skipped
+
+    Skips bash_exec/slash_command entries and empty content. Mirrors
+    ``_format_entries_for_summary`` so non-message entries don't masquerade as
+    'assistant' and crowd the real user turn out of the last-N window downstream.
+    """
+    out = []
+    for entry in entries:
+        etype = entry.get('type', '')
+        meta = entry.get('metadata') or {}
+        if meta.get('bash_exec') or meta.get('slash_command'):
+            continue
+        if etype == 'user':
+            role = 'user'
+        elif etype in ('final', 'intermediate'):
+            role = 'assistant'
+        else:
+            continue
+        content = (entry.get('content') or '').strip()
+        if content:
+            out.append({'role': role, 'content': content})
+    return out
 
 
 def _format_entries_for_summary(entries: list) -> str:

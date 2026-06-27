@@ -847,7 +847,14 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
             parts.append(f"{source_label}:\n" + source_text.strip())
         task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
                     "Grep/Glob/Read and file any durable knowledge from the conversation "
-                    "above into the right docs. Output ONLY the JSON object.")
+                    "above into the right docs. EXTRACT every named entity — person, "
+                    "place, organization, company, product, venue, event — and for any "
+                    "that does NOT yet have its own doc, CREATE one (don't just append a "
+                    "mention to another doc). Then WIRE UP LINKS: when you Read an "
+                    "existing doc, look for named entities mentioned as PLAIN TEXT that "
+                    "are not yet wrapped in [[ ]] — wrap each one in a [[wiki-link]] via "
+                    "an 'edit' op (create the target doc first if it doesn't exist). "
+                    "Output ONLY the JSON object.")
         # Let notify auto-create/resolve the session (get_or_create_session). A
         # made-up session_id is rejected as "not found", so we must NOT force one.
         # Within a run each spawn has a fresh agent_id (organizer_1/2/...) -> a fresh

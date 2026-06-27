@@ -8,6 +8,7 @@ the server KB even on a remote workplace.
 """
 
 import glob
+import json
 import os
 import threading
 from unittest.mock import patch
@@ -82,6 +83,31 @@ def test_format_recent_messages():
     assert M._format_recent_messages(None) == ""
 
 
+def test_tail_messages_keeps_user_turns_drops_tool_noise():
+    """Tail context must contain real user+assistant turns only — tool/thinking
+    entries must not masquerade as 'assistant' and crowd out the user message."""
+    from backend.agent_runtime.summarizer import _tail_messages_from_entries
+    entries = [
+        {"type": "user", "content": "nama yg benar Yondix bukan Yonix"},
+        {"type": "thinking", "content": "let me think"},
+        {"type": "tool_call", "content": "search(...)"},
+        {"type": "tool_output", "content": "results"},
+        {"type": "intermediate", "content": "Oke, mencari dulu"},
+        {"type": "final", "content": "Sudah kucatat."},
+        {"type": "user", "content": "   "},                                    # empty -> dropped
+        {"type": "user", "content": "x", "metadata": {"bash_exec": True}},     # bash -> dropped
+    ]
+    tail = _tail_messages_from_entries(entries)
+    assert tail == [
+        {"role": "user", "content": "nama yg benar Yondix bukan Yonix"},
+        {"role": "assistant", "content": "Oke, mencari dulu"},
+        {"role": "assistant", "content": "Sudah kucatat."},
+    ]
+    out = M._format_recent_messages(tail, n=6)
+    assert "User: nama yg benar Yondix bukan Yonix" in out   # the user turn survives
+    assert "Assistant: Sudah kucatat." in out
+
+
 def test_parse_organizer_docs():
     p = M._parse_organizer_docs
     op = '{"action": "create", "title": "X", "type": "note", "description": "d", "body": "b"}'
@@ -100,11 +126,37 @@ def test_parse_organizer_docs():
     assert p(op)[0]["title"] == "X"
     # thinking tags around it
     assert p('<think>let me decide</think>\n{"docs": [%s]}' % op)[0]["title"] == "X"
+    # LITERAL newlines inside a string value (what LLMs emit for multi-line bodies);
+    # strict json.loads rejects these — must still parse (strict=False).
+    multiline = ('Now the JSON:\n```\n{"docs":[{"action":"create","title":"X","type":"note",'
+                 '"description":"d","body":"line one\nline two\nline three with [[Link]]"}]}\n```')
+    got = p(multiline)
+    assert got is not None and got[0]["title"] == "X"
+    assert "line one\nline two" in got[0]["body"]
     # genuinely unusable
     assert p("not json at all") is None
     assert p('{"items": []}') is None
     assert p('') is None
     assert p(None) is None
+
+
+def test_parse_organizer_docs_reconstructs_malformed():
+    """Last-resort reconstruction recovers ops from JSON that standard parsing can't."""
+    p = M._parse_organizer_docs
+    # unescaped inner double-quotes inside a string value
+    bad = ('{"docs":[{"action":"create","title":"X","type":"note","description":"d",'
+           '"body":"he said "halo" to me"}]}')
+    got = p(bad)
+    assert got is not None and got[0]["title"] == "X"
+    assert "halo" in got[0]["body"]
+    # truncated / unterminated output (cut off mid-string) — close string + brackets
+    trunc = ('Here you go:\n```\n{"docs":[{"action":"create","title":"Y","type":"note",'
+             '"description":"d","body":"this got cut o')
+    got2 = p(trunc)
+    assert got2 is not None and got2[0]["title"] == "Y"
+    # _reconstruct_json directly: ignores trailing prose after the top-level object
+    fixed = M._reconstruct_json('{"a": 1} and then some prose')
+    assert json.loads(fixed) == {"a": 1}
 
 
 # ── _author_docs integration (organizer mocked) ──────────────────────────────
@@ -182,6 +234,66 @@ def test_author_docs_rename_action(brain):
     assert "Teman SD di [[Magelang]]" in d["body"]               # new info folded in
 
 
+# ── pure-name slug + aliases ─────────────────────────────────────────────────
+
+def test_split_title_aliases():
+    s = M._split_title_aliases
+    assert s("Abdurrahman Wahid (Gus Dur)") == ("Abdurrahman Wahid", ["Gus Dur"])
+    assert s("Susilo Bambang Yudhoyono (SBY)") == ("Susilo Bambang Yudhoyono", ["SBY"])
+    assert s("Joko Widodo [Jokowi]") == ("Joko Widodo", ["Jokowi"])
+    assert s("Plain Name") == ("Plain Name", [])
+    assert s("(only paren)") == ("(only paren)", [])
+
+
+def test_create_strips_nickname_into_alias_keeps_slug_pure(brain):
+    _run_author([{"action": "create", "title": "Abdurrahman Wahid (Gus Dur)", "type": "person",
+                  "description": "Presiden RI ke-4", "body": "[[Abdurrahman Wahid]] presiden ke-4."}])
+    assert os.path.exists(f"agents/{AGENT}/kb/abdurrahman-wahid.md")
+    assert not os.path.exists(f"agents/{AGENT}/kb/abdurrahman-wahid-gus-dur.md")
+    d = W.read_doc(AGENT, "abdurrahman-wahid")
+    assert d["frontmatter"]["title"] == "Abdurrahman Wahid"
+    assert "Gus Dur" in (d["frontmatter"].get("aliases") or [])
+
+
+def test_create_passes_explicit_aliases(brain):
+    _run_author([{"action": "create", "title": "Susilo Bambang Yudhoyono", "type": "person",
+                  "aliases": ["SBY"], "description": "Presiden RI ke-6", "body": "[[SBY]] ke-6."}])
+    assert "SBY" in (W.read_doc(AGENT, "susilo-bambang-yudhoyono")["frontmatter"].get("aliases") or [])
+
+
+# ── surgical edit (fuzzy str-replace) ────────────────────────────────────────
+
+def test_replace_in_doc_exact(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="User suka [[Gus Dur]].")
+    assert W.replace_in_doc(AGENT, "x", "[[Gus Dur]]", "[[Abdurrahman Wahid]]") is True
+    assert "[[Abdurrahman Wahid]]" in W.read_doc(AGENT, "x")["body"]
+
+
+def test_replace_in_doc_refuses_ambiguous_exact(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="foo bar baz / foo bar baz")
+    assert W.replace_in_doc(AGENT, "x", "foo bar baz", "Q") is False   # 2 matches → refuse
+
+
+def test_replace_in_doc_fuzzy_typo(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d",
+                 body="User mengunjungi [[Monumen Nasional]] kemarin sore.")
+    # old_str has a typo vs the doc, but is unique & very close → fuzzy lands it
+    assert W.replace_in_doc(AGENT, "x", "[[Monumen Nasionl]]", "[[Monas]]") is True
+    assert "[[Monas]]" in W.read_doc(AGENT, "x")["body"]
+
+
+def test_replace_in_doc_not_found(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="hello world")
+    assert W.replace_in_doc(AGENT, "x", "an entirely unrelated phrase not present", "y") is False
+
+
+def test_author_docs_edit_action(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="User suka [[Gus Dur]].")
+    _run_author([{"action": "edit", "slug": "x", "old_str": "[[Gus Dur]]",
+                  "new_str": "[[Abdurrahman Wahid]]"}])
+    assert "[[Abdurrahman Wahid]]" in W.read_doc(AGENT, "x")["body"]
+
+
 # ── single-instance + debounce ───────────────────────────────────────────────
 
 def test_organizer_single_instance_and_debounce():
@@ -212,8 +324,25 @@ def test_on_summary_updated_reads_flat_event(monkeypatch):
     # get_agent is only reached if agent_id/summary were parsed from the event;
     # returning None makes the handler stop before spawning a thread.
     monkeypatch.setattr(db, "get_agent", lambda aid: seen.__setitem__("aid", aid))
-    AR._on_summary_updated({"agent_id": "aisyah", "session_id": "s1", "summary": "sum"})
-    assert seen.get("aid") == "aisyah"
+    AR._on_summary_updated({"agent_id": "alice", "session_id": "s1", "summary": "sum"})
+    assert seen.get("aid") == "alice"
+
+
+def test_organizer_docs_from_falls_back_to_session_message():
+    """If the final_answer event carried an intermediate turn (no JSON), recover the
+    real ops from the session's last assistant message (ground truth)."""
+    intermediate = "Now I'll build the complete JSON output:"   # no JSON -> unparseable
+    real = ('{"docs":[{"action":"create","title":"X","type":"note","description":"d",'
+            '"body":"b"}]}')
+    with patch.object(M, "_read_last_assistant_message", return_value=real):
+        docs = M._organizer_docs_from("alice", "alice_organizer_1", "sess", intermediate)
+    assert docs is not None and docs[0]["title"] == "X"
+    # when the event answer already parses, the DB is not consulted
+    good = ('{"docs":[{"action":"create","title":"Y","type":"note","description":"d",'
+            '"body":"b"}]}')
+    with patch.object(M, "_read_last_assistant_message", return_value=None) as rd:
+        assert M._organizer_docs_from("alice", "alice_organizer_1", "sess", good)[0]["title"] == "Y"
+        rd.assert_not_called()
 
 
 def test_author_docs_skips_when_organizer_busy(brain):

@@ -249,6 +249,114 @@ def append_to_doc(agent_id: str, slug: str, delta_prose: str) -> bool:
         return False
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Levenshtein edit distance between two strings (iterative, O(len(a)*len(b)))."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+# Fuzzy-edit safety knobs (env-overridable).
+_EDIT_FUZZY_RATIO = float(os.environ.get("EVOMEM_KB_EDIT_FUZZY_RATIO", "0.85"))
+_EDIT_FUZZY_MARGIN = float(os.environ.get("EVOMEM_KB_EDIT_FUZZY_MARGIN", "0.08"))
+_EDIT_FUZZY_MIN_LEN = 8       # don't fuzzy-match very short needles (too easy to mis-hit)
+_EDIT_FUZZY_MAX_BODY = 20000  # skip fuzzy on very large bodies (perf)
+
+
+def _fuzzy_unique_window(body: str, needle: str):
+    """Find the body span most similar to ``needle`` by Levenshtein ratio.
+
+    Returns ``(start, end)`` ONLY for a high-confidence, UNAMBIGUOUS match:
+    similarity ≥ ratio threshold AND no *other non-overlapping* span scores within
+    ``margin`` of the best. Otherwise None — so a fuzzy edit never clobbers the
+    wrong (or an equally-plausible) region. None for very short needles / huge bodies.
+    """
+    n = len(needle)
+    if n < _EDIT_FUZZY_MIN_LEN or not body or len(body) > _EDIT_FUZZY_MAX_BODY:
+        return None
+    # Bound the Levenshtein scan cost (~ body * needle^2). A long needle on a big
+    # body (e.g. an edit that mistakenly pastes a whole frontmatter block) would be
+    # pathologically slow — and such a non-body needle won't match anyway, so refuse.
+    if len(body) * n * n > 40_000_000:
+        return None
+    lengths = {max(1, n + d) for d in (-1, 0, 1)}   # absorb small indels
+    matches = []  # (ratio, start, end)
+    for wlen in lengths:
+        for start in range(0, len(body) - wlen + 1):
+            window = body[start:start + wlen]
+            ratio = 1.0 - _levenshtein(window, needle) / max(wlen, n)
+            if ratio >= _EDIT_FUZZY_RATIO:
+                matches.append((ratio, start, start + wlen))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    br, bs, be = matches[0]
+    for r, s, e in matches[1:]:
+        if (e <= bs or s >= be) and r >= br - _EDIT_FUZZY_MARGIN:
+            return None   # a different region matches nearly as well → refuse
+    return (bs, be)
+
+
+def replace_in_doc(agent_id: str, slug: str, old_str: str, new_str: str,
+                   fuzzy: bool = True) -> bool:
+    """Surgical edit: replace ``old_str`` with ``new_str`` in a doc's body.
+
+    SAFE BY DESIGN. Resolution order:
+      1. EXACT, unique (``old_str`` occurs exactly once) → replace.
+      2. EXACT but >1 occurrences → refuse (ambiguous).
+      3. Not found → FUZZY: replace the single high-similarity, unambiguous span
+         (Levenshtein ratio, see ``_fuzzy_unique_window``) so a near-miss copy of
+         ``old_str`` (whitespace/typo drift) still lands — but a vague or
+         multiply-matching edit is refused. Returns False on any refusal/no write.
+
+    Body-only; frontmatter is preserved. Used to fix a wrong inline ``[[link]]`` or
+    a factual error in existing prose.
+    """
+    if not old_str or old_str == new_str:
+        return False
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        cnt = body.count(old_str)
+        if cnt == 1:
+            new_body = body.replace(old_str, new_str, 1)
+            how = "exact"
+        elif cnt > 1:
+            return False                       # ambiguous exact → refuse
+        elif fuzzy and (win := _fuzzy_unique_window(body, old_str)):
+            s, e = win
+            new_body = body[:s] + new_str + body[e:]
+            how = "fuzzy"
+        else:
+            return False                       # not found (and no safe fuzzy match)
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body))
+        vlog("writer[%s]: replace_in_doc %s (%s)", agent_id, slug, how)
+        return True
+    except Exception as e:
+        logger.debug("replace_in_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
+
+
 def create_collection(agent_id: str, folder: str, title: str,
                      kind: str = "session", description: str = None) -> str:
     """Create a collection folder (one level under kb/) with an ``index.md`` of

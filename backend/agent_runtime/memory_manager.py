@@ -152,20 +152,33 @@ Return only the JSON object:"""
 # the pipeline applies. Single-brace JSON below is literal (NOT .format()'d).
 _KB_ORGANIZER_SYSTEM_PROMPT = """You are the Knowledge Organizer — a librarian who keeps an AI assistant's personal knowledge vault tidy. The vault is YOUR WORKSPACE: a directory of Markdown docs, each with YAML frontmatter (title, aliases, type, description, tags) and a prose body with inline [[Wiki Links]]. There is NO pre-made index — use your tools (Glob, Grep, Read) to explore the vault and discover what already exists.
 
+NAMING — the `title` is the subject's PURE canonical name ONLY. Put nicknames, abbreviations, gelar, or short forms in `aliases`, NEVER in the title (the title becomes the filename, so it must stay clean). Examples:
+  - title "Abdurrahman Wahid", aliases ["Gus Dur"]   (NOT title "Abdurrahman Wahid (Gus Dur)")
+  - title "Susilo Bambang Yudhoyono", aliases ["SBY"]
+The aliases let other names still resolve to this one doc.
+
+LINKING IS MANDATORY — every named entity you mention in a `body` MUST be wrapped in an inline [[Wiki Link]]: people, places, organizations, companies, products, venues, events. This is how the knowledge graph connects — a body with no links is WRONG. ESPECIALLY every PERSON's name MUST be a [[link]] — never leave a person as plain text. Link the entity's canonical name, e.g. "User bertemu [[Budi Santoso]] di [[Jakarta]] di kantor [[Nuwaira]]." Do NOT wrap "User" in a link.
+
+IMAGES — there is NO separate images field. If the conversation provides a relevant photo/image URL for a subject, you MUST embed it INLINE in that doc's `body` as Markdown: `![brief description](image-url)` (put it near the top of the body or in the relevant paragraph). An image is saved ONLY if it is in the `body` — a URL placed anywhere else is lost. Only embed photos directly relevant to the subject; skip generic/unrelated ones.
+
 Given the conversation below, file any durable, long-term knowledge into the vault. For each subject:
 - EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Robin" is "Robin Syihab"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
 - KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
-- NEW subject → CREATE a doc: full prose with inline [[links]] to every other named subject.
-- MISSPELLED / WRONG doc name (a typo in an existing doc's title) → RENAME it: action "rename" with the existing `slug` and the corrected `new_title`. The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info in the same pass.
+- NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
+- WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.
+- WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
 - Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
 
 OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
 {"docs":[
- {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"images":["<on-topic photo url from the conversation, else omit>"],"body":"<ONLY new prose to append, inline [[Links]]; don't restate existing>"},
- {"action":"create","title":"<subject>","type":"place","description":"<one-line>","tags":["place"],"images":[],"body":"<FULL prose, inline [[Links]] for every OTHER named entity>"},
- {"action":"rename","slug":"<existing slug with the typo>","new_title":"<corrected name>","body":"<optional: new prose to also add>"}
+ {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
+ {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Gus Dur / SBY, else omit>"],"body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
+ {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<replacement text>"},
+ {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"}
 ]}
-RULES: the user is always "User"; update=delta-only body + existing slug; create=full body, NO slug; rename=existing slug + corrected new_title; embed photos inline as ![desc](url) only when on-topic; valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}. Output ONLY the JSON object."""
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str; rename=existing slug + corrected new_title; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). If nothing is worth keeping, return {"docs": []}.
+
+Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
 
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
@@ -392,10 +405,14 @@ def _iter_balanced_json(text: str):
 
 
 def _loads_lenient(s: str):
-    """json.loads, retrying once with trailing commas stripped (a common LLM slip)."""
+    """json.loads, tolerant of the two most common LLM JSON slips:
+    - literal control chars (newlines/tabs) INSIDE string values — very common for
+      multi-line ``body``/``old_str`` content — handled via ``strict=False``;
+    - a trailing comma before ``}``/``]``.
+    """
     for variant in (s, re.sub(r',(\s*[}\]])', r'\1', s)):
         try:
-            return json.loads(variant)
+            return json.loads(variant, strict=False)
         except (json.JSONDecodeError, ValueError):
             continue
     return None
@@ -416,25 +433,92 @@ def _coerce_docs(data):
     return None
 
 
+def _reconstruct_json(text: str) -> str:
+    """Best-effort RECONSTRUCTION of malformed JSON (last resort) — rebuilds a
+    parseable string from the first top-level ``{``/``[`` to its close, fixing the
+    common ways an LLM breaks JSON:
+
+    - unescaped inner double-quotes inside string values (escaped via a lookahead:
+      a ``"`` is a closing quote only if the next non-space char is ``,:}]`` or EOF,
+      otherwise it's an inner quote);
+    - stray literal control chars (newline/tab/CR) inside strings -> escaped;
+    - trailing commas -> dropped;
+    - TRUNCATED output -> any unterminated string and still-open ``{[`` are closed.
+
+    Leading prose and anything after the top-level container are ignored. Returns a
+    candidate string (not guaranteed valid) for one more parse attempt.
+    """
+    start = next((k for k, c in enumerate(text) if c in '{['), -1)
+    if start == -1:
+        return ''
+    out, stack, in_str, esc, started = [], [], False, False, False
+    i, n = start, len(text)
+    _ctrl = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+    while i < n:
+        c = text[i]
+        if in_str:
+            if esc:
+                out.append(c); esc = False
+            elif c == '\\':
+                out.append(c); esc = True
+            elif c == '"':
+                j = i + 1
+                while j < n and text[j] in ' \t\r\n':
+                    j += 1
+                if j >= n or text[j] in ',:}]':
+                    out.append('"'); in_str = False          # closing quote
+                else:
+                    out.append('\\"')                        # inner quote -> escape
+            elif c in _ctrl:
+                out.append(_ctrl[c])                          # escape literal control char
+            else:
+                out.append(c)
+        elif c == '"':
+            in_str = True; out.append(c)
+        elif c in '{[':
+            stack.append(c); started = True; out.append(c)
+        elif c in '}]':
+            if stack:
+                stack.pop()
+            out.append(c)
+            if started and not stack:
+                break                                        # top-level container closed
+        else:
+            out.append(c)
+        i += 1
+    if in_str:
+        out.append('"')                                      # close an unterminated string
+    repaired = re.sub(r',(\s*[}\]])', r'\1', ''.join(out))   # drop trailing commas
+    while stack:                                             # close truncated containers
+        repaired += ']' if stack.pop() == '[' else '}'
+    return repaired
+
+
 def _parse_organizer_docs(findings: str):
     """Extract the ``docs`` list of write-ops from the organizer's free-text answer.
 
     Robust to thinking tags, code fences, surrounding prose, multiple JSON objects,
-    trailing commas, and a missing ``{"docs": ...}`` wrapper. Returns the list
-    (possibly empty) on success, or ``None`` if no valid ops JSON is found.
+    trailing commas, literal control chars, and a missing ``{"docs": ...}`` wrapper.
+    As a LAST resort, reconstructs malformed/truncated JSON. Returns the list
+    (possibly empty) on success, or ``None`` if nothing usable can be recovered.
     """
     if not findings or not isinstance(findings, str):
         return None
     raw, _ = strip_thinking_tags(findings)
     raw = _strip_code_fences(raw).strip()
-    # Try the whole payload first, then each balanced {...} object embedded in prose;
-    # return the FIRST candidate that yields a usable ops list.
+    # 1) Try the whole payload, then each balanced {...} object embedded in prose.
     for candidate in (raw, *_iter_balanced_json(raw)):
         data = _loads_lenient(candidate)
         if data is not None:
             docs = _coerce_docs(data)
             if docs is not None:
                 return docs
+    # 2) Last resort: reconstruct malformed/truncated JSON and parse that.
+    data = _loads_lenient(_reconstruct_json(raw))
+    if data is not None:
+        docs = _coerce_docs(data)
+        if docs is not None:
+            return docs
     return None
 
 
@@ -504,6 +588,38 @@ def _organizer_release(agent_id: str) -> None:
         _organizer_running.discard(agent_id)
 
 
+def _read_last_assistant_message(agent_id: str, session_id: str):
+    """Return the last non-empty assistant message in a session — the GROUND TRUTH
+    of the organizer's final output. The ``final_answer`` event field can carry an
+    intermediate/short turn ("Now I'll build the JSON...") instead of the real ops,
+    so this is the reliable source."""
+    if not session_id:
+        return None
+    try:
+        from models.db import db
+        msgs = db.get_session_messages(session_id, limit=30, agent_id=agent_id) or []
+        for m in reversed(msgs):
+            if m.get('role') == 'assistant' and (m.get('content') or '').strip():
+                return m['content']
+    except Exception:
+        logger.debug("read last assistant failed for %s/%s", agent_id, session_id, exc_info=True)
+    return None
+
+
+def _organizer_docs_from(agent_id, explorer_id, session_id, event_answer):
+    """Parse the organizer's ops: prefer the final_answer event text, else fall back
+    to the session's last assistant message (the event field is unreliable)."""
+    docs = _parse_organizer_docs(event_answer)
+    if docs is not None:
+        return docs
+    db_ans = _read_last_assistant_message(explorer_id, session_id)
+    if db_ans and db_ans != (event_answer or ''):
+        logger.info("[MemoryManager] organizer[%s]: event answer (%d chars) unparsed; using "
+                    "session last-assistant (%d chars)", agent_id, len(event_answer or ''), len(db_ans))
+        return _parse_organizer_docs(db_ans)
+    return None
+
+
 def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
     """Run the Knowledge Organizer sub-agent over the agent's server-local KB and
     return the parsed ``docs`` list of write-ops, or ``None`` on any failure/timeout.
@@ -540,7 +656,11 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
     if tool_err:
         return None
 
-    timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '120'))
+    # Generous default: the organizer is a tool-heavy agent loop on a possibly-slow
+    # local model. This runs in a background daemon thread (debounced + single-
+    # instance), so a long blocking wait is fine — and far better than discarding a
+    # result that arrives a few seconds late. Tune via EVOMEM_KB_ORGANIZER_TIMEOUT.
+    timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
     skill_cfg = {
         'system_prompt': _KB_ORGANIZER_SYSTEM_PROMPT,
         'model_id': os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None,
@@ -588,6 +708,10 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
         task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
                     "Grep/Glob/Read and file any durable knowledge from the conversation "
                     "above into the right docs. Output ONLY the JSON object.")
+        # Let notify auto-create/resolve the session (get_or_create_session). A
+        # made-up session_id is rejected as "not found", so we must NOT force one.
+        # Within a run each spawn has a fresh agent_id (organizer_1/2/...) -> a fresh
+        # session anyway; the DB-read fallback handles capture even if reused.
         res = notify_agent(
             agent_id=explorer_id, tag=f"AGENT/{parent_name}", message=task_msg,
             external_user_id=f"__agent__{agent_id}", channel_id=None, dedup=False,
@@ -601,10 +725,17 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
         if not res.get('success') or not session_id:
             return None
         if not done.wait(timeout=timeout):
+            logger.warning("[MemoryManager] organizer[%s]: timed out after %ds — result "
+                           "discarded (raise EVOMEM_KB_ORGANIZER_TIMEOUT)", agent_id, timeout)
             return None
-        docs = _parse_organizer_docs(answer_box.get('answer', ''))
+        # The event 'answer' can be an intermediate turn; fall back to the session's
+        # last assistant message (ground truth).
+        docs = _organizer_docs_from(agent_id, explorer_id, session_id, answer_box.get('answer', ''))
         if docs is not None:
             return docs
+        ans = answer_box.get('answer', '') or ''
+        logger.warning("[MemoryManager] organizer[%s]: could not parse ops JSON (event %d "
+                       "chars); retrying. head=%r", agent_id, len(ans), ans[:300])
         # One retry: re-prompt the same session for clean JSON.
         done.clear()
         answer_box.clear()
@@ -617,7 +748,11 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
                       'agent_message_depth': 1})
         if not res2.get('success') or not done.wait(timeout=timeout):
             return None
-        return _parse_organizer_docs(answer_box.get('answer', ''))
+        docs = _organizer_docs_from(agent_id, explorer_id, session_id, answer_box.get('answer', ''))
+        if docs is None:
+            logger.warning("[MemoryManager] organizer[%s]: ops JSON still unparseable after "
+                           "retry", agent_id)
+        return docs
     except Exception:
         logger.debug("kb organizer failed for %s", agent_id, exc_info=True)
         return None
@@ -627,6 +762,26 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = ""):
         # (a final context build), and rmtree'ing its DB mid-flight throws
         # "unable to open database file". Idle cleanup reaps it safely; the
         # single-instance + debounce guard keeps the per-parent count low.
+
+
+_TITLE_PAREN_ALIAS_RE = re.compile(r'\s*[\(\[]([^)\]]{1,60})[\)\]]\s*$')
+
+
+def _split_title_aliases(title: str):
+    """Split a trailing parenthetical nickname off a title so the slug stays the
+    PURE name. 'Abdurrahman Wahid (Gus Dur)' -> ('Abdurrahman Wahid', ['Gus Dur']);
+    'Susilo Bambang Yudhoyono (SBY)' -> ('Susilo Bambang Yudhoyono', ['SBY']).
+    Returns (clean_title, [aliases]); a whole-parenthetical title is left as-is.
+    """
+    title = (title or '').strip()
+    m = _TITLE_PAREN_ALIAS_RE.search(title)
+    if not m:
+        return title, []
+    clean = title[:m.start()].strip()
+    if not clean:
+        return title, []
+    aliases = [a.strip() for a in re.split(r'[;,/]', m.group(1)) if a.strip()]
+    return clean, aliases
 
 
 def _author_docs(agent: dict, session_id: str, source_text: str,
@@ -686,7 +841,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         if not isinstance(docs, list) or not docs:
             return
 
-        modified, created, updated, renamed = [], 0, 0, 0
+        modified, created, updated, renamed, edited = [], 0, 0, 0, 0
         for d in docs[:12]:
             if not isinstance(d, dict):
                 continue
@@ -695,9 +850,20 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             body = (d.get('body') or '').strip()
             slug_hint = (d.get('slug') or '').strip()
 
-            # Rename: fix a typo'd doc name (existing slug -> corrected title).
+            # Edit: surgical exact-unique-match replacement (fix a wrong [[link]]).
+            if action in ('edit', 'patch'):
+                old_str = d.get('old_str') or d.get('old') or ''
+                new_str = d.get('new_str') or d.get('new') or ''
+                if slug_hint and old_str:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
+                            modified.append(slug_hint)
+                            edited += 1
+                continue
+
+            # Rename: fix a typo'd / alias-polluted doc name.
             if action == 'rename':
-                new_title = (d.get('new_title') or '').strip()
+                new_title, _ = _split_title_aliases((d.get('new_title') or '').strip())
                 if not slug_hint or not new_title:
                     continue
                 with _kb_page_lock(agent_id, slug_hint):
@@ -713,6 +879,11 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
 
             if not title or not body:
                 continue
+            # Keep the slug = PURE name: strip a trailing parenthetical nickname into
+            # aliases, and merge any aliases the model supplied.
+            title, paren_aliases = _split_title_aliases(title)
+            aliases = [a for a in (d.get('aliases') or []) if isinstance(a, str) and a.strip()]
+            aliases = list(dict.fromkeys(aliases + paren_aliases))
             doc_type = (d.get('type') or 'note').strip()
             description = (d.get('description') or '').strip()
             tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
@@ -736,7 +907,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 else:
                     rel = evomem_writer.upsert_doc(
                         agent_id, title=title, body=body, doc_type=doc_type,
-                        description=description, folder=folder, tags=tags)
+                        description=description, folder=folder, tags=tags, aliases=aliases)
                     if rel:
                         modified.append(rel)
                         created += 1
@@ -746,8 +917,9 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         if modified:
             evomem_writer.mark_dirty(agent_id)
             _emit_doc_updated(agent_id, modified)
-        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed (folder=%s)",
-                    agent_id, created, updated, renamed, folder or 'root')
+        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed, "
+                    "%d edited (folder=%s)", agent_id, created, updated, renamed, edited,
+                    folder or 'root')
     except Exception:
         logger.debug("author_docs exception (non-fatal) for %s", agent_id)
 

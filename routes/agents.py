@@ -37,31 +37,6 @@ def _audit_ip():
 
 _SENSITIVE_AGENT_KEYS = frozenset({'workspace'})
 
-_NOTES_MD_TEMPLATE = """# Notes.md -- User Preferences & Instructions
-
-This file stores your user's personal preferences, tastes, language
-preferences, and communication style instructions.
-
-## What to store here
-
-- User's preferred language (e.g. "User prefers Bahasa Indonesia")
-- Communication style preferences (e.g. "User likes concise answers",
-  "User dislikes emoji")
-- Personal instructions (e.g. "Call the user 'Pak'")
-- Tastes and preferences (e.g. "User prefers bullet points over paragraphs")
-
-## What NOT to store here (use `remember` instead)
-
-- Factual/memorization data: addresses, phone numbers, email, birthday
-- Secret/sensitive data: passwords, tokens, PINs, secret codes, bank accounts
-
-## Usage
-
-- Read this file: read_file(file_path="/_self/kb/notes.md")
-- Update via write_file with path /_self/kb/notes.md
-- Update immediately when the user gives a new preference
-- Prioritize notes.md over `remember` for non-factual preference information
-"""
 
 
 def _sanitize_agent(agent: Dict[str, Any]) -> Dict[str, Any]:
@@ -318,11 +293,6 @@ def api_create_agent():
         if vision_enabled is None or vision_enabled:
             for tool_id in VISION_TOOLS:
                 db.add_agent_tool(agent_id, tool_id)
-        # Create notes.md template if it does not already exist
-        _notes_md = os.path.join(_kb_dir(agent_id), 'notes.md')
-        if not os.path.isfile(_notes_md):
-            with open(_notes_md, 'w', encoding='utf-8') as _f:
-                _f.write(_NOTES_MD_TEMPLATE)
 
         # Copy default knowledge base files from defaults/ directory
         import shutil as _shutil

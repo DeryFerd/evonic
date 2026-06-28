@@ -768,6 +768,7 @@ def api_get_general_settings():
         'agent_sidebar_limit': int(db.get_setting('agent_sidebar_limit', str(config.AGENT_SIDEBAR_LIMIT))),
         'theme': db.get_setting('theme', 'system'),
         'vision_model_id': db.get_setting('vision_model_id', ''),
+        'kb_organizer_model_id': db.get_setting('kb_organizer_model_id', ''),
     })
 
 
@@ -939,6 +940,21 @@ def api_batch_save():
             # Allow clearing the setting
             db.set_setting('vision_model_id', '')
             results['vision_model_id'] = ''
+
+    # KB Organizer Model — global default for the KB organizer background sub-agent
+    if 'kb_organizer_model_id' in settings:
+        kb_organizer_model_id = settings['kb_organizer_model_id']
+        if kb_organizer_model_id:
+            model = db.get_model_by_id(kb_organizer_model_id)
+            if model:
+                db.set_setting('kb_organizer_model_id', kb_organizer_model_id)
+                results['kb_organizer_model_id'] = kb_organizer_model_id
+            else:
+                errors.append('kb_organizer_model_id: Model not found')
+        else:
+            # Allow clearing the setting (falls back to env / agent default)
+            db.set_setting('kb_organizer_model_id', '')
+            results['kb_organizer_model_id'] = ''
 
     if errors:
         return jsonify({

@@ -376,7 +376,7 @@ def _build_kb_listing(effective_id: str) -> list:
 
         if index_body:
             lines.append(
-                "Your KB index (read with read(\"_kb_index.md\")):\n"
+                "Your KB index (read with read_file(file_path=\"/_self/kb/_kb_index.md\")):\n"
             )
             lines.append(index_body)
             lines.append("")
@@ -419,7 +419,7 @@ def _build_kb_listing(effective_id: str) -> list:
     else:
         # --- Fallback: graph-aware listing (no _kb_index.md) ---
         lines.append(
-            "You can read these files using the `read` tool. "
+            "You can read these files using `read_file` with `/_self/kb/` path prefix. "
             "Link between docs with Obsidian-style `[[Doc Title]]` — written "
             "inline in your sentences — which resolves to a doc by title anywhere "
             "in the knowledge base."
@@ -499,11 +499,11 @@ def _build_kb_listing(effective_id: str) -> list:
         "store a new KB file."
     )
     lines.append(
-        "- **Read**: Use the `read` tool with the bare filename (no path) "
+        "- **Read**: Use `read_file` with path `/_self/kb/filename` "
         "to read a KB file."
     )
     lines.append(
-        "- **KB vs Remember**: Use `read` for reference documents, guides, "
+        "- **KB vs Remember**: Use `read_file` (via `/_self/kb/`) for reference documents, guides, "
         "and long-form content. Use `remember` for short, searchable facts "
         "you want to recall across conversations."
     )
@@ -582,7 +582,7 @@ def _build_kb_listing(effective_id: str) -> list:
         )
         lines.append("")
         lines.append("**Usage rules:**")
-        lines.append('- Read this file: `read(\"notes.md\")`')
+        lines.append('- Read this file: `read_file(file_path=\"/_self/kb/notes.md\")`')
         lines.append(
             "- Update via `write_file` with path `/_self/kb/notes.md`"
         )
@@ -1103,10 +1103,8 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
                 tools.append(tool_def)
         return tools
 
-    # Built-in tools (read, use_skill, set_mode, remember, recall, etc.)
+    # Built-in tools (use_skill, set_mode, remember, recall, etc.)
     # Can be disabled per-agent via builtin_tools_enabled advanced setting.
-    # Pass workplace_id so built-in factories can tailor descriptions for remote agents
-    # (e.g. read() tool mentions /_self/kb/ when workplace_id is set).
     agent_context = {
         'id': agent['id'],
         'is_super': bool(agent.get('is_super')),

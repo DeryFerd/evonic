@@ -152,7 +152,7 @@ class TestTailStartWithSummary:
         """Tool messages that follow an assistant with tool_calls are kept."""
         msgs = [
             {'role': 'assistant', 'content': '', 'tool_calls': [
-                {'id': 'c1', 'type': 'function', 'function': {'name': 'read', 'arguments': '{}'}}
+                {'id': 'c1', 'type': 'function', 'function': {'name': 'read_file', 'arguments': '{}'}}
             ]},
             {'role': 'tool', 'content': 'file contents', 'tool_call_id': 'c1'},
             {'role': 'user', 'content': 'thanks'},

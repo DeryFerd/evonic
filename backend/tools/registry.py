@@ -3,7 +3,7 @@ Tool Registry — discovers and manages tool backends with auto-reload.
 
 In production mode, tools execute real Python backends from backend/tools/.
 In eval mode, tools return mock responses from tools/ JSON files.
-Built-in tools (like 'read') are registered separately with agent context.
+Built-in tools (like 'remember') are registered separately with agent context.
 Skills extend the registry with additional tool definitions and backends.
 """
 
@@ -35,10 +35,8 @@ class ToolRegistry:
         self._json_mtimes: Optional[tuple] = None
         self._cache_lock = threading.Lock()
         # Built-in tool factories: builtin_id -> callable(agent_context) -> tool_def_and_executor
-        # IDs use 'builtin:' namespace prefix (e.g. 'builtin:read')
+        # IDs use 'builtin:' namespace prefix (e.g. 'builtin:remember')
         self._builtins: Dict[str, Callable] = {}
-        # Register the built-in 'read' tool
-        self._builtins['builtin:read'] = _builtin_read_factory
         self._builtins['builtin:clear_log_file'] = _builtin_clear_log_factory
         # Register the built-in 'use_skill' and 'unload_skill' tools
         self._builtins['builtin:use_skill'] = _builtin_use_skill_factory
@@ -245,7 +243,7 @@ class ToolRegistry:
             tool_def, _ = factory({'agent_id': ''})
             fn = tool_def.get('function', {})
             defs.append({
-                'id': builtin_id,          # e.g. 'builtin:read'
+                'id': builtin_id,          # e.g. 'builtin:remember'
                 'name': fn.get('name', builtin_id),
                 'description': fn.get('description', ''),
                 'function': fn,
@@ -272,7 +270,7 @@ class ToolRegistry:
         executors: Dict[str, Callable] = {}
         for builtin_id, factory in self._builtins.items():
             tool_def, executor = factory(agent_context)
-            fn_name = tool_def['function']['name']  # e.g. 'read'
+            fn_name = tool_def['function']['name']  # e.g. 'remember'
             executors[fn_name] = executor
 
         def builtin_executor(function_name: str, arguments: dict) -> dict:
@@ -343,94 +341,6 @@ class ToolRegistry:
             'path': tool_path
         }
         return module
-
-
-def _builtin_read_factory(agent_context: dict):
-    """Factory for the built-in 'read' tool scoped to an agent's KB directory."""
-    agent_id = agent_context.get('id', '')
-    workplace_id = agent_context.get('workplace_id')
-    # KB files always live on the evonic server at agents/{agent_id}/kb/.
-    # The agent's workspace path is where bash/runpy tools execute — it
-    # has nothing to do with where KB files are stored.
-    base_dir = os.path.normpath(os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), '..', '..', 'agents', agent_id, 'kb'
-    ))
-
-    # Tailor description for remote agents who see /_self/kb/ in their system prompt
-    _is_remote = bool(workplace_id)
-    _desc = (
-        "Read a file from this agent's knowledge base (KB). "
-        + ("Pass a bare filename (e.g. 'notes.md') or a /_self/ path (e.g. '/_self/kb/notes.md'). "
-           if _is_remote else
-           "Pass a bare filename only — no paths (e.g. 'notes.md', not '/kb/notes.md'). ")
-        + "This tool is ONLY for KB files. "
-        "To read any other file (source code, logs, workspace files), use read_file instead."
-    )
-    _param_desc = (
-        "Bare KB filename (e.g. 'notes.md') or /_self/ path (e.g. '/_self/kb/notes.md')."
-        if _is_remote else
-        "Bare KB filename, e.g. 'notes.md'. No slashes or paths."
-    )
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "read",
-            "description": _desc,
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "filename": {
-                        "type": "string",
-                        "description": _param_desc
-                    }
-                },
-                "required": ["filename"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        filename = args.get('filename', '')
-
-        # /_self/ path: resolve to the agent's local directory on the evonic server.
-        # Remote agents get /_self/kb/ injected into their system prompt, so the
-        # LLM naturally passes /_self/kb/notes.md here.  Handle it like the other
-        # file tools (read_file, write_file, etc.) do.
-        from backend.tools._workspace import is_self_path, resolve_self_path
-        # Sub-agents inherit their parent's directory — use effective agent ID.
-        _agent_id = (agent_context.get("parent_id") if agent_context.get("is_subagent")
-                     else agent_context.get("id", ""))
-        if _agent_id and is_self_path(filename):
-            resolved = resolve_self_path(_agent_id, filename)
-            if not resolved:
-                return {"error": "Access denied — path escapes agent directory."}
-            if not os.path.isfile(resolved):
-                return {"error": f"File not found: {filename}"}
-            try:
-                with open(resolved, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                return {"filename": filename, "content": content}
-            except Exception as e:
-                return {"error": f"Read error: {str(e)}"}
-
-        # Security: only bare filenames allowed
-        if '/' in filename or '\\' in filename or '..' in filename:
-            return {"error": "This tool only reads KB files by bare filename (e.g. 'notes.md'). To read workspace or other files use the read_file tool instead."}
-        filepath = os.path.join(base_dir, filename)
-        filepath = os.path.normpath(filepath)
-        # Double-check we're still inside the KB dir
-        if not filepath.startswith(base_dir):
-            return {"error": "Access denied."}
-        if not os.path.isfile(filepath):
-            return {"error": f"File not found: {filename}"}
-        try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                content = f.read()
-            return {"filename": filename, "content": content}
-        except Exception as e:
-            return {"error": f"Read error: {str(e)}"}
-
-    return tool_def, executor
 
 
 def _builtin_clear_log_factory(agent_context: dict):

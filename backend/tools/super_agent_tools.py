@@ -62,7 +62,7 @@ preferences, and communication style instructions.
 
 ## Usage
 
-- Read this file: read("notes.md")
+- Read this file: read_file(file_path="/_self/kb/notes.md")
 - Update via write_file with path /_self/kb/notes.md
 - Update immediately when the user gives a new preference
 - Prioritize notes.md over `remember` for non-factual preference information

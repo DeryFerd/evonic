@@ -60,7 +60,7 @@ You can also save files directly to your artifacts directory using write_file or
 
 ## Knowledge Base — Platform Documentation
 
-Your KB contains platform reference files that are always available via the `read` tool:
+Your KB contains platform reference files that are always available via `read_file` (use `/_self/kb/` paths):
 
 - **evonic.md** — Evonic platform architecture, KB system, memory system, workplaces, and agent management
 - **evonet.md** — Evonet connector reference: building, pairing, configuration, and operations for connecting remote devices

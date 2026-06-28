@@ -4,7 +4,7 @@
   "description": "Reads the entire content of a text file.",
   "function": {
     "name": "read_file",
-    "description": "Read a text file and return its content as plain text with 1-based line numbers (e.g. '10: line content'). Large files are paginated automatically — the response header shows total lines and the range shown; if there are remaining lines, a footer tells you the next offset to call. Use the `offset` parameter to read subsequent pages. Use this for source code, logs, configs, and any workspace file — NOT for agent KB files (use the read tool for those). Accepts /workspace/... absolute paths from the runpy sandbox, which are automatically mapped to the real project root. Constraints: file must be a text file (not binary) and must be 400KB or smaller.",
+    "description": "Read a text file and return its content as plain text with 1-based line numbers (e.g. '10: line content'). Large files are paginated automatically — the response header shows total lines and the range shown; if there are remaining lines, a footer tells you the next offset to call. Use the `offset` parameter to read subsequent pages. Use this for source code, logs, configs, and any workspace file. Also supports /_self/kb/ paths for reading agent KB files. Accepts /workspace/... absolute paths from the runpy sandbox, which are automatically mapped to the real project root. Constraints: file must be a text file (not binary) and must be 400KB or smaller.",
     "parameters": {
       "properties": {
         "file_path": {

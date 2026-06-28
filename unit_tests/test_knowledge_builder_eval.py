@@ -104,6 +104,51 @@ def test_thumbnail_skipped_when_not_expected(ev):
     assert r.details["components"]["thumbnail"] == 1.0
 
 
+def test_edit_op_scored(ev):
+    expect = {"expect_actions": {"edit": [{"slug": "anwar-saputra"}]}}
+    good = json.dumps({"docs": [{"action": "edit", "slug": "anwar-saputra",
+                                 "old_str": "bekerja di Acme",
+                                 "new_str": "bekerja di [[Acme]]"}]})
+    r = ev.evaluate(good, expect, level=5)
+    assert r.status == "passed"
+    assert r.details["missing_entities"] == []
+
+
+def test_noop_edit_penalized(ev):
+    expect = {"expect_actions": {"edit": [{"slug": "anwar-saputra"}]}}
+    good = json.dumps({"docs": [{"action": "edit", "slug": "anwar-saputra",
+                                 "old_str": "bekerja di Acme",
+                                 "new_str": "bekerja di [[Acme]]"}]})
+    noop = json.dumps({"docs": [{"action": "edit", "slug": "anwar-saputra",
+                                 "old_str": "same", "new_str": "same"}]})
+    assert ev.evaluate(noop, expect, level=5).score < ev.evaluate(good, expect, level=5).score
+
+
+def test_rename_op_scored(ev):
+    expect = {"expect_actions": {"rename": [{"slug": "anwar-saputra-pak-anwar"}]}}
+    good = json.dumps({"docs": [{"action": "rename", "slug": "anwar-saputra-pak-anwar",
+                                 "new_title": "Anwar Saputra"}]})
+    r = ev.evaluate(good, expect, level=5)
+    assert r.status == "passed"
+    # rename has no body/type/links -> those components must not drag it down
+    assert r.details["components"]["valid_type"] == 1.0
+    assert r.details["components"]["links"] == 1.0
+
+
+def test_dedupe_op_scored(ev):
+    expect = {"expect_actions": {"dedupe": [{"slug": "borobudur"}]}}
+    good = json.dumps({"docs": [{"action": "dedupe", "slug": "borobudur"}]})
+    r = ev.evaluate(good, expect, level=5)
+    assert r.status == "passed"
+
+
+def test_maintenance_op_missing_slug_not_satisfied(ev):
+    expect = {"expect_actions": {"rename": [{"slug": "anwar-saputra-pak-anwar"}]}}
+    wrong = json.dumps({"docs": [{"action": "rename", "slug": "someone-else",
+                                  "new_title": "X"}]})
+    assert ev.evaluate(wrong, expect, level=5).details["missing_entities"] == ["anwar-saputra-pak-anwar"]
+
+
 def test_update_dedup_slug(ev):
     expect = {"expect_actions": {"update": [
         {"title": "Jakarta", "type": "place", "slug": "jakarta"}]}}

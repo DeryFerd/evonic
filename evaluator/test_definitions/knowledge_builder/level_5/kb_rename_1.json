@@ -1,0 +1,20 @@
+{
+  "id": "kb_rename_1",
+  "name": "Rename a nickname-polluted doc",
+  "description": "Fix a doc whose slug/title was polluted with a nickname; nickname becomes an alias.",
+  "prompt": "EXISTING documents:\n[anwar-saputra-pak-anwar] Anwar Saputra (Pak Anwar) :: Engineer; the title was polluted with a nickname.\n\nSOURCE:\nRapikan dokumen berjudul \"Anwar Saputra (Pak Anwar)\": nama kanoniknya seharusnya \"Anwar Saputra\" dengan \"Pak Anwar\" sebagai alias.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "rename": [
+        {
+          "slug": "anwar-saputra-pak-anwar"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

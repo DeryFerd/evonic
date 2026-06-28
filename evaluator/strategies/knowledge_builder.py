@@ -24,8 +24,20 @@ from backend.agent_runtime.evomem_writer import DOC_TYPES
 _LINK_RE = re.compile(r"\[\[[^\]]+\]\]")
 _BARE_LINK_LINE = re.compile(r"^\s*(?:[-*]\s*)?\[\[[^\]]+\]\]\s*$")
 _RELATIONS_HEADER = re.compile(r"^\s*#*\s*(relations|links|related)\b", re.IGNORECASE)
-_VALID_ACTIONS = {"create", "update"}
+_VALID_ACTIONS = {"create", "update", "edit", "rename", "dedupe", "dedup"}
 _REQUIRED_FIELDS = ("action", "title", "type", "body")
+# Op-specific required fields. create/update author prose; edit/rename/dedupe act
+# on an existing doc by slug and don't carry title/type/body.
+_REQUIRED_BY_ACTION = {
+    "create": ("action", "title", "type", "body"),
+    "update": ("action", "title", "type", "body"),
+    "edit": ("action", "slug", "old_str", "new_str"),
+    "rename": ("action", "slug", "new_title"),
+    "dedupe": ("action", "slug"),
+    "dedup": ("action", "slug"),
+}
+# Ops that target an existing doc by slug (matched by slug, not title).
+_SLUG_KEYED_ACTIONS = {"edit", "rename", "dedupe", "dedup"}
 
 
 def _norm(s: str) -> str:
@@ -52,6 +64,20 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
     titled "Candi Borobudur"), its ``type`` is one of the expected types (when
     given), and — for updates — its ``slug`` matches the expected slug (when given).
     """
+    slug = entity.get("slug")
+    # edit/rename/dedupe target an existing doc by slug — match on that.
+    if action in _SLUG_KEYED_ACTIONS:
+        if not slug:
+            return None
+        for d in docs:
+            if not isinstance(d, dict):
+                continue
+            if (d.get("action") or "").strip().lower() != action:
+                continue
+            if (d.get("slug") or "").strip() == slug:
+                return d
+        return None
+
     want = _norm(entity.get("title"))
     if not want:
         return None
@@ -59,7 +85,6 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
     if isinstance(types, str):
         types = [types]
     type_set = set(types) if types else None
-    slug = entity.get("slug")
     for d in docs:
         if not isinstance(d, dict):
             continue
@@ -169,11 +194,12 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             return EvaluationResult(0.0, "failed",
                                     {"error": "missing 'docs' list", "scoring_method": "knowledge_builder"})
 
-        # Expected docs grouped by action: {"create": [entity...], "update": [entity...]}.
+        # Expected docs grouped by action, e.g. {"create": [...], "update": [...],
+        # "edit": [...], "rename": [...], "dedupe": [...]}.
         ea = expected.get("expect_actions") or {}
-        create_ents = ea.get("create") or []
-        update_ents = ea.get("update") or []
-        total_expected = len(create_ents) + len(update_ents)
+        action_groups = [(a, ea.get(a) or [])
+                         for a in ("create", "update", "edit", "rename", "dedupe")]
+        total_expected = sum(len(ents) for _, ents in action_groups)
         require_links = bool(expected.get("require_links"))
 
         # An explicit, all-empty expectation means: keep nothing (e.g. pure chatter).
@@ -197,12 +223,12 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         # Coverage: expected subjects that surfaced with the right action (and slug).
         missing = []
         satisfied = 0
-        for action, ents in (("create", create_ents), ("update", update_ents)):
+        for action, ents in action_groups:
             for e in ents:
                 if _entity_satisfied(e, action, docs):
                     satisfied += 1
                 else:
-                    missing.append({"action": action, "title": e.get("title")})
+                    missing.append({"action": action, "title": e.get("title") or e.get("slug")})
         coverage = satisfied / total_expected if total_expected else 1.0
 
         # Thumbnail: expected entities flagged ``"thumbnail": true`` whose matching
@@ -210,7 +236,7 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         # mirroring how ``links`` is skipped when not required.
         thumb_expected = 0
         thumb_satisfied = 0
-        for action, ents in (("create", create_ents), ("update", update_ents)):
+        for action, ents in action_groups:
             for e in ents:
                 if not e.get("thumbnail"):
                     continue
@@ -255,18 +281,27 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             return {"structure": 0.0, "valid_type": 0.0, "valid_action": 0.0,
                     "links": 0.0, "anti_pattern": 0.0, "error": "doc is not an object"}
 
-        action = (d.get("action") or "").strip()
+        action = (d.get("action") or "").strip().lower()
         doc_type = (d.get("type") or "").strip()
         body = (d.get("body") or "").strip()
         slug = (d.get("slug") or "").strip()
+        authoring = action in ("create", "update")  # ops that write prose + a typed doc
 
-        structure = 1.0 if all(str(d.get(f, "")).strip() for f in _REQUIRED_FIELDS) else 0.0
-        valid_type = 1.0 if doc_type in DOC_TYPES else 0.0
+        # Structure: op-specific required fields all present & non-empty.
+        req = _REQUIRED_BY_ACTION.get(action, _REQUIRED_FIELDS)
+        structure = 1.0 if all(str(d.get(f, "")).strip() for f in req) else 0.0
+        # A no-op edit (old_str == new_str) changes nothing — treat as invalid.
+        if action == "edit" and \
+                str(d.get("old_str", "")).strip() == str(d.get("new_str", "")).strip():
+            structure = 0.0
+
+        # type / links / anti-pattern only apply to authoring ops; N/A → 1.0.
+        valid_type = (1.0 if doc_type in DOC_TYPES else 0.0) if authoring else 1.0
         valid_action = 0.0
         if action in _VALID_ACTIONS:
-            valid_action = 1.0 if (action == "create" or slug) else 0.5  # update must carry a slug
-        links = 1.0 if _LINK_RE.search(body) else 0.0
-        anti_pattern = 0.0 if _has_trailing_link_block(body) else 1.0
+            valid_action = 1.0 if (action == "create" or slug) else 0.5  # others must carry a slug
+        links = (1.0 if _LINK_RE.search(body) else 0.0) if authoring else 1.0
+        anti_pattern = (0.0 if _has_trailing_link_block(body) else 1.0) if authoring else 1.0
 
         return {
             "structure": structure,

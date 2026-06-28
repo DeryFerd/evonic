@@ -44,8 +44,8 @@ def _doc_names(d: dict) -> List[str]:
     return names
 
 
-def _entity_satisfied(entity: dict, action: str, docs: list) -> bool:
-    """True if some doc fulfils ``entity`` under the expected ``action``.
+def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
+    """Return the doc that fulfils ``entity`` under the expected ``action``, or None.
 
     A doc fulfils the entity when its ``action`` matches, its title/alias matches
     (case-insensitive, either-direction substring so "Borobudur" matches a doc
@@ -54,7 +54,7 @@ def _entity_satisfied(entity: dict, action: str, docs: list) -> bool:
     """
     want = _norm(entity.get("title"))
     if not want:
-        return False
+        return None
     types = entity.get("type")
     if isinstance(types, str):
         types = [types]
@@ -72,8 +72,13 @@ def _entity_satisfied(entity: dict, action: str, docs: list) -> bool:
             continue
         if action == "update" and slug and (d.get("slug") or "").strip() != slug:
             continue
-        return True
-    return False
+        return d
+    return None
+
+
+def _entity_satisfied(entity: dict, action: str, docs: list) -> bool:
+    """True if some doc fulfils ``entity`` under the expected ``action``."""
+    return _find_doc(entity, action, docs) is not None
 
 
 def _strip_code_fences(text: str) -> str:
@@ -136,9 +141,10 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
         "structure": 0.18,      # required fields present & non-empty
         "valid_type": 0.12,     # type in DOC_TYPES
         "valid_action": 0.10,   # action create/update (+ slug on update)
-        "coverage": 0.40,       # expected subjects surfaced with the right action/slug
-        "links": 0.15,          # inline [[links]] when required
+        "coverage": 0.35,       # expected subjects surfaced with the right action/slug
+        "links": 0.12,          # inline [[links]] when required
         "anti_pattern": 0.05,   # no trailing "Relations" block
+        "thumbnail": 0.08,      # thumbnail set for entities that have an image
     }
 
     def __init__(self, domain: str = "knowledge_builder"):
@@ -199,6 +205,21 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
                     missing.append({"action": action, "title": e.get("title")})
         coverage = satisfied / total_expected if total_expected else 1.0
 
+        # Thumbnail: expected entities flagged ``"thumbnail": true`` whose matching
+        # doc sets a non-empty ``thumbnail``. Skipped (1.0) when none are flagged,
+        # mirroring how ``links`` is skipped when not required.
+        thumb_expected = 0
+        thumb_satisfied = 0
+        for action, ents in (("create", create_ents), ("update", update_ents)):
+            for e in ents:
+                if not e.get("thumbnail"):
+                    continue
+                thumb_expected += 1
+                doc = _find_doc(e, action, docs)
+                if doc and str(doc.get("thumbnail") or "").strip():
+                    thumb_satisfied += 1
+        thumbnail = (thumb_satisfied / thumb_expected) if thumb_expected else 1.0
+
         components = {
             "structure": avg("structure"),
             "valid_type": avg("valid_type"),
@@ -206,6 +227,7 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
             "coverage": coverage,
             "links": avg("links") if require_links else 1.0,
             "anti_pattern": avg("anti_pattern"),
+            "thumbnail": thumbnail,
         }
         score = round(sum(components[k] * w for k, w in self.WEIGHTS.items()), 3)
         status = "passed" if score >= 0.8 else "partial" if score >= 0.5 else "failed"
@@ -217,6 +239,8 @@ class KnowledgeBuilderEvaluator(BaseEvaluator):
                 "num_docs": len(docs),
                 "satisfied_entities": satisfied,
                 "expected_entities": total_expected,
+                "thumbnail_satisfied": thumb_satisfied,
+                "thumbnail_expected": thumb_expected,
                 "missing": missing,
                 "missing_entities": [m["title"] for m in missing],
                 "per_doc": per_doc,

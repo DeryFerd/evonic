@@ -137,6 +137,40 @@ SCENARIOS = [
         },
     },
 
+    # ---- Level 2: image in the source -> the subject's doc must set `thumbnail` ----
+    {
+        "id": "kb_create_thumbnail_1", "level": 2,
+        "name": "Create with thumbnail (HTML img)",
+        "description": "An <img> tag for a subject must become that doc's thumbnail.",
+        "existing": [],
+        "source": ("User menambahkan foto profil rekannya, Dewi Anggraini Putri: "
+                   "<img src=\"https://cdn.example.com/dewi.webp\" "
+                   "alt=\"Dewi Anggraini Putri\" width=\"150\">. "
+                   "Dia seorang desainer produk di Nuwaira."),
+        "expected": {
+            "expect_actions": {"create": [
+                {"title": "Dewi Anggraini Putri", "type": "person", "thumbnail": True},
+                {"title": "Nuwaira", "type": ["company", "organization"]},
+            ]},
+            "require_links": False,
+        },
+    },
+    {
+        "id": "kb_create_thumbnail_2", "level": 2,
+        "name": "Create with thumbnail (Markdown image)",
+        "description": "A Markdown image (logo) for a company must become its thumbnail.",
+        "existing": [],
+        "source": ("User menyimpan logo perusahaan Larisin: "
+                   "![Logo Larisin](https://cdn.example.com/larisin-logo.png). "
+                   "Larisin adalah startup POS untuk UMKM."),
+        "expected": {
+            "expect_actions": {"create": [
+                {"title": "Larisin", "type": ["company", "organization"], "thumbnail": True},
+            ]},
+            "require_links": False,
+        },
+    },
+
     # ---- Level 3: richer source -> multiple docs with cross-links ----
     {
         "id": "kb_multidoc_trip_1", "level": 3,

@@ -78,6 +78,32 @@ def test_missing_links_when_required_penalized(ev):
     assert ev.evaluate(no_links, GOOD_EXPECT, level=2).score < good
 
 
+def test_thumbnail_expected_rewards_and_penalizes(ev):
+    expect = {"expect_actions": {"create": [
+        {"title": "Sari", "type": "person", "thumbnail": True}]},
+        "require_links": False}
+    with_thumb = json.dumps({"docs": [{
+        "action": "create", "title": "Sari", "type": "person",
+        "description": "PM.", "thumbnail": "https://cdn.example.com/sari.webp",
+        "body": "Sari adalah product manager di [[Evonic]].",
+    }]})
+    without_thumb = json.dumps({"docs": [{
+        "action": "create", "title": "Sari", "type": "person",
+        "description": "PM.", "body": "Sari adalah product manager di [[Evonic]].",
+    }]})
+    r_with = ev.evaluate(with_thumb, expect, level=2)
+    r_without = ev.evaluate(without_thumb, expect, level=2)
+    assert r_with.score > r_without.score
+    assert r_with.details["components"]["thumbnail"] == 1.0
+    assert r_without.details["components"]["thumbnail"] == 0.0
+
+
+def test_thumbnail_skipped_when_not_expected(ev):
+    # No entity flags thumbnail -> component is a no-op (1.0), regardless of output.
+    r = ev.evaluate(_good_create(), GOOD_EXPECT, level=2)
+    assert r.details["components"]["thumbnail"] == 1.0
+
+
 def test_update_dedup_slug(ev):
     expect = {"expect_actions": {"update": [
         {"title": "Jakarta", "type": "place", "slug": "jakarta"}]}}

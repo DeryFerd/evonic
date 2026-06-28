@@ -161,7 +161,7 @@
   function loadBySource() {
     getJSON(`${API}/by-source?range=${range}`).then(d => {
       const rows = d.sources || [];
-      const colors = rows.map(r => r.key === 'explorer' ? EXPLORER_COLOR : null);
+      const colors = rows.map(r => r.key === 'explorer' ? EXPLORER_COLOR : r.key === 'kb_organizer' ? ORGANIZER_COLOR : null);
       const used = new Set();
       let pi = 0;
       colors.forEach((c, i) => {
@@ -189,18 +189,20 @@
     });
   }
 
-  const EXPLORER_COLOR = '#ec4899';  // distinct color for explorer sub-agents
+  const EXPLORER_COLOR = '#ec4899';
+  const ORGANIZER_COLOR = '#f59e0b';
   function loadByAgent() {
     getJSON(`${API}/by-agent?range=${range}&rollup=${rollup ? 1 : 0}`).then(d => {
       const rows = d.agents || [];
-      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : '#4f46e5');
+      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : '#4f46e5');
       renderBar('tm-agent-chart', rows.map(r => r.agent_id || '(none)'), rows.map(r => r.total_tokens), colors);
       const body = document.getElementById('tm-agent-body');
       if (!rows.length) { body.innerHTML = '<tr><td colspan="5">No data</td></tr>'; return; }
       body.innerHTML = rows.map(r => {
         const name = r.agent_id || '(none)';
-        const agentCell = r.is_explorer
-          ? `<span style="color:${EXPLORER_COLOR};font-weight:600;">${name}</span>`
+        const color = r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : null;
+        const agentCell = color
+          ? `<span style="color:${color};font-weight:600;">${name}</span>`
           : name;
         return `<tr>
         <td>${agentCell}</td>

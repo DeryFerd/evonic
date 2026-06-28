@@ -391,7 +391,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=53"></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=54"></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4"></script>
 <script>
 let allSessions = [];
@@ -503,6 +503,31 @@ const chatUI = new ChatUI($('#chat-messages'), {
     userBubbleClass: 'bg-white text-gray-800 border border-gray-200 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100',
     assistantBubbleClass: 'bg-gray-200 text-gray-800 dark:bg-[#152A3A] border dark:border-[#1B394F] dark:text-gray-100',
     formatTimestamp: formatTime,
+});
+
+// Wiki-link clicks from chat messages → preview modal
+document.addEventListener('evonic:wikilink-click', async function (e) {
+    const title = e.detail && e.detail.title;
+    if (!title || !currentAgentId) return;
+    const fromModal = !!(e.detail && e.detail._fromModal);
+    var slug = null;
+    try {
+        const res = await fetch('/api/agents/' + encodeURIComponent(currentAgentId) + '/kb-graph');
+        const graphData = await res.json();
+        const pages = (graphData && graphData.pages) || {};
+        const want = title.trim().toLowerCase();
+        for (const [s, p] of Object.entries(pages)) {
+            const pt = (p.title || '').trim().toLowerCase();
+            if (pt === want || s.toLowerCase() === want || s.split('/').pop().toLowerCase() === want) { slug = s; break; }
+        }
+    } catch (err) { /* ignore */ }
+    if (!slug) { showWikilinkPreview(title, null, fromModal); return; }
+    try {
+        const res = await fetch('/api/agents/' + encodeURIComponent(currentAgentId) + '/kb/' + encodeURIComponent(slug + '.md'));
+        const data = await res.json();
+        if (data.error) { showWikilinkPreview(title, null, fromModal); return; }
+        showWikilinkPreview(title, renderKBDocPreview(data.content), fromModal);
+    } catch (err) { showWikilinkPreview(title, null, fromModal); }
 });
 
 // Scroll-to-bottom button logic

@@ -384,6 +384,25 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                         <p class="text-xs text-gray-400 mt-1">Number of recent messages kept in raw form (not summarized).</p>
                     </div>
                     <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Memory Engine</label>
+                        <select id="agent-memory-engine" class="w-full p-2.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                            <option value="" {{ 'selected' if not agent.memory_engine else '' }}>Default (global setting)</option>
+                            <option value="evomem" {{ 'selected' if agent.memory_engine == 'evomem' else '' }}>Evomem (semantic + knowledge graph)</option>
+                            <option value="fts5" {{ 'selected' if agent.memory_engine == 'fts5' else '' }}>FTS5 (keyword full-text search)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">How past memories are retrieved into context. Evomem uses semantic search + a knowledge graph; FTS5 uses SQLite keyword search. Default follows the server's <code>EVONIC_MEMORY_ENGINE</code>.</p>
+                    </div>
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">KB Organizer</label>
+                        <select id="agent-kb-organizer" class="w-full p-2.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                            <option value="" {{ 'selected' if not agent.kb_organizer_mode else '' }}>Default (global setting)</option>
+                            <option value="agentic" {{ 'selected' if agent.kb_organizer_mode == 'agentic' else '' }}>Agentic (sub-agent organizer)</option>
+                            <option value="non-agentic" {{ 'selected' if agent.kb_organizer_mode == 'non-agentic' else '' }}>Evomem Lookup (non-agentic)</option>
+                            <option value="off" {{ 'selected' if agent.kb_organizer_mode == 'off' else '' }}>Off</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">Files conversation knowledge into the vault. <span class="text-amber-600 dark:text-amber-500 font-medium">Agentic</span> spawns a Knowledge Organizer sub-agent that explores the vault and links docs — best quality but <strong>incurs extra token cost</strong> per run. <span class="font-medium">Evomem Lookup (non-agentic)</span> files via a single LLM call — cheaper, no vault exploration. Only applies when Memory Engine is Evomem. Default follows the server's <code>EVOMEM_KB_ORGANIZER</code>.</p>
+                    </div>
+                    <div>
                         <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Message Buffer (seconds)</label>
                         <input type="number" id="agent-buffer-seconds" min="0" step="0.5" value="{{ agent.message_buffer_seconds if agent.message_buffer_seconds is not none else 2 }}" class="w-32 p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
                         <p class="text-xs text-gray-400 mt-1">Wait time to accumulate rapid messages before calling LLM. Set to 0 to disable.</p>
@@ -1426,7 +1445,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=53" defer></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=54" defer></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4" defer></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
@@ -1983,6 +2002,8 @@ async function saveAdvanced() {
             bash_exec_enabled: document.getElementById('agent-bash-exec').checked ? 1 : 0,
             message_wrapper_enabled: document.getElementById('agent-message-wrapper').checked ? 1 : 0,
             run_as_user: document.getElementById('agent-run-as-user').value.trim() || null,
+            memory_engine: document.getElementById('agent-memory-engine').value || null,
+            kb_organizer_mode: document.getElementById('agent-kb-organizer').value || null,
         })
     });
     const data = await res.json();
@@ -2353,7 +2374,7 @@ async function openKBLink(title) {
     else showToast(`Document "${title}" doesn't exist yet (empty link).`, 'info');
 }
 
-// Delegated click for inline wiki-links in the preview (attached once).
+// Delegated click for inline wiki-links in the KB editor preview (attached once).
 (function () {
     const prev = document.getElementById('kb-editor-preview');
     if (prev && !prev._wikilinkBound) {
@@ -2364,6 +2385,33 @@ async function openKBLink(title) {
         });
     }
 })();
+
+// Wiki-link clicks from chat messages → preview modal
+document.addEventListener('evonic:wikilink-click', async function (e) {
+    const title = e.detail && e.detail.title;
+    if (!title) return;
+    const fromModal = !!(e.detail && e.detail._fromModal);
+    var slug = null;
+    try {
+        if (!kbGraphData || !kbGraphData.pages) {
+            const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
+            kbGraphData = await res.json();
+        }
+        const pages = (kbGraphData && kbGraphData.pages) || {};
+        const want = title.trim().toLowerCase();
+        for (const [s, p] of Object.entries(pages)) {
+            const pt = (p.title || '').trim().toLowerCase();
+            if (pt === want || s.toLowerCase() === want || s.split('/').pop().toLowerCase() === want) { slug = s; break; }
+        }
+    } catch (err) { /* ignore */ }
+    if (!slug) { showWikilinkPreview(title, null, fromModal); return; }
+    try {
+        const res = await fetch('/api/agents/' + AGENT_ID + '/kb/' + encodeURIComponent(slug + '.md'));
+        const data = await res.json();
+        if (data.error) { showWikilinkPreview(title, null, fromModal); return; }
+        showWikilinkPreview(title, renderKBDocPreview(data.content), fromModal);
+    } catch (err) { showWikilinkPreview(title, null, fromModal); }
+});
 
 async function editFile(filename) {
     const res = await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`);

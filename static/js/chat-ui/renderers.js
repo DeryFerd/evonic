@@ -71,6 +71,165 @@ function truncateLine(text, max) {
     return first.length > max ? first.slice(0, max) + '\u2026' : first;
 }
 
+// \u2500\u2500 Wiki-link transform \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+function transformWikiLinks(html) {
+    return (html || '').replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (m, target, display) => {
+        const t = (target || '').trim();
+        const label = ((display || target) || '').trim();
+        const attr = escape(t).replace(/"/g, '&quot;');
+        return '<a href="#" class="kb-wikilink text-indigo-600 dark:text-indigo-400 font-medium no-underline hover:underline" data-wikilink="' + attr + '">' + escape(label) + '</a>';
+    });
+}
+
+// \u2500\u2500 KB doc preview rendering \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+function kbSplitFrontmatter(content) {
+    const m = (content || '').match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+    if (!m) return { fm: null, body: content || '' };
+    return { fm: m[1], body: m[2] };
+}
+
+function kbParseFM(raw) {
+    const fm = {};
+    (raw || '').split('\n').forEach(function (line) {
+        const i = line.indexOf(':');
+        if (i < 0) return;
+        const k = line.slice(0, i).trim();
+        if (!k) return;
+        let v = line.slice(i + 1).trim();
+        if (v.startsWith('[') && v.endsWith(']')) {
+            v = v.slice(1, -1).split(',').map(function (s) { return s.trim().replace(/^["']|["']$/g, ''); }).filter(Boolean);
+        } else {
+            v = v.replace(/^["']|["']$/g, '');
+        }
+        fm[k] = v;
+    });
+    return fm;
+}
+
+function kbRenderFrontmatter(raw) {
+    const fm = kbParseFM(raw);
+    const asList = function (v) { return Array.isArray(v) ? v : (v ? [v] : []); };
+    const tags = asList(fm.tags), aliases = asList(fm.aliases);
+    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated']);
+    let h = '<div class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">';
+    h += '<div class="flex items-center gap-2 flex-wrap mb-1">';
+    if (fm.type) h += '<span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">' + escape(fm.type) + '</span>';
+    if (fm.title) h += '<span class="text-base font-semibold text-gray-800 dark:text-gray-100">' + escape(fm.title) + '</span>';
+    h += '</div>';
+    if (fm.description) h += '<p class="text-sm text-gray-600 dark:text-gray-300 mt-1 mb-2">' + escape(fm.description) + '</p>';
+    if (tags.length) h += '<div class="flex flex-wrap gap-1 mb-2">' + tags.map(function (t) { return '<span class="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-300">#' + escape(t) + '</span>'; }).join('') + '</div>';
+    if (aliases.length) h += '<div class="text-xs text-gray-500 dark:text-gray-400 mb-1">aliases: ' + aliases.map(escape).join(', ') + '</div>';
+    const meta = [];
+    if (fm.created) meta.push('created ' + escape(String(fm.created)));
+    if (fm.updated) meta.push('updated ' + escape(String(fm.updated)));
+    Object.keys(fm).forEach(function (k) {
+        if (!known.has(k)) meta.push(escape(k) + ': ' + escape(Array.isArray(fm[k]) ? fm[k].join(', ') : fm[k]));
+    });
+    if (meta.length) h += '<div class="text-xs text-gray-400 dark:text-gray-500">' + meta.join(' &middot; ') + '</div>';
+    h += '</div>';
+    return h;
+}
+
+function renderKBDocPreview(content) {
+    const parts = kbSplitFrontmatter(content);
+    const cardHtml = parts.fm !== null ? kbRenderFrontmatter(parts.fm) : '';
+    const bodyHtml = typeof marked !== 'undefined'
+        ? transformWikiLinks(sanitize(marked.parse(parts.body)))
+        : escape(parts.body);
+    return cardHtml + bodyHtml;
+}
+
+// \u2500\u2500 Wiki-link preview modal \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+var _wikilinkHistory = [];
+
+function _getOrCreateWikilinkModal() {
+    let $modal = $('#wikilink-preview-modal');
+    if ($modal.length) return $modal;
+
+    $modal = $([
+        '<div id="wikilink-preview-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[150] p-4">',
+        '  <div class="wikilink-modal-dialog bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-[700px] flex flex-col overflow-hidden" style="max-height:85vh;">',
+        '    <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">',
+        '      <div class="flex items-center gap-2 min-w-0">',
+        '        <button class="wikilink-modal-back hidden text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex-shrink-0" aria-label="Back">',
+        '          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7"/></svg>',
+        '        </button>',
+        '        <h3 class="wikilink-modal-title text-sm font-semibold text-gray-800 dark:text-gray-200 truncate"></h3>',
+        '      </div>',
+        '      <button class="wikilink-modal-close text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 flex-shrink-0" aria-label="Close">&times;</button>',
+        '    </div>',
+        '    <div class="wikilink-modal-body prose dark:prose-invert text-sm max-w-none p-5 overflow-y-auto flex-1" style="max-height:70vh;"></div>',
+        '    <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end flex-shrink-0">',
+        '      <button class="wikilink-modal-close px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg">Close</button>',
+        '    </div>',
+        '  </div>',
+        '</div>',
+    ].join('\n'));
+
+    function _closeModal() { $modal.addClass('hidden'); _wikilinkHistory = []; }
+
+    $modal.on('click', function (e) { if (e.target === this) _closeModal(); });
+    $modal.find('.wikilink-modal-dialog').on('click', '.wikilink-modal-close', function () { _closeModal(); });
+    $modal.find('.wikilink-modal-dialog').on('click', '.wikilink-modal-back', function () {
+        if (_wikilinkHistory.length) {
+            var prev = _wikilinkHistory.pop();
+            _renderWikilinkModal(prev.title, prev.html, false);
+        }
+    });
+    $modal.find('.wikilink-modal-dialog').on('click', '.kb-wikilink', function (e) {
+        e.preventDefault();
+        var t = $(this).attr('data-wikilink');
+        if (t) document.dispatchEvent(new CustomEvent('evonic:wikilink-click', { detail: { title: t, _fromModal: true } }));
+    });
+    $(document).on('keydown.wikilinkModal', function (e) {
+        if (e.key === 'Escape' && !$modal.hasClass('hidden')) _closeModal();
+    });
+
+    $('body').append($modal);
+    return $modal;
+}
+
+function _renderWikilinkModal(title, htmlContent, pushHistory) {
+    var $modal = _getOrCreateWikilinkModal();
+
+    if (pushHistory) {
+        var curTitle = $modal.find('.wikilink-modal-title').text();
+        var curHtml = $modal.find('.wikilink-modal-body').html();
+        if (curTitle) _wikilinkHistory.push({ title: curTitle, html: curHtml });
+    }
+
+    $modal.find('.wikilink-modal-title').text(title);
+
+    if (htmlContent === null || htmlContent === undefined) {
+        $modal.find('.wikilink-modal-body').html(
+            '<div class="flex flex-col items-center justify-center py-12 text-gray-400 dark:text-gray-500">' +
+            '<svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mb-3 text-gray-300 dark:text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg>' +
+            '<p class="text-sm font-medium">Dokumen belum tersedia</p>' +
+            '<p class="text-xs mt-1">Informasi ini belum ada di knowledge base.</p>' +
+            '</div>'
+        );
+    } else {
+        $modal.find('.wikilink-modal-body').html(htmlContent);
+    }
+
+    var $back = $modal.find('.wikilink-modal-back');
+    if (_wikilinkHistory.length) $back.removeClass('hidden');
+    else $back.addClass('hidden');
+
+    $modal.find('.wikilink-modal-body').scrollTop(0);
+}
+
+function showWikilinkPreview(title, htmlContent, fromModal) {
+    var $modal = _getOrCreateWikilinkModal();
+    var isOpen = !$modal.hasClass('hidden');
+    _renderWikilinkModal(title, htmlContent, isOpen && fromModal);
+    $modal.removeClass('hidden');
+}
+
+
 // ── Syntax highlighters ───────────────────────────────────────────────────────
 
 export function highlightPython(code) {
@@ -922,7 +1081,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else {
         // assistant: markdown with sanitizer
         const rendered = typeof marked !== 'undefined'
-            ? sanitize(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
+            ? transformWikiLinks(sanitize(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>'))
             : escape(content);
         $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 border-gray-300 text-sm break-words">').addClass(assistantBubbleClass);
         $bubble.attr('role', 'article');
@@ -934,6 +1093,11 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
         });
         _highlightCode($bubble);
         _addCopyButtons($bubble);
+        $bubble.on('click', '.kb-wikilink', function (e) {
+            e.preventDefault();
+            var title = $(this).attr('data-wikilink');
+            if (title) document.dispatchEvent(new CustomEvent('evonic:wikilink-click', { detail: { title: title } }));
+        });
         // Render non-image file badge with download link
         if (meta.attachment_info && !meta.attachment_info.is_image) {
             const info = meta.attachment_info;
@@ -974,4 +1138,6 @@ export const DEFAULT_RENDERERS = {
     sanitize,
     highlightPython,
     highlightDiff,
+    renderKBDocPreview,
+    showWikilinkPreview,
 };

@@ -124,6 +124,7 @@ How to write a document:
   GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
   BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
 - If the SOURCE mentions or includes relevant photos/images, embed them inline in the `body` using Markdown: `![brief description](image-url)`. Only include photos that are directly relevant to the document's subject — skip unrelated or generic images.
+- Set `thumbnail` to the subject's single best representative image/photo/logo URL (powers the doc card and graph node). Omit it when there's no good image.
 - Choose a `type` for each document from: note, person, place, venue, event, organization, company, product, contact.
 - The user is always referred to as "User".
 
@@ -132,10 +133,10 @@ Deduplication:
 
 Skip ephemeral chatter, pleasantries, and transient/in-progress task status.
 
-Return STRICT JSON only, no prose. Each doc may optionally include an `images` array of relevant photo URLs to attach:
+Return STRICT JSON only, no prose. Each doc may optionally include a `thumbnail` (the subject's representative image URL):
 {{"docs": [
-  {{"action": "create", "title": "Jakarta", "type": "place", "description": "Capital of Indonesia; User's home city.", "tags": ["place"], "images": [], "body": "Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]]."}},
-  {{"action": "update", "slug": "<existing slug>", "title": "...", "type": "note", "description": "...", "tags": ["..."], "images": [], "body": "<only the new prose to append, with inline [[links]]>"}}
+  {{"action": "create", "title": "Jakarta", "type": "place", "description": "Capital of Indonesia; User's home city.", "tags": ["place"], "thumbnail": "<representative image URL, else omit>", "body": "Jakarta adalah ibu kota Indonesia. User tinggal di [[Pesanggrahan]]."}},
+  {{"action": "update", "slug": "<existing slug>", "title": "...", "type": "note", "description": "...", "tags": ["..."], "thumbnail": "<image URL if doc has none yet, else omit>", "body": "<only the new prose to append, with inline [[links]]>"}}
 ]}}
 If nothing is worth keeping long-term, return: {{"docs": []}}
 
@@ -156,34 +157,39 @@ Return only the JSON object:"""
 _KB_ORGANIZER_SYSTEM_PROMPT = """You are the Knowledge Organizer — a librarian who keeps an AI assistant's personal knowledge vault tidy. The vault is YOUR WORKSPACE: a directory of Markdown docs, each with YAML frontmatter (title, aliases, type, description, tags) and a prose body with inline [[Wiki Links]]. There is NO pre-made index — use your tools (Glob, Grep, Read) to explore the vault and discover what already exists.
 
 NAMING — the `title` is the subject's PURE canonical name ONLY. Put nicknames, abbreviations, gelar, or short forms in `aliases`, NEVER in the title (the title becomes the filename, so it must stay clean). Examples:
-  - title "Abdurrahman Wahid", aliases ["Gus Dur"]   (NOT title "Abdurrahman Wahid (Gus Dur)")
-  - title "Susilo Bambang Yudhoyono", aliases ["SBY"]
+  - title "Raden Wijaya Kusuma", aliases ["Mas Wijaya"]   (NOT title "Raden Wijaya Kusuma (Mas Wijaya)")
+  - title "Dewi Anggraini Putri", aliases ["DAP"]
 The aliases let other names still resolve to this one doc.
 
 LINKING IS MANDATORY — every named entity you mention in a `body` MUST be wrapped in an inline [[Wiki Link]]: people, places, organizations, companies, products, venues, events. This is how the knowledge graph connects — a body with no links is WRONG. ESPECIALLY every PERSON's name MUST be a [[link]] — never leave a person as plain text. Link the entity's canonical name, e.g. "User bertemu [[Budi Santoso]] di [[Jakarta]] di kantor [[Nuwaira]]." Do NOT wrap "User" in a link.
 
-IMAGES — there is NO separate images field. If the conversation provides a relevant photo/image URL for a subject, you MUST embed it INLINE in that doc's `body` as Markdown: `![brief description](image-url)` (put it near the top of the body or in the relevant paragraph). An image is saved ONLY if it is in the `body` — a URL placed anywhere else is lost. Only embed photos directly relevant to the subject; skip generic/unrelated ones.
+IMAGES — the conversation often contains pictures, usually as HTML `<img src="URL" alt="NAME" ...>` tags (sometimes Markdown `![NAME](URL)`). You MUST harvest these:
+  - EXTRACT the `src` URL. The `alt` text almost always names the subject — use it to match the image to the right doc. URLs are typically server-relative like `/api/agents/<id>/artifacts/<name>.webp`; keep them VERBATIM (do not rewrite or drop the leading `/`).
+  - `thumbnail` (frontmatter field): set it to that URL — the subject's single best representative image (a person's photo, an org/product logo, a place's photo). Powers the doc card and the knowledge-graph node icon. Set on `create`, and on `update` when the doc has none yet. One URL only.
+  - Inline body image (optional): to ALSO show the image in the prose, embed it as Markdown `![brief description](URL)`.
+  EXAMPLE — a turn containing `<img src="/api/agents/<id>/artifacts/wijaya-kusuma.webp" alt="Raden Wijaya Kusuma" width="150">` means: on the [[Raden Wijaya Kusuma]] doc set `"thumbnail":"/api/agents/<id>/artifacts/wijaya-kusuma.webp"`.
+Whenever a turn shows an image for an entity, you MUST emit a create/update op that sets that entity's `thumbnail`. Only use images directly relevant to the subject; skip generic/unrelated ones.
 
 Given the conversation below, file any durable, long-term knowledge into the vault. For each subject:
 - EXPLORE to learn whether the vault already has a doc for it. Search by the name AND its likely variants, aliases, abbreviations, or fuller/shorter forms — the SAME real-world entity must live in ONE doc even under a different name. Examples: "Stasiun Gambir" is the doc "Gambir"; "Pak Andi" is "Andi Wijaya"; "BNI" is "Bank Negara Indonesia". Grep is case-insensitive; search `title:`/`aliases:` lines and bodies, and try bare head-nouns / stripped prefixes (Stasiun, Pak/Bu/Mr, PT/CV).
 - KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
 - NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
-- WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc.
+- WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Mas Wijaya]]" → new_str "[[Raden Wijaya Kusuma]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc. NEVER emit an edit whose `new_str` is identical to `old_str` — an edit must CHANGE the text; if nothing changes, omit the op entirely.
 - RETRO-LINK existing docs (IMPORTANT — frequently the MOST valuable work, and easy to miss): once a subject HAS a doc (you just created it, or it already existed), OTHER docs often still mention that subject as PLAIN TEXT because its doc didn't exist when they were written. Your job is to connect them: Grep the vault for the subject's name + aliases, and for each bare mention in another doc's body that is NOT already inside [[ ]], EDIT that doc (action "edit") to wrap it as a [[link]]. Keep `old_str` short and UNIQUE (include a couple of surrounding words so it matches exactly one spot). E.g. old_str "Komisaris Independen Grace Natalie" → new_str "Komisaris Independen [[Grace Natalie]]". Leaving a plain-text mention of an entity that HAS a doc is WRONG — emit one "edit" op per doc that needs linking (it is normal and good for a run to return ONLY edit ops, even when nothing new is created).
-- DANGLING [[link]] (a link whose target doc does NOT exist under that exact name) → RECONCILE it: the SAME entity may already live in a doc under a DIFFERENT name (canonical title vs. nickname/abbrev/fuller-or-shorter form). Grep `title:`/`aliases:` and bodies for the linked text and its variants; if you find the matching doc, FIX it — PREFER adding the variant to that doc's `aliases` (an "update" op with its slug + the augmented `aliases` list) so the natural phrasing keeps resolving; otherwise rewrite the link to the doc's canonical title with an "edit" op (e.g. old_str "[[Gus Dur]]" → new_str "[[Abdurrahman Wahid]]"). Only if NO related doc exists and the entity is durable, CREATE one. Don't leave links pointing at nothing.
+- DANGLING [[link]] (a link whose target doc does NOT exist under that exact name) → RECONCILE it: the SAME entity may already live in a doc under a DIFFERENT name (canonical title vs. nickname/abbrev/fuller-or-shorter form). Grep `title:`/`aliases:` and bodies for the linked text and its variants; if you find the matching doc, FIX it — PREFER adding the variant to that doc's `aliases` (an "update" op with its slug + the augmented `aliases` list) so the natural phrasing keeps resolving; otherwise rewrite the link to the doc's canonical title with an "edit" op (e.g. old_str "[[Mas Wijaya]]" → new_str "[[Raden Wijaya Kusuma]]"). Only if NO related doc exists and the entity is durable, CREATE one. Don't leave links pointing at nothing.
 - WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
 - DUPLICATED CONTENT in an existing doc (the same section, or the whole body, appears TWICE — e.g. it was concatenated to itself) → DEDUPE it: action "dedupe" with just the doc's `slug`. This safely removes verbatim repeated blocks; do NOT try to fix duplication with `edit`.
 - Skip ephemeral chatter and transient task status. If a subject is genuinely ambiguous, OMIT it — better to skip than to create a duplicate.
 
 OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
 {"docs":[
- {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
- {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Gus Dur / SBY, else omit>"],"body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
+ {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"thumbnail":"<representative image URL — set if the doc has none yet, else omit>","body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
+ {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Mas Wijaya / DAP, else omit>"],"thumbnail":"<representative image/photo/logo URL, else omit>","body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
  {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<replacement text>"},
  {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"},
  {"action":"dedupe","slug":"<existing slug with duplicated content>"}
 ]}
-RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str (also used to RETRO-LINK plain-text mentions in other docs to a subject that now has a doc); rename=existing slug + corrected new_title; dedupe=existing slug; there is NO images field — embed any relevant photo INLINE in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "edit" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str that DIFFERS from old_str (never old_str==new_str; also used to RETRO-LINK plain-text mentions in other docs to a subject that now has a doc); rename=existing slug + corrected new_title; dedupe=existing slug; set `thumbnail` (frontmatter) to a subject's representative image/logo URL on create (and on update when missing), and/or embed inline images in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "edit" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
 
 Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
@@ -978,7 +984,11 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
                     "Also RECONCILE dangling [[links]]: if a link doesn't resolve, the "
                     "target may already exist under a different name — check and fix it "
                     "(add the variant as an alias, or repoint the link to the canonical "
-                    "doc). Output ONLY the JSON object.")
+                    "doc). THUMBNAILS: whenever a turn shows an image for an entity "
+                    "(HTML `<img src=\"URL\" alt=\"NAME\">` or Markdown `![NAME](URL)`), "
+                    "extract that URL and set the entity's `thumbnail` field — create the "
+                    "doc with it, or update the doc if it has none yet. Output ONLY the "
+                    "JSON object.")
         # Let notify auto-create/resolve the session (get_or_create_session). A
         # made-up session_id is rejected as "not found", so we must NOT force one.
         # Within a run each spawn has a fresh agent_id (organizer_1/2/...) -> a fresh
@@ -1040,8 +1050,8 @@ _TITLE_PAREN_ALIAS_RE = re.compile(r'\s*[\(\[]([^)\]]{1,60})[\)\]]\s*$')
 
 def _split_title_aliases(title: str):
     """Split a trailing parenthetical nickname off a title so the slug stays the
-    PURE name. 'Abdurrahman Wahid (Gus Dur)' -> ('Abdurrahman Wahid', ['Gus Dur']);
-    'Susilo Bambang Yudhoyono (SBY)' -> ('Susilo Bambang Yudhoyono', ['SBY']).
+    PURE name. 'Raden Wijaya Kusuma (Mas Wijaya)' -> ('Raden Wijaya Kusuma', ['Mas Wijaya']);
+    'Dewi Anggraini Putri (DAP)' -> ('Dewi Anggraini Putri', ['DAP']).
     Returns (clean_title, [aliases]); a whole-parenthetical title is left as-is.
     """
     title = (title or '').strip()
@@ -1197,6 +1207,10 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             if action in ('edit', 'patch'):
                 old_str = d.get('old_str') or d.get('old') or ''
                 new_str = d.get('new_str') or d.get('new') or ''
+                # Skip no-op edits where the replacement is identical to the target
+                # (the organizer often emits these) — nothing to change.
+                if old_str.strip() == new_str.strip():
+                    continue
                 if slug_hint and old_str:
                     with _kb_page_lock(agent_id, slug_hint):
                         if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
@@ -1230,6 +1244,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             doc_type = (d.get('type') or 'note').strip()
             description = (d.get('description') or '').strip()
             tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
+            thumbnail = (d.get('thumbnail') or '').strip() or None
 
             base_slug = evomem_writer.slugify(title)
             lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
@@ -1244,13 +1259,15 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                     existing_doc = evomem_writer.read_doc(agent_id, target)
                     existing_body = (existing_doc or {}).get('body') or ''
                     delta = None if (body and body in existing_body) else body
-                    if delta and evomem_writer.append_to_doc(agent_id, target, delta):
+                    if (delta or thumbnail) and evomem_writer.append_to_doc(
+                            agent_id, target, delta or '', thumbnail=thumbnail):
                         modified.append(target)
                         updated += 1
                 else:
                     rel = evomem_writer.upsert_doc(
                         agent_id, title=title, body=body, doc_type=doc_type,
-                        description=description, folder=folder, tags=tags, aliases=aliases)
+                        description=description, folder=folder, tags=tags,
+                        aliases=aliases, thumbnail=thumbnail)
                     if rel:
                         modified.append(rel)
                         created += 1

@@ -154,11 +154,17 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 /* KB Graph search highlight transitions */
 #kb-graph-svg circle { transition: opacity 0.3s, r 0.15s; }
 #kb-graph-svg text   { transition: opacity 0.3s; }
+#kb-graph-svg image  { transition: opacity 0.3s; }
 #kb-graph-svg line   { transition: opacity 0.3s; }
 .kb-node-dimmed circle { opacity: 0.15 !important; }
+.kb-node-dimmed image  { opacity: 0.15 !important; }
 .kb-node-dimmed text   { opacity: 0.1 !important; }
 .kb-link-dimmed        { opacity: 0.05 !important; }
-.kb-node-match circle  { stroke: #6366f1 !important; stroke-width: 3 !important; }
+@keyframes kb-pulse-border {
+  0%, 100% { stroke-opacity: 1; stroke-width: 3; }
+  50%      { stroke-opacity: 0.3; stroke-width: 2; }
+}
+.kb-node-match circle  { stroke: #f97316 !important; animation: kb-pulse-border 1.2s ease-in-out infinite; }
 
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
@@ -2320,8 +2326,13 @@ function _kbRenderFrontmatter(raw) {
     const fm = _kbParseFM(raw);
     const asList = v => Array.isArray(v) ? v : (v ? [v] : []);
     const tags = asList(fm.tags), aliases = asList(fm.aliases);
-    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated']);
+    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated', 'thumbnail']);
     let h = '<div class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">';
+    if (fm.thumbnail) {
+        h += '<div class="flex gap-3 mb-2">';
+        h += `<img src="${escapeHtml(fm.thumbnail)}" class="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-300 dark:border-gray-600" onerror="this.style.display='none'" />`;
+        h += '<div class="flex-1">';
+    }
     h += '<div class="flex items-center gap-2 flex-wrap mb-1">';
     if (fm.type) h += `<span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">${escapeHtml(fm.type)}</span>`;
     if (fm.title) h += `<span class="text-base font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(fm.title)}</span>`;
@@ -2336,6 +2347,7 @@ function _kbRenderFrontmatter(raw) {
         if (!known.has(k)) meta.push(`${escapeHtml(k)}: ${escapeHtml(Array.isArray(fm[k]) ? fm[k].join(', ') : fm[k])}`);
     });
     if (meta.length) h += `<div class="text-xs text-gray-400 dark:text-gray-500">${meta.join(' · ')}</div>`;
+    if (fm.thumbnail) h += '</div></div>';
     h += '</div>';
     return h;
 }
@@ -2768,7 +2780,8 @@ function renderKBGraph() {
             tags: tags,
             type: page.type || null,
             incoming: page.incoming_count || 0,
-            outgoing: page.outgoing_count || 0
+            outgoing: page.outgoing_count || 0,
+            thumbnail: page.thumbnail || null
         });
         nodeMap[slug] = true;
     }
@@ -2929,10 +2942,45 @@ function renderKBGraph() {
     function nodeRadius(d) {
         if (d.isDangling) return 3;
         const edges = (d.incoming || 0) + (d.outgoing || 0);
+        if (d.thumbnail) {
+            if (edges === 0) return 12;
+            return Math.min(20, 12 + Math.log2(edges) * 2);
+        }
         if (edges === 0) return 4;
         return Math.min(10, 4 + Math.log2(edges) * 1.5);
     }
-    node.append('circle')
+
+    // Clip paths for thumbnail nodes
+    const defs = g.append('defs');
+    nodes.filter(d => d.thumbnail).forEach(d => {
+        defs.append('clipPath')
+            .attr('id', 'clip-' + d.id.replace(/[^a-zA-Z0-9-]/g, '_'))
+            .append('circle')
+            .attr('r', nodeRadius(d))
+            .attr('cx', 0).attr('cy', 0);
+    });
+
+    // Thumbnail nodes: image + border
+    node.filter(d => d.thumbnail).each(function(d) {
+        const r = nodeRadius(d);
+        const el = d3.select(this);
+        el.append('image')
+            .attr('href', d.thumbnail)
+            .attr('x', -r).attr('y', -r)
+            .attr('width', r * 2).attr('height', r * 2)
+            .attr('clip-path', 'url(#clip-' + d.id.replace(/[^a-zA-Z0-9-]/g, '_') + ')')
+            .attr('preserveAspectRatio', 'xMidYMid slice')
+            .attr('cursor', 'pointer');
+        el.append('circle')
+            .attr('r', r)
+            .attr('fill', 'none')
+            .attr('stroke', '#fff')
+            .attr('stroke-width', 2)
+            .attr('cursor', 'pointer');
+    });
+
+    // Plain circle nodes (no thumbnail)
+    node.filter(d => !d.thumbnail).append('circle')
         .attr('r', d => nodeRadius(d))
         .attr('fill', d => getNodeColor(d))
         .attr('stroke', d => d.isDangling ? '#dc2626' : (getNodeColor(d) === '#ffffff' ? '#9ca3af' : '#fff'))
@@ -2942,7 +2990,7 @@ function renderKBGraph() {
     // Node labels
     node.append('text')
         .text(d => d.label)
-        .attr('x', 12)
+        .attr('x', d => d.thumbnail ? nodeRadius(d) + 4 : 12)
         .attr('y', 4)
         .attr('font-size', '10px')
         .attr('fill', textColor)

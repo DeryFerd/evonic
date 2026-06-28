@@ -55,10 +55,28 @@ def _split_template():
     return head, tail, _DEFAULT_KB_GUIDANCE
 
 
+# Maintenance ops on EXISTING docs. The live agentic organizer
+# (_KB_ORGANIZER_SYSTEM_PROMPT) documents these; the non-agentic author prompt
+# does not, so we append a concise contract here to let the eval exercise them.
+_EXTRA_OPS_DOC = """
+
+MAINTENANCE OPERATIONS on EXISTING docs (identify the doc by its `slug`):
+- "edit": fix a wrong phrase or [[link]] in a doc's body. Shape:
+  {"action":"edit","slug":"<existing slug>","old_str":"<short UNIQUE exact text from the body>","new_str":"<replacement>"}
+  `new_str` MUST differ from `old_str` — never emit a no-op edit. Also use this to wrap a
+  plain-text mention of an entity that now has its own doc into a [[link]]
+  (e.g. old_str "bekerja dengan Anwar Saputra" -> new_str "bekerja dengan [[Anwar Saputra]]").
+- "rename": fix a typo'd or nickname-polluted doc name. Shape:
+  {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>"}
+- "dedupe": remove duplicated content from a self-concatenated doc. Shape:
+  {"action":"dedupe","slug":"<existing slug>"}
+Use these only when the SOURCE warrants it; otherwise stick to create/update."""
+
+
 def render_system_prompt():
     """Static authoring instructions — the domain-level system prompt."""
     head, _, guidance = _split_template()
-    return head.format(guidance=guidance).strip()
+    return head.format(guidance=guidance).strip() + _EXTRA_OPS_DOC
 
 
 def render_user_prompt(existing, source):
@@ -134,6 +152,40 @@ SCENARIOS = [
                 {"title": "Nusantara Tech", "type": ["organization", "company"]},
             ]},
             "require_links": True,
+        },
+    },
+
+    # ---- Level 2: image in the source -> the subject's doc must set `thumbnail` ----
+    {
+        "id": "kb_create_thumbnail_1", "level": 2,
+        "name": "Create with thumbnail (HTML img)",
+        "description": "An <img> tag for a subject must become that doc's thumbnail.",
+        "existing": [],
+        "source": ("User menambahkan foto profil rekannya, Dewi Anggraini Putri: "
+                   "<img src=\"https://cdn.example.com/dewi.webp\" "
+                   "alt=\"Dewi Anggraini Putri\" width=\"150\">. "
+                   "Dia seorang desainer produk di Nuwaira."),
+        "expected": {
+            "expect_actions": {"create": [
+                {"title": "Dewi Anggraini Putri", "type": "person", "thumbnail": True},
+                {"title": "Nuwaira", "type": ["company", "organization"]},
+            ]},
+            "require_links": False,
+        },
+    },
+    {
+        "id": "kb_create_thumbnail_2", "level": 2,
+        "name": "Create with thumbnail (Markdown image)",
+        "description": "A Markdown image (logo) for a company must become its thumbnail.",
+        "existing": [],
+        "source": ("User menyimpan logo perusahaan Larisin: "
+                   "![Logo Larisin](https://cdn.example.com/larisin-logo.png). "
+                   "Larisin adalah startup POS untuk UMKM."),
+        "expected": {
+            "expect_actions": {"create": [
+                {"title": "Larisin", "type": ["company", "organization"], "thumbnail": True},
+            ]},
+            "require_links": False,
         },
     },
 
@@ -230,6 +282,47 @@ SCENARIOS = [
                 ],
             },
             "require_links": True,
+        },
+    },
+
+    # ---- Level 5: maintenance ops on existing docs (edit / rename / dedupe) ----
+    {
+        "id": "kb_edit_link_1", "level": 5,
+        "name": "Edit body to fix a link",
+        "description": "Wrap a now-documented entity's plain-text mention into a [[link]] via an edit op.",
+        "existing": [{"slug": "anwar-saputra", "title": "Anwar Saputra",
+                      "description": "Software engineer."}],
+        "source": ("Koreksi dokumen Anwar Saputra: frasa \"bekerja di Acme\" harus menjadi "
+                   "\"bekerja di [[Acme]]\" karena Acme kini punya dokumennya sendiri."),
+        "expected": {
+            "expect_actions": {"edit": [{"slug": "anwar-saputra"}]},
+            "require_links": False,
+        },
+    },
+    {
+        "id": "kb_rename_1", "level": 5,
+        "name": "Rename a nickname-polluted doc",
+        "description": "Fix a doc whose slug/title was polluted with a nickname; nickname becomes an alias.",
+        "existing": [{"slug": "anwar-saputra-pak-anwar", "title": "Anwar Saputra (Pak Anwar)",
+                      "description": "Engineer; the title was polluted with a nickname."}],
+        "source": ("Rapikan dokumen berjudul \"Anwar Saputra (Pak Anwar)\": nama kanoniknya "
+                   "seharusnya \"Anwar Saputra\" dengan \"Pak Anwar\" sebagai alias."),
+        "expected": {
+            "expect_actions": {"rename": [{"slug": "anwar-saputra-pak-anwar"}]},
+            "require_links": False,
+        },
+    },
+    {
+        "id": "kb_dedupe_1", "level": 5,
+        "name": "Dedupe a self-duplicated doc",
+        "description": "A doc whose content was concatenated onto itself should be deduped.",
+        "existing": [{"slug": "borobudur", "title": "Borobudur",
+                      "description": "Candi; its body was accidentally duplicated (concatenated onto itself)."}],
+        "source": ("Dokumen Borobudur isinya muncul dua kali (ter-append ke dirinya sendiri) — "
+                   "rapikan duplikasinya."),
+        "expected": {
+            "expect_actions": {"dedupe": [{"slug": "borobudur"}]},
+            "require_links": False,
         },
     },
 ]

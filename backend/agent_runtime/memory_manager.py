@@ -585,14 +585,6 @@ def _delta_enabled() -> bool:
         not in ('0', 'off', 'no', 'false')
 
 
-def _delta_context() -> int:
-    """Lines of surrounding context to keep around each changed hunk."""
-    try:
-        return max(0, int(os.environ.get('EVOMEM_KB_ORGANIZER_DELTA_CONTEXT', '2')))
-    except (TypeError, ValueError):
-        return 2
-
-
 def _delta_min_score() -> int:
     """Minimum delta score (count of genuinely-new content lines) required to
     bother spawning the organizer. Below this, the run is skipped and the cursor
@@ -603,73 +595,48 @@ def _delta_min_score() -> int:
         return 3
 
 
-def _summary_delta(prev: str, curr: str, context: int):
-    """Return ``(delta_text, score)`` describing what's new in ``curr`` vs ``prev``.
+def _norm_line(line: str) -> str:
+    """Normalize a line for content comparison: collapse whitespace + lowercase.
+    Makes the diff ignore pure reformatting (spacing/case) so it isn't flagged
+    as new. (Genuine rewording still differs — diffing regenerated summaries can't
+    detect semantic sameness.)"""
+    return " ".join(line.split()).lower()
 
-    ``delta_text`` is the inserted/replaced regions of ``curr``, each prefixed with
-    its nearest preceding markdown header and padded with ``context`` lines, hunks
-    joined by an ``…`` separator. ``score`` counts the new-side lines whose stripped
-    content is non-empty AND absent from ``prev`` — so pure reordering / re-listing
-    of existing entities does not inflate it.
+
+def _summary_delta(prev: str, curr: str):
+    """Return ``(delta_text, score)`` containing ONLY the genuinely-new lines of
+    ``curr`` vs ``prev`` — each grouped under its section header. A line counts as
+    new when its normalized content is non-empty and absent from ``prev`` (so
+    re-listing/reordering/reformatting of existing facts does NOT reappear). No
+    surrounding old-context lines are included — the section header is the only
+    placement hint; the organizer Greps the vault for anything more.
 
     ``prev`` empty (cold start) → ``("", 0)``: the caller feeds the full summary and
-    skips the score gate so the vault still gets seeded.
+    skips the score gate so the vault still gets seeded. ``score`` = count of new lines.
     """
     if not (prev or "").strip() or not (curr or "").strip():
         return "", 0
 
-    prev_lines = prev.splitlines()
-    curr_lines = curr.splitlines()
-    prev_set = {ln.strip() for ln in prev_lines if ln.strip()}
-
-    sm = difflib.SequenceMatcher(None, prev_lines, curr_lines, autojunk=False)
-    score = 0
-    ranges = []  # (start, end) on curr_lines, context-padded
-    for tag, _i1, _i2, j1, j2 in sm.get_opcodes():
-        if tag not in ('insert', 'replace'):
-            continue
-        for ln in curr_lines[j1:j2]:
-            s = ln.strip()
-            if s and s not in prev_set:
-                score += 1
-        ranges.append((max(0, j1 - context), min(len(curr_lines), j2 + context)))
-
-    if not ranges:
-        return "", score
-
-    # Merge overlapping/adjacent padded ranges.
-    ranges.sort()
-    merged = [list(ranges[0])]
-    for s, e in ranges[1:]:
-        if s <= merged[-1][1]:
-            merged[-1][1] = max(merged[-1][1], e)
-        else:
-            merged.append([s, e])
-
-    def _header_above(idx):
-        for k in range(idx - 1, -1, -1):
-            if curr_lines[k].lstrip().startswith('#'):
-                return curr_lines[k]
-        return None
+    prev_norm = {_norm_line(ln) for ln in prev.splitlines() if ln.strip()}
 
     out = []
-    last_header = None  # the section header most recently emitted
-    for s, e in merged:
-        chunk = curr_lines[s:e]
-        hdr = _header_above(s)
-        if out:
-            out.append("…")  # separator between non-adjacent hunks
-        # Prepend the section header only when it differs from the one already
-        # emitted — otherwise every hunk inside the same section would repeat
-        # "## Entities & Relationships" (the bug seen in organizer prompts).
-        if hdr and hdr != last_header and hdr not in chunk:
-            out.append(hdr)
-        out.extend(chunk)
-        inner_headers = [ln for ln in chunk if ln.lstrip().startswith('#')]
-        if inner_headers:
-            last_header = inner_headers[-1]
-        elif hdr:
-            last_header = hdr
+    cur_header = None       # section header we're currently under
+    header_emitted = None   # last header actually written to `out`
+    score = 0
+    for ln in curr.splitlines():
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('#'):
+            cur_header = ln  # structural; tracked for grouping, never counted as "new"
+            continue
+        if _norm_line(ln) in prev_norm:
+            continue  # already filed (possibly reformatted) — skip
+        if cur_header and header_emitted != cur_header:
+            out.append(cur_header)
+            header_emitted = cur_header
+        out.append(ln)
+        score += 1
 
     return ("\n".join(out).strip(), score)
 
@@ -1055,8 +1022,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             delta_mode = _delta_enabled()
             prev_snapshot = _load_organized_snapshot(agent_id, session_id) if delta_mode else ""
             if delta_mode:
-                delta_text, delta_score = _summary_delta(
-                    prev_snapshot, source_text, _delta_context())
+                delta_text, delta_score = _summary_delta(prev_snapshot, source_text)
                 if prev_snapshot and delta_score < _delta_min_score():
                     logger.debug("[MemoryManager] author_docs[%s]: delta score %d < %d; "
                                  "skipping organizer (not enough new to file)",

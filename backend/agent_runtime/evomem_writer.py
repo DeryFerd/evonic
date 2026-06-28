@@ -147,7 +147,8 @@ def _parse_frontmatter(text: str):
 
 
 def _render_doc(title: str, doc_type: str, description: str, tags, aliases,
-                created: str, updated: str, body: str) -> str:
+                created: str, updated: str, body: str,
+                thumbnail: str = None) -> str:
     """Render a full doc (frontmatter + body). Body is used verbatim (its inline
     [[wiki-links]] are the graph edges)."""
     lines = ["---",
@@ -157,6 +158,8 @@ def _render_doc(title: str, doc_type: str, description: str, tags, aliases,
              f"tags: {_yaml_list(tags or [])}"]
     if aliases:
         lines.append(f"aliases: {_yaml_list(aliases)}")
+    if thumbnail:
+        lines.append(f"thumbnail: {_yaml_escape(thumbnail)}")
     lines.append(f"created: {created}")
     lines.append(f"updated: {updated}")
     lines.append("---")
@@ -165,7 +168,7 @@ def _render_doc(title: str, doc_type: str, description: str, tags, aliases,
 
 def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
                description: str = None, folder: str = "", tags=None,
-               aliases=None, slug: str = None) -> str:
+               aliases=None, slug: str = None, thumbnail: str = None) -> str:
     """Create or overwrite a doc. Returns its full slug (``<folder>/<slug>``) or ''.
 
     ``folder`` places the doc inside a collection (e.g. ``riset-xyz``); empty =
@@ -190,6 +193,8 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
     tags = list(tags or [])
     aliases = [a for a in (aliases or []) if a and a != title]
     created = _now_iso()
+    # A caller-supplied thumbnail wins; otherwise preserve any existing one.
+    thumbnail = (thumbnail or "").strip() or None
 
     if os.path.exists(path):
         try:
@@ -198,6 +203,7 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
             created = fm.get("created") or created
             tags = sorted(set(tags) | set(fm.get("tags", []) or []))
             aliases = sorted(set(aliases) | set(fm.get("aliases", []) or []))
+            thumbnail = thumbnail or (fm.get("thumbnail") or None)
             if description is None:
                 description = fm.get("description")
             # Don't downgrade a typed doc to a plain note on re-write — but never
@@ -212,7 +218,8 @@ def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
 
     try:
         _atomic_write(path, _render_doc(title, doc_type, description, tags,
-                                        aliases, created, _now_iso(), body))
+                                        aliases, created, _now_iso(), body,
+                                        thumbnail=thumbnail))
         vlog("writer[%s]: upsert_doc %s (type=%s)", agent_id, rel, doc_type)
         return rel
     except Exception as e:
@@ -253,31 +260,40 @@ def _dedupe_body(body: str, min_block: int = 40) -> str:
     return "\n\n".join(b for b in out if b.strip()).strip()
 
 
-def append_to_doc(agent_id: str, slug: str, delta_prose: str) -> bool:
+def append_to_doc(agent_id: str, slug: str, delta_prose: str,
+                  thumbnail: str = None) -> bool:
     """Append a new inline-linked paragraph to an existing doc, preserving the
-    body and refreshing ``updated``. Returns True if written.
+    body and refreshing ``updated``. Optionally set/refresh the ``thumbnail``
+    frontmatter (a caller-supplied value wins; otherwise the existing one is kept).
+    Returns True if anything was written.
     """
     delta = (delta_prose or "").strip()
-    if not delta:
-        return False
+    new_thumb = (thumbnail or "").strip() or None
     path = _doc_path(agent_id, slug)
     if not os.path.exists(path):
         return False
     try:
         with open(path, encoding="utf-8") as f:
             fm, body = _parse_frontmatter(f.read())
+        existing_thumb = fm.get("thumbnail") or None
+        final_thumb = new_thumb or existing_thumb
+        # No-op when there's no new prose and the thumbnail wouldn't change.
+        if not delta and final_thumb == existing_thumb:
+            return False
         title = fm.get("title") or slug.rsplit("/", 1)[-1]
         doc_type = fm.get("type") or "note"
         description = fm.get("description") or title
         created = fm.get("created") or _now_iso()
         # Dedupe the result so a delta that restates existing content can't
         # concatenate a duplicate copy into the doc.
-        new_body = _dedupe_body(body.rstrip() + "\n\n" + delta)
+        new_body = _dedupe_body(body.rstrip() + "\n\n" + delta) if delta else body
         _atomic_write(path, _render_doc(title, doc_type, description,
                                         fm.get("tags", []) or [],
                                         fm.get("aliases", []) or [],
-                                        created, _now_iso(), new_body))
-        vlog("writer[%s]: append_to_doc %s (+%d chars)", agent_id, slug, len(delta))
+                                        created, _now_iso(), new_body,
+                                        thumbnail=final_thumb))
+        vlog("writer[%s]: append_to_doc %s (+%d chars%s)", agent_id, slug, len(delta),
+             ", +thumbnail" if new_thumb and new_thumb != existing_thumb else "")
         return True
     except Exception as e:
         logger.debug("append_to_doc failed for %s/%s: %s", agent_id, slug, e)
@@ -384,7 +400,8 @@ def replace_in_doc(agent_id: str, slug: str, old_str: str, new_str: str,
         _atomic_write(path, _render_doc(title, doc_type, description,
                                         fm.get("tags", []) or [],
                                         fm.get("aliases", []) or [],
-                                        created, _now_iso(), new_body))
+                                        created, _now_iso(), new_body,
+                                        thumbnail=fm.get("thumbnail")))
         vlog("writer[%s]: replace_in_doc %s (%s)", agent_id, slug, how)
         return True
     except Exception as e:
@@ -460,7 +477,8 @@ def dedupe_doc(agent_id: str, slug: str) -> bool:
         _atomic_write(path, _render_doc(title, fm.get("type") or "note",
                                         fm.get("description") or title,
                                         fm.get("tags", []) or [], fm.get("aliases", []) or [],
-                                        fm.get("created") or _now_iso(), _now_iso(), cleaned))
+                                        fm.get("created") or _now_iso(), _now_iso(), cleaned,
+                                        thumbnail=fm.get("thumbnail")))
         vlog("writer[%s]: dedupe_doc %s (%d -> %d chars)", agent_id, slug, len(body), len(cleaned))
         return True
     except Exception as e:

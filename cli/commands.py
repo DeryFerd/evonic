@@ -3199,6 +3199,37 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Evomem check failed: {e}"))
 
+    # ── 10b. KB Organizer Config Check ────────────────────────
+    _section("10b. KB Organizer Config Check")
+    try:
+        env_path = os.path.join(ROOT, ".env")
+        key = "EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS"
+        default_val = "1800"  # 30 minutes
+
+        in_file = False
+        if os.path.isfile(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s.startswith(key + "=") or s.startswith("export " + key + "="):
+                        in_file = True
+                        break
+
+        if in_file:
+            results.append(_ok(f"{key} set in .env"))
+        elif fix:
+            _update_env_var(env_path, key, default_val)
+            results.append(_ok(
+                f"Added {key}={default_val} to .env "
+                f"(KB organizer min interval between filing runs — 30 min)"))
+            fixes_applied.append(f"Added {key}={default_val} to .env")
+        else:
+            results.append(_warn(
+                f"{key} not in .env (KB organizer min interval between filing runs; "
+                f"defaults to {default_val}s). Run `evonic doctor --fix` to add it."))
+    except Exception as e:
+        results.append(_fail(f"KB organizer config check failed: {e}"))
+
     # ── 11. PromptPurify ML Safety Check ──
     _section("11. PromptPurify ML Safety Check")
 

@@ -603,5 +603,7 @@ window.SSEAdapter = SSEAdapter;
 window.PollingAdapter = PollingAdapter;
 window.ReplayAdapter = ReplayAdapter;
 window.Lightbox = Lightbox;
+window.renderKBDocPreview = renderKBDocPreview;
+window.showWikilinkPreview = showWikilinkPreview;
 
 log('ui').info('chat-ui v2 loaded');

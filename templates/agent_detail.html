@@ -154,11 +154,17 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 /* KB Graph search highlight transitions */
 #kb-graph-svg circle { transition: opacity 0.3s, r 0.15s; }
 #kb-graph-svg text   { transition: opacity 0.3s; }
+#kb-graph-svg image  { transition: opacity 0.3s; }
 #kb-graph-svg line   { transition: opacity 0.3s; }
 .kb-node-dimmed circle { opacity: 0.15 !important; }
+.kb-node-dimmed image  { opacity: 0.15 !important; }
 .kb-node-dimmed text   { opacity: 0.1 !important; }
 .kb-link-dimmed        { opacity: 0.05 !important; }
-.kb-node-match circle  { stroke: #6366f1 !important; stroke-width: 3 !important; }
+@keyframes kb-pulse-border {
+  0%, 100% { stroke-opacity: 1; stroke-width: 3; }
+  50%      { stroke-opacity: 0.3; stroke-width: 2; }
+}
+.kb-node-match circle  { stroke: #f97316 !important; animation: kb-pulse-border 1.2s ease-in-out infinite; }
 
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
@@ -382,6 +388,25 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                         <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Raw Tail Size</label>
                         <input type="number" id="agent-summarize-tail" min="1" value="{{ agent.summarize_tail if agent.summarize_tail is not none else 5 }}" class="w-32 p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
                         <p class="text-xs text-gray-400 mt-1">Number of recent messages kept in raw form (not summarized).</p>
+                    </div>
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Memory Engine</label>
+                        <select id="agent-memory-engine" class="w-full p-2.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                            <option value="" {{ 'selected' if not agent.memory_engine else '' }}>Default (global setting)</option>
+                            <option value="evomem" {{ 'selected' if agent.memory_engine == 'evomem' else '' }}>Evomem (semantic + knowledge graph)</option>
+                            <option value="fts5" {{ 'selected' if agent.memory_engine == 'fts5' else '' }}>FTS5 (keyword full-text search)</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">How past memories are retrieved into context. Evomem uses semantic search + a knowledge graph; FTS5 uses SQLite keyword search. Default follows the server's <code>EVONIC_MEMORY_ENGINE</code>.</p>
+                    </div>
+                    <div>
+                        <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">KB Organizer</label>
+                        <select id="agent-kb-organizer" class="w-full p-2.5 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-200 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                            <option value="" {{ 'selected' if not agent.kb_organizer_mode else '' }}>Default (global setting)</option>
+                            <option value="agentic" {{ 'selected' if agent.kb_organizer_mode == 'agentic' else '' }}>Agentic (sub-agent organizer)</option>
+                            <option value="non-agentic" {{ 'selected' if agent.kb_organizer_mode == 'non-agentic' else '' }}>Evomem Lookup (non-agentic)</option>
+                            <option value="off" {{ 'selected' if agent.kb_organizer_mode == 'off' else '' }}>Off</option>
+                        </select>
+                        <p class="text-xs text-gray-400 mt-1">Files conversation knowledge into the vault. <span class="text-amber-600 dark:text-amber-500 font-medium">Agentic</span> spawns a Knowledge Organizer sub-agent that explores the vault and links docs — best quality but <strong>incurs extra token cost</strong> per run. <span class="font-medium">Evomem Lookup (non-agentic)</span> files via a single LLM call — cheaper, no vault exploration. Only applies when Memory Engine is Evomem. Default follows the server's <code>EVOMEM_KB_ORGANIZER</code>.</p>
                     </div>
                     <div>
                         <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Message Buffer (seconds)</label>
@@ -643,6 +668,28 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                 <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
                 <div id="kb-list" class="space-y-2">
                     <!-- Files loaded dynamically -->
+                </div>
+                <div id="kb-pagination" class="hidden flex items-center justify-between mt-4 pt-3 border-t border-gray-200 dark:border-gray-600">
+                    <div class="text-sm text-gray-500 dark:text-gray-400">
+                        <span id="kb-pagination-info"></span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button id="kb-prev-btn" onclick="goKBPage('prev')"
+                            class="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors">
+                            <span class="flex items-center gap-1">
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                                Previous
+                            </span>
+                        </button>
+                        <div class="flex items-center gap-1" id="kb-page-buttons"></div>
+                        <button id="kb-next-btn" onclick="goKBPage('next')"
+                            class="px-3 py-1.5 text-sm font-medium text-gray-600 dark:text-gray-300 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition-colors">
+                            <span class="flex items-center gap-1">
+                                Next
+                                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                            </span>
+                        </button>
+                    </div>
                 </div>
                 <div id="kb-empty" class="hidden text-center py-8 text-gray-400 text-sm">No knowledge files yet.</div>
             </div>
@@ -1404,7 +1451,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=53" defer></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=54" defer></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4" defer></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
@@ -1961,6 +2008,8 @@ async function saveAdvanced() {
             bash_exec_enabled: document.getElementById('agent-bash-exec').checked ? 1 : 0,
             message_wrapper_enabled: document.getElementById('agent-message-wrapper').checked ? 1 : 0,
             run_as_user: document.getElementById('agent-run-as-user').value.trim() || null,
+            memory_engine: document.getElementById('agent-memory-engine').value || null,
+            kb_organizer_mode: document.getElementById('agent-kb-organizer').value || null,
         })
     });
     const data = await res.json();
@@ -2067,6 +2116,8 @@ async function savePluginSetting(pluginId, name, value) {
 // ==================== Knowledge Tab ====================
 let kbTree = [];
 let kbTreeState = {};
+let _kbPage = 1;
+let _kbPerPage = 30;
 
 async function loadKBFiles() {
     const epoch = window._agentEpoch;
@@ -2074,11 +2125,13 @@ async function loadKBFiles() {
     const data = await res.json();
     if (epoch !== window._agentEpoch) return; // agent switched mid-flight
     kbTree = data.tree || [];
+    _kbPage = 1;
     document.getElementById('kb-filter').value = '';
     renderKBFiles();
 }
 
 function filterKBFiles() {
+    _kbPage = 1;
     renderKBFiles();
 }
 
@@ -2097,58 +2150,61 @@ function renderKBFiles() {
     const empty = document.getElementById('kb-empty');
     const filtering = query.length > 0;
 
-    function nodeHasMatch(node) {
-        if (node.name.toLowerCase().includes(query)) return true;
-        if (node.type === 'dir' && node.children) {
-            return node.children.some(c => nodeHasMatch(c));
-        }
-        return false;
-    }
-
     if (kbTree.length === 0) {
         list.innerHTML = '';
         empty.classList.remove('hidden');
         empty.textContent = 'No knowledge files yet.';
+        renderKBPagination(0);
         return;
     }
     empty.classList.add('hidden');
 
-    function renderNode(node, depth) {
-        const indent = depth * 20;
-        const isDir = node.type === 'dir';
-        const isExpanded = filtering ? true : (kbTreeState[node.path] !== false);
-
-        if (isDir) {
-            const children = node.children || [];
-            const visibleChildren = filtering
-                ? children.filter(c => nodeHasMatch(c))
-                : children;
-            const hasVisible = visibleChildren.length > 0;
-
-            let html = `<div class="flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-gray-100 transition-colors dark:hover:bg-gray-700 dark:text-gray-300"
-                     style="padding-left: ${indent + 12}px"
-                     onclick="toggleKBDir('${escapeJsPath(node.path)}')">
-                    <div class="flex items-center gap-2 min-w-0">
-                        <span class="text-xs transition-transform inline-block" style="${isExpanded ? 'transform:rotate(90deg)' : ''}">▶</span>
-                        <span class="text-base">📁</span>
-                        <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${node.name}">${node.name}/</span>
-                    </div>
-                </div>`;
-
-            if (isExpanded && hasVisible) {
-                html += visibleChildren.map(c => renderNode(c, depth + 1)).join('');
+    // Flatten tree into a flat file list with path prefix for display
+    function flattenFiles(nodes, prefix) {
+        let files = [];
+        for (const node of nodes) {
+            if (node.type === 'dir') {
+                files = files.concat(flattenFiles(node.children || [], prefix + node.name + '/'));
+            } else {
+                files.push({ ...node, displayPrefix: prefix });
             }
-            return html;
-        } else {
-            const ep = escapeJsPath(node.path);
-            const sizeStr = (node.size != null) ? `<span class="text-xs text-gray-400">${(node.size / 1024).toFixed(1)} KB</span>` : '';
-            return `<div class="flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-gray-100 transition-colors dark:hover:bg-gray-700 dark:text-gray-300"
-                     style="padding-left: ${indent + 12}px"
+        }
+        return files;
+    }
+
+    let allFiles = flattenFiles(kbTree, '');
+
+    if (filtering) {
+        allFiles = allFiles.filter(f =>
+            f.name.toLowerCase().includes(query) ||
+            (f.displayPrefix + f.name).toLowerCase().includes(query)
+        );
+    }
+
+    if (allFiles.length === 0 && filtering) {
+        list.innerHTML = '';
+        empty.classList.remove('hidden');
+        empty.textContent = 'No files match your search';
+        renderKBPagination(0);
+        return;
+    }
+
+    const totalPages = Math.ceil(allFiles.length / _kbPerPage);
+    if (_kbPage > totalPages) _kbPage = totalPages;
+    if (_kbPage < 1) _kbPage = 1;
+    const start = (_kbPage - 1) * _kbPerPage;
+    const pageFiles = allFiles.slice(start, start + _kbPerPage);
+
+    list.innerHTML = pageFiles.map(node => {
+        const ep = escapeJsPath(node.path);
+        const sizeStr = (node.size != null) ? `<span class="text-xs text-gray-400">${(node.size / 1024).toFixed(1)} KB</span>` : '';
+        const prefixStr = node.displayPrefix ? `<span class="text-xs text-gray-400 font-mono">${node.displayPrefix}</span>` : '';
+        return `<div class="flex items-center justify-between p-2 rounded-md cursor-pointer hover:bg-gray-100 transition-colors dark:hover:bg-gray-700 dark:text-gray-300"
                      onclick="editFile('${ep}')">
                     <div class="flex items-center gap-2 min-w-0 flex-1">
-                        <span class="text-base">📄</span>
+                        <span class="text-base flex-shrink-0">📄</span>
                         <div class="flex flex-col min-w-0">
-                            <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${node.path}">${node.name}</span>
+                            <span class="text-sm font-mono text-gray-800 truncate dark:text-gray-200" title="${node.path}">${prefixStr}${node.name}</span>
                             ${sizeStr}
                         </div>
                     </div>
@@ -2159,21 +2215,55 @@ function renderKBFiles() {
                         <button onclick="event.stopPropagation(); deleteFile('${ep}')" title="Delete" class="p-1.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4"><path fill-rule="evenodd" d="M8.75 1A2.75 2.75 0 0 0 6 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 1 0 .23 1.482l.149-.022.841 10.518A2.75 2.75 0 0 0 7.596 19h4.807a2.75 2.75 0 0 0 2.742-2.53l.841-10.52.149.023a.75.75 0 0 0 .23-1.482A41.03 41.03 0 0 0 14 4.193V3.75A2.75 2.75 0 0 0 11.25 1h-2.5ZM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4ZM8.58 7.72a.75.75 0 0 0-1.5.06l.3 7.5a.75.75 0 1 0 1.5-.06l-.3-7.5Zm4.34.06a.75.75 0 1 0-1.5-.06l-.3 7.5a.75.75 0 1 0 1.5.06l.3-7.5Z" clip-rule="evenodd"/></svg></button>
                     </div>
                 </div>`;
-        }
-    }
+    }).join('');
 
-    const visible = filtering
-        ? kbTree.filter(n => nodeHasMatch(n))
-        : kbTree;
+    renderKBPagination(allFiles.length);
+}
 
-    if (visible.length === 0 && filtering) {
-        list.innerHTML = '';
-        empty.classList.remove('hidden');
-        empty.textContent = 'No files match your search';
+function renderKBPagination(total) {
+    const pagination = document.getElementById('kb-pagination');
+    const totalPages = Math.ceil(total / _kbPerPage);
+
+    if (totalPages <= 1) {
+        pagination.classList.add('hidden');
         return;
     }
+    pagination.classList.remove('hidden');
 
-    list.innerHTML = visible.map(n => renderNode(n, 0)).join('');
+    document.getElementById('kb-pagination-info').textContent =
+        `Page ${_kbPage} of ${totalPages} (${total} files)`;
+
+    document.getElementById('kb-prev-btn').disabled = _kbPage <= 1;
+    document.getElementById('kb-next-btn').disabled = _kbPage >= totalPages;
+
+    const maxButtons = 5;
+    let startPage = Math.max(1, _kbPage - Math.floor(maxButtons / 2));
+    let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+    if (endPage - startPage < maxButtons - 1) {
+        startPage = Math.max(1, endPage - maxButtons + 1);
+    }
+
+    let html = '';
+    for (let p = startPage; p <= endPage; p++) {
+        const active = p === _kbPage
+            ? 'bg-indigo-600 text-white border-indigo-600'
+            : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-600';
+        html += `<button onclick="goKBPage(${p})" class="w-8 h-8 text-sm font-medium rounded-md border ${active} cursor-pointer transition-colors">${p}</button>`;
+    }
+    document.getElementById('kb-page-buttons').innerHTML = html;
+}
+
+function goKBPage(target) {
+    if (target === 'prev') {
+        if (_kbPage <= 1) return;
+        _kbPage--;
+    } else if (target === 'next') {
+        _kbPage++;
+    } else {
+        _kbPage = target;
+    }
+    renderKBFiles();
+    document.getElementById('kb-list-container').scrollTop = 0;
 }
 
 function switchKBTab(tab) {
@@ -2236,8 +2326,13 @@ function _kbRenderFrontmatter(raw) {
     const fm = _kbParseFM(raw);
     const asList = v => Array.isArray(v) ? v : (v ? [v] : []);
     const tags = asList(fm.tags), aliases = asList(fm.aliases);
-    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated']);
+    const known = new Set(['title', 'type', 'description', 'tags', 'aliases', 'created', 'updated', 'thumbnail']);
     let h = '<div class="mb-4 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-4">';
+    if (fm.thumbnail) {
+        h += '<div class="flex gap-3 mb-2">';
+        h += `<img src="${escapeHtml(fm.thumbnail)}" class="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-300 dark:border-gray-600" onerror="this.style.display='none'" />`;
+        h += '<div class="flex-1">';
+    }
     h += '<div class="flex items-center gap-2 flex-wrap mb-1">';
     if (fm.type) h += `<span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300">${escapeHtml(fm.type)}</span>`;
     if (fm.title) h += `<span class="text-base font-semibold text-gray-800 dark:text-gray-100">${escapeHtml(fm.title)}</span>`;
@@ -2252,6 +2347,7 @@ function _kbRenderFrontmatter(raw) {
         if (!known.has(k)) meta.push(`${escapeHtml(k)}: ${escapeHtml(Array.isArray(fm[k]) ? fm[k].join(', ') : fm[k])}`);
     });
     if (meta.length) h += `<div class="text-xs text-gray-400 dark:text-gray-500">${meta.join(' · ')}</div>`;
+    if (fm.thumbnail) h += '</div></div>';
     h += '</div>';
     return h;
 }
@@ -2290,7 +2386,7 @@ async function openKBLink(title) {
     else showToast(`Document "${title}" doesn't exist yet (empty link).`, 'info');
 }
 
-// Delegated click for inline wiki-links in the preview (attached once).
+// Delegated click for inline wiki-links in the KB editor preview (attached once).
 (function () {
     const prev = document.getElementById('kb-editor-preview');
     if (prev && !prev._wikilinkBound) {
@@ -2301,6 +2397,33 @@ async function openKBLink(title) {
         });
     }
 })();
+
+// Wiki-link clicks from chat messages → preview modal
+document.addEventListener('evonic:wikilink-click', async function (e) {
+    const title = e.detail && e.detail.title;
+    if (!title) return;
+    const fromModal = !!(e.detail && e.detail._fromModal);
+    var slug = null;
+    try {
+        if (!kbGraphData || !kbGraphData.pages) {
+            const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
+            kbGraphData = await res.json();
+        }
+        const pages = (kbGraphData && kbGraphData.pages) || {};
+        const want = title.trim().toLowerCase();
+        for (const [s, p] of Object.entries(pages)) {
+            const pt = (p.title || '').trim().toLowerCase();
+            if (pt === want || s.toLowerCase() === want || s.split('/').pop().toLowerCase() === want) { slug = s; break; }
+        }
+    } catch (err) { /* ignore */ }
+    if (!slug) { showWikilinkPreview(title, null, fromModal); return; }
+    try {
+        const res = await fetch('/api/agents/' + AGENT_ID + '/kb/' + encodeURIComponent(slug + '.md'));
+        const data = await res.json();
+        if (data.error) { showWikilinkPreview(title, null, fromModal); return; }
+        showWikilinkPreview(title, renderKBDocPreview(data.content), fromModal);
+    } catch (err) { showWikilinkPreview(title, null, fromModal); }
+});
 
 async function editFile(filename) {
     const res = await fetch(`/api/agents/${AGENT_ID}/kb/${encodeURIComponent(filename)}`);
@@ -2657,7 +2780,8 @@ function renderKBGraph() {
             tags: tags,
             type: page.type || null,
             incoming: page.incoming_count || 0,
-            outgoing: page.outgoing_count || 0
+            outgoing: page.outgoing_count || 0,
+            thumbnail: page.thumbnail || null
         });
         nodeMap[slug] = true;
     }
@@ -2818,10 +2942,45 @@ function renderKBGraph() {
     function nodeRadius(d) {
         if (d.isDangling) return 3;
         const edges = (d.incoming || 0) + (d.outgoing || 0);
+        if (d.thumbnail) {
+            if (edges === 0) return 12;
+            return Math.min(20, 12 + Math.log2(edges) * 2);
+        }
         if (edges === 0) return 4;
         return Math.min(10, 4 + Math.log2(edges) * 1.5);
     }
-    node.append('circle')
+
+    // Clip paths for thumbnail nodes
+    const defs = g.append('defs');
+    nodes.filter(d => d.thumbnail).forEach(d => {
+        defs.append('clipPath')
+            .attr('id', 'clip-' + d.id.replace(/[^a-zA-Z0-9-]/g, '_'))
+            .append('circle')
+            .attr('r', nodeRadius(d))
+            .attr('cx', 0).attr('cy', 0);
+    });
+
+    // Thumbnail nodes: image + border
+    node.filter(d => d.thumbnail).each(function(d) {
+        const r = nodeRadius(d);
+        const el = d3.select(this);
+        el.append('image')
+            .attr('href', d.thumbnail)
+            .attr('x', -r).attr('y', -r)
+            .attr('width', r * 2).attr('height', r * 2)
+            .attr('clip-path', 'url(#clip-' + d.id.replace(/[^a-zA-Z0-9-]/g, '_') + ')')
+            .attr('preserveAspectRatio', 'xMidYMid slice')
+            .attr('cursor', 'pointer');
+        el.append('circle')
+            .attr('r', r)
+            .attr('fill', 'none')
+            .attr('stroke', '#fff')
+            .attr('stroke-width', 2)
+            .attr('cursor', 'pointer');
+    });
+
+    // Plain circle nodes (no thumbnail)
+    node.filter(d => !d.thumbnail).append('circle')
         .attr('r', d => nodeRadius(d))
         .attr('fill', d => getNodeColor(d))
         .attr('stroke', d => d.isDangling ? '#dc2626' : (getNodeColor(d) === '#ffffff' ? '#9ca3af' : '#fff'))
@@ -2831,7 +2990,7 @@ function renderKBGraph() {
     // Node labels
     node.append('text')
         .text(d => d.label)
-        .attr('x', 12)
+        .attr('x', d => d.thumbnail ? nodeRadius(d) + 4 : 12)
         .attr('y', 4)
         .attr('font-size', '10px')
         .attr('fill', textColor)

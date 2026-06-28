@@ -654,6 +654,7 @@ def _extract_kb_meta(filepath: str) -> dict:
     fm_title = None
     description = None
     page_type = None
+    thumbnail = None
     body = content
 
     # Strip YAML frontmatter (--- ... ---)
@@ -670,9 +671,11 @@ def _extract_kb_meta(filepath: str) -> dict:
                     description = line[len('description:'):].strip().strip('"\'') or None
                 elif line.startswith('type:'):
                     page_type = line[len('type:'):].strip().strip('"\'') or None
+                elif line.startswith('thumbnail:'):
+                    thumbnail = line[len('thumbnail:'):].strip().strip('"\'') or None
 
     if fm_title:
-        return {'title': fm_title, 'type': page_type}
+        return {'title': fm_title, 'type': page_type, 'thumbnail': thumbnail}
 
     # Fall back to first # Heading from body
     for line in body.split('\n'):
@@ -681,9 +684,9 @@ def _extract_kb_meta(filepath: str) -> dict:
         if m:
             heading = m.group(1).strip()
             if heading:
-                return {'title': heading, 'type': page_type}
+                return {'title': heading, 'type': page_type, 'thumbnail': thumbnail}
 
-    return {'title': description, 'type': page_type}
+    return {'title': description, 'type': page_type, 'thumbnail': thumbnail}
 
 
 # ==================== KB Graph API ====================
@@ -718,12 +721,14 @@ def api_kb_graph(agent_id):
         is_entity = node.get('source_dir') == 'entities'
         title = node.get('title') or slug
         node_type = node.get('type')
+        thumbnail = None
         if not is_entity:
             # Top-level KB doc: prefer the frontmatter title/type from disk.
             meta = _extract_kb_meta(os.path.join(kb_dir, slug + '.md'))
             if meta.get('title'):
                 title = meta['title']
             node_type = meta.get('type') or node_type
+            thumbnail = meta.get('thumbnail')
         pages[slug] = {
             'title': title,
             'type': node_type,
@@ -731,6 +736,7 @@ def api_kb_graph(agent_id):
             'is_entity': is_entity,
             'incoming_count': inc.get(slug, 0),
             'outgoing_count': out.get(slug, 0),
+            'thumbnail': thumbnail,
         }
 
     return jsonify({

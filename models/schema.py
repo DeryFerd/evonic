@@ -539,6 +539,19 @@ class SchemaMixin:
                 except sqlite3.OperationalError:
                     pass
 
+            # Migration: per-agent memory settings. NULL = inherit global env
+            # (EVONIC_MEMORY_ENGINE / EVOMEM_KB_ORGANIZER), preserving prior behavior.
+            #   memory_engine     : '' | 'evomem' | 'fts5'
+            #   kb_organizer_mode : '' | 'on' | 'off' | 'legacy'
+            for col, defn in [
+                ("memory_engine", "TEXT DEFAULT NULL"),
+                ("kb_organizer_mode", "TEXT DEFAULT NULL"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass
+
             # Agent Variables (per-agent key-value config used by tools/skills)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS agent_variables (

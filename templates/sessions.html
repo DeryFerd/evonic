@@ -571,6 +571,9 @@ function renderEntries(entries, { persistent = false } = {}) {
                 if (_pendingReplyText !== null && entry.content === _pendingReplyText) {
                     _pendingReplyText = null;
                     console.log('[renderEntries] FINAL skipped (matched _pendingReplyText)');
+                } else if (_pendingSlashResponse !== null && entry.content === _pendingSlashResponse) {
+                    _pendingSlashResponse = null;
+                    console.log('[renderEntries] FINAL skipped (matched _pendingSlashResponse from SSE done)');
                 } else {
                     const $el = chatUI.appendMessage('assistant', entry.content, {timestamp: entry.ts ? new Date(entry.ts).toISOString() : null, metadata: meta});
                     console.log('[renderEntries] FINAL appendMessage returned element:', !!$el.length);

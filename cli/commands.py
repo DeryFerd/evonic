@@ -3101,8 +3101,82 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Non-lazy skill tool check failed: {e}"))
 
-    # ── 10. Evomem Memory Engine Check ──
-    _section("10. Evomem Memory Engine Check")
+    # ── 10. Orphaned Tool Assignment Check ───────────────────────────────────
+    _section("10. Orphaned Tool Assignment Check")
+
+    try:
+        from models.db import db
+        from backend.tools.registry import ToolRegistry, BUILTIN_TOOL_IDS
+        from backend.skills_manager import SkillsManager
+
+        agents = db.get_agents()
+        _tr = ToolRegistry()
+        _sm = SkillsManager()
+
+        # Build the set of all valid tool IDs
+        valid_tool_ids = set(BUILTIN_TOOL_IDS)
+
+        # Built-in factory tools (auto-injected, but may also appear in agent_tools)
+        for builtin_id in _tr._builtins:
+            # builtin_id is e.g. 'builtin:remember' → function name is 'remember'
+            fn_name = builtin_id.split(":", 1)[-1] if ":" in builtin_id else builtin_id
+            valid_tool_ids.add(fn_name)
+
+        # Regular tools from tools/*.json
+        for td in _tr.get_tool_defs_from_json():
+            tid = td.get("id") or td.get("function", {}).get("name")
+            if tid:
+                valid_tool_ids.add(tid)
+
+        # Skill tools: skill:<skill_id>:<fn_name>
+        for skill in _sm.list_skills():
+            skill_id = skill.get("id", "")
+            if not skill_id:
+                continue
+            skill_dir = os.path.join(ROOT, "skills", skill_id)
+            if not os.path.isdir(skill_dir):
+                continue
+            for td in _sm.get_skill_tool_defs(skill_id):
+                fn_name = td.get("function", {}).get("name", "")
+                if fn_name:
+                    valid_tool_ids.add(f"skill:{skill_id}:{fn_name}")
+
+        orphan_count = 0
+        for a in agents:
+            aid = a.get("id", "?")
+            aname = a.get("name", aid)
+            agent_tools = db.get_agent_tools(aid)
+
+            orphans = [t for t in agent_tools if t not in valid_tool_ids]
+            if orphans:
+                orphan_count += len(orphans)
+                orphan_list = ", ".join(sorted(orphans))
+                results.append(_warn(
+                    f"Agent '{aname}' ({aid}) has {len(orphans)} orphaned tool(s): "
+                    f"{orphan_list}"
+                ))
+
+                if fix:
+                    for tool_id in orphans:
+                        try:
+                            db.remove_agent_tool(aid, tool_id)
+                            fixes_applied.append(
+                                f"Removed orphaned tool '{tool_id}' from agent "
+                                f"'{aname}' ({aid})"
+                            )
+                        except Exception as e:
+                            results.append(_fail(
+                                f"Failed to remove tool '{tool_id}' from '{aid}': {e}"
+                            ))
+
+        if orphan_count == 0:
+            results.append(_ok("No orphaned tool assignments found"))
+
+    except Exception as e:
+        results.append(_fail(f"Orphaned tool check failed: {e}"))
+
+    # ── 11. Evomem Memory Engine Check ──────────────────────────────────────
+    _section("11. Evomem Memory Engine Check")
 
     try:
         from cli import evomem_update as _evup
@@ -3199,8 +3273,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Evomem check failed: {e}"))
 
-    # ── 10b. KB Organizer Config Check ────────────────────────
-    _section("10b. KB Organizer Config Check")
+    # ── 11b. KB Organizer Config Check ────────────────────────
+    _section("11b. KB Organizer Config Check")
     try:
         env_path = os.path.join(ROOT, ".env")
         key = "EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS"
@@ -3230,8 +3304,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"KB organizer config check failed: {e}"))
 
-    # ── 11. PromptPurify ML Safety Check ──
-    _section("11. PromptPurify ML Safety Check")
+    # ── 12. PromptPurify ML Safety Check ──
+    _section("12. PromptPurify ML Safety Check")
 
     try:
         from models.db import db
@@ -3338,8 +3412,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"PromptPurify ML check failed: {e}"))
 
 
-    # ── 12. Asset Build Check ───────────────────────────────────────────────
-    _section("12. Asset Build Check")
+    # ── 13. Asset Build Check ───────────────────────────────────────────────
+    _section("13. Asset Build Check")
 
     try:
         asset_checks = [
@@ -3438,8 +3512,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"Asset build check failed: {e}"))
 
 
-    # ── 13. Database Schema / Query Health Check ──────────────
-    _section("13. Database Schema / Query Health Check")
+    # ── 14. Database Schema / Query Health Check ──────────────
+    _section("14. Database Schema / Query Health Check")
     try:
         import sqlite3 as _sqlite3
         from models.db import db as _schema_db
@@ -3469,8 +3543,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"Database schema check failed: {e}"))
 
 
-    # ── 14. Core Explore Skills Check ─────────────────────────
-    _section("14. Core Explore Skills Check")
+    # ── 15. Core Explore Skills Check ─────────────────────────
+    _section("15. Core Explore Skills Check")
     try:
         from backend.skills_manager import SkillsManager, CORE_SKILL_IDS
 
@@ -3493,8 +3567,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"Core skill check failed: {e}"))
 
 
-    # ── 15. Skill/Plugin Requirements Check ───────────────────
-    _section("15. Skill/Plugin Requirements Check")
+    # ── 16. Skill/Plugin Requirements Check ───────────────────
+    _section("16. Skill/Plugin Requirements Check")
     try:
         import logging as _logging
         from cli import requirements_check as _rc

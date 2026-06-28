@@ -69,7 +69,7 @@ class TestKbListingIntegration:
         text = "\n".join(result)
         assert "# KB Index" in text
         assert "[[kb/test-doc]]" in text
-        assert 'read("_kb_index.md")' in text
+        assert 'read_file(file_path="/_self/kb/_kb_index.md")' in text
 
     def test_graph_metadata_after_index(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {

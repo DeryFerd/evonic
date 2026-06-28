@@ -928,9 +928,21 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
     # instance), so a long blocking wait is fine — and far better than discarding a
     # result that arrives a few seconds late. Tune via EVOMEM_KB_ORGANIZER_TIMEOUT.
     timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
+    _kb_model_id = (db.get_setting('kb_organizer_model_id', '')
+                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None)
+    # When a distinct organizer model is configured, fall back to the global
+    # default model if that model fails at runtime (the runtime's per-agent
+    # fallback machinery picks this up via explorer.fallback_model). When no
+    # organizer model is set, the organizer already runs on the global default,
+    # so a fallback equal to the primary would be pointless.
+    _default_model_id = (db.get_default_model() or {}).get('id')
+    _fallback_model_id = (_default_model_id
+                          if _kb_model_id and _default_model_id
+                          and _kb_model_id != _default_model_id else None)
     skill_cfg = {
         'system_prompt': _KB_ORGANIZER_SYSTEM_PROMPT,
-        'model_id': os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None,
+        'model_id': _kb_model_id,
+        'fallback_model_id': _fallback_model_id,
     }
 
     def _build(eid):

@@ -362,6 +362,44 @@ block content %}
                     class="mt-2 text-sm hidden"
                 ></div>
             </div>
+            <!-- KB Organizer Model -->
+            <div
+                class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600"
+            >
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <div
+                            class="font-medium text-gray-800 dark:text-gray-100"
+                        >
+                            KB Organizer Model
+                        </div>
+                        <div class="text-sm text-gray-500 mt-0.5">
+                            Select the model used by the KB Organizer background
+                            sub-agent that files conversation knowledge into each
+                            agent's memory vault. Defaults to the agent's own model
+                            when unset.
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-col sm:flex-row items-center gap-3">
+                    <select
+                        id="kb-organizer-model-select"
+                        class="w-full sm:flex-1 border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    >
+                        <option value="">Use agent's default model</option>
+                    </select>
+                    <button
+                        onclick="saveKBOrganizerModel()"
+                        class="btn-primary px-4 py-2 text-sm w-full sm:w-auto"
+                    >
+                        Save
+                    </button>
+                </div>
+                <div
+                    id="kb-organizer-model-status"
+                    class="mt-2 text-sm hidden"
+                ></div>
+            </div>
             <!-- Theme -->
             <div
                 class="flex items-center justify-between p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600"
@@ -1611,6 +1649,87 @@ block content %}
         }
     }
 
+    async function loadKBOrganizerModel() {
+        const select = document.getElementById("kb-organizer-model-select");
+        if (!select) return;
+        try {
+            const response = await fetch("/api/models");
+            if (!response.ok) throw new Error("HTTP " + response.status);
+            const data = await response.json();
+            const models = (data.models || []).filter((m) => m.enabled);
+
+            // Get current KB organizer model setting
+            let currentModelId = "";
+            try {
+                const s = await apiGet("/api/settings/general");
+                currentModelId = s.kb_organizer_model_id || "";
+            } catch (e) {
+                console.warn("Could not fetch KB organizer model setting:", e);
+            }
+
+            if (models.length === 0) {
+                select.innerHTML =
+                    '<option value="">No models configured — go to Models tab to add one</option>';
+                return;
+            }
+
+            select.innerHTML =
+                '<option value="">Use agent\'s default model</option>' +
+                models
+                    .map(
+                        (m) =>
+                            `<option value="${m.id}" ${
+                                currentModelId === m.id ? "selected" : ""
+                            }>${m.name} (${m.model_name})</option>`,
+                    )
+                    .join("");
+        } catch (error) {
+            console.error("Failed to load KB organizer model:", error);
+            select.innerHTML =
+                '<option value="">Error: ' + error.message + "</option>";
+        }
+    }
+
+    async function saveKBOrganizerModel() {
+        const select = document.getElementById("kb-organizer-model-select");
+        const modelId = select.value;
+        const statusDiv = document.getElementById(
+            "kb-organizer-model-status",
+        );
+
+        // Empty string = "use agent's default model", which is valid
+        try {
+            const response = await fetch("/api/settings/batch", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    settings: { kb_organizer_model_id: modelId },
+                }),
+            });
+            const result = await response.json();
+
+            if (result.success) {
+                statusDiv.className = "mt-2 text-sm text-green-600";
+                statusDiv.textContent =
+                    "KB organizer model saved successfully!";
+                statusDiv.classList.remove("hidden");
+                setTimeout(() => statusDiv.classList.add("hidden"), 3000);
+            } else {
+                statusDiv.className = "mt-2 text-sm text-red-600";
+                statusDiv.textContent =
+                    "Error: " +
+                    ((result.errors && result.errors.join(", ")) ||
+                        "Failed to save");
+                statusDiv.classList.remove("hidden");
+            }
+        } catch (error) {
+            console.error("Failed to save KB organizer model:", error);
+            statusDiv.className = "mt-2 text-sm text-red-600";
+            statusDiv.textContent = "Error: " + error.message;
+            statusDiv.classList.remove("hidden");
+        }
+    }
+
     async function loadTaskClassifier() {
         const select = document.getElementById("task-classifier-model-select");
         const toggle = document.getElementById("task-classifier-toggle");
@@ -1734,6 +1853,7 @@ block content %}
         loadTools();
         loadDefaultModel();
         loadVisionModel();
+        loadKBOrganizerModel();
     });
 
     async function loadGeneralSettings() {

@@ -473,7 +473,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                             {{ toggle_widget(id='agent-builtin-tools', checked=(agent.builtin_tools_enabled if agent.builtin_tools_enabled is not none else True)) }}
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Built-in Tools</span>
-                                <p class="text-xs text-gray-400 mt-0.5">Provide core tools (read, use_skill, set_mode, remember, recall, etc.). Disable to run this agent with only its assigned tools — useful for minimal tool surface or testing.</p>
+                                <p class="text-xs text-gray-400 mt-0.5">Provide core tools (use_skill, set_mode, remember, recall, etc.). Disable to run this agent with only its assigned tools — useful for minimal tool surface or testing.</p>
                             </div>
                         </label>
                     </div>
@@ -665,7 +665,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                 <input type="text" id="kb-filter" placeholder="Filter files..." autocomplete="off"
                        class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:border-gray-600 dark:text-gray-100 dark:placeholder-gray-400 mb-4"
                        oninput="filterKBFiles()">
-                <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using the <code>read("filename.md")</code> tool.</p>
+                <p class="text-xs text-gray-400 mb-4">Files stored in <code>agents/{{ agent.id }}/kb/</code> — the agent can read these using <code>read_file(file_path="/_self/kb/filename.md")</code>.</p>
                 <div id="kb-list" class="space-y-2">
                     <!-- Files loaded dynamically -->
                 </div>

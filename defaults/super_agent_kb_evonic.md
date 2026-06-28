@@ -14,7 +14,7 @@ All agent data lives under the `agents/` directory at the project root. Each age
 agents/
   <agent_id>/
     SYSTEM.md    — the agent's system prompt (rules, persona, workflow)
-    kb/          — knowledge base files the agent can read with the `read` tool
+    kb/          — knowledge base files the agent can read with `read_file` via `/_self/kb/`
     chat.db      — per-agent SQLite database (chat history, memory, summaries)
     sessions/    — JSONL chat logs for streaming/SSE
 ```
@@ -59,25 +59,25 @@ State handlers (kanban, etc.) are registered via `backend/plugin_manager.py` and
 
 ### What It Is
 
-Each agent has a `kb/` directory under `agents/<agent_id>/kb/`. This directory holds markdown or text files that the agent can read at any time using the built-in `read` tool.
+Each agent has a `kb/` directory under `agents/<agent_id>/kb/`. This directory holds markdown or text files that the agent can read at any time using `read_file` with `/_self/kb/` paths.
 
-### How to Use the `read` Tool
+### How to Read KB Files
 
-The `read` tool is specifically for KB files. You call it with a bare filename only:
+Use `read_file` with the `/_self/kb/` path prefix:
 
 ```
-read(filename="architecture.md")
+read_file(file_path="/_self/kb/architecture.md")
 ```
 
 Rules:
-- Only bare filenames — no slashes, no paths (e.g. use "notes.md", NOT "/kb/notes.md")
-- The tool is sandboxed to only read from your own `kb/` directory
-- To read source code, logs, or workspace files, use the `read_file` tool instead
+- Always use the `/_self/kb/` prefix for KB files (e.g. `/_self/kb/notes.md`)
+- The `/_self/` prefix resolves to the agent's own directory
+- `read_file` supports pagination for large files via the `offset` parameter
 
 ### Managing KB Files
 
 The super agent can create and update KB files using `write_file` and `read_file`:
-- `write_file` — create or overwrite files in `agents/<agent_id>/kb/`
+- `write_file` — create or overwrite files via `/_self/kb/` paths
 - `read_file` — read any file including KB files (supports pagination for large files)
 
 ### When to Use KB

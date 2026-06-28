@@ -31,7 +31,8 @@ from typing import List, Optional
 from models.db import db
 from backend.llm_client import llm_client, strip_thinking_tags
 from backend.agent_runtime.evomem_client import (
-    get_engine, search as evomem_search, think as evomem_think,
+    get_engine, is_available as evomem_available,
+    search as evomem_search, think as evomem_think,
     graph_query as evomem_graph_query, init_evomem as evomem_init, vlog,
 )
 from backend.agent_runtime import evomem_writer
@@ -585,6 +586,43 @@ def _delta_enabled() -> bool:
         not in ('0', 'off', 'no', 'false')
 
 
+def resolve_memory_engine(agent) -> str:
+    """Resolve the memory engine for an agent: per-agent override → global env.
+
+    agent.memory_engine ('evomem'|'fts5') wins when set; anything else (NULL/'')
+    means inherit the global env via get_engine(). An 'evomem' choice downgrades to
+    'fts5' when the binary isn't available, matching get_engine()'s behavior."""
+    val = (agent or {}).get('memory_engine')
+    if val in ('evomem', 'fts5'):
+        if val == 'evomem' and not evomem_available():
+            return 'fts5'
+        return val
+    return get_engine()
+
+
+def resolve_kb_organizer_mode(agent) -> str:
+    """Resolve the KB organizer mode for an agent, normalized to one of:
+    ``'agentic'`` | ``'non-agentic'`` | ``'off'``.
+
+    Per-agent override (agent.kb_organizer_mode) wins when set; otherwise inherit
+    the global env EVOMEM_KB_ORGANIZER. Older/aliased spellings are accepted:
+      agentic     ← agentic, on, 1, yes, true
+      non-agentic ← non-agentic, nonagentic, legacy
+      off         ← off, no, 0, false, none
+    """
+    val = (agent or {}).get('kb_organizer_mode')
+    val = val.strip().lower() if isinstance(val, str) else ''
+    if not val:
+        val = os.environ.get('EVOMEM_KB_ORGANIZER', 'agentic').strip().lower()
+    if val in ('agentic', 'on', '1', 'yes', 'true'):
+        return 'agentic'
+    if val in ('non-agentic', 'nonagentic', 'legacy'):
+        return 'non-agentic'
+    if val in ('off', 'no', '0', 'false', 'none'):
+        return 'off'
+    return 'agentic'
+
+
 def _delta_min_score() -> int:
     """Minimum delta score (count of genuinely-new content lines) required to
     bother spawning the organizer. Below this, the run is skipped and the cursor
@@ -678,6 +716,37 @@ def _save_recent_cursor(agent_id: str, session_id: str, ts: float) -> None:
         db.set_setting(_recent_cursor_key(agent_id, session_id), str(ts))
     except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
         logger.debug("[MemoryManager] could not save recent cursor: %s", e)
+
+
+# Minimum wall-clock interval between filing runs, PERSISTENT across restarts
+# (the per-process debounce only guards double-spawn within one process). Stops
+# the organizer — which costs tokens — from running again too soon after the last
+# filing. Default 300s (5 min); configurable via EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS.
+def _organizer_min_interval_seconds() -> float:
+    try:
+        return max(0.0, float(os.environ.get(
+            'EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS', '300')))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def _organizer_last_run_key(agent_id: str) -> str:
+    return f"kb_organizer_last_run_at:{agent_id}"
+
+
+def _load_organizer_last_run(agent_id: str) -> float:
+    """Epoch seconds of the agent's last filing run (0 if never)."""
+    try:
+        return float(db.get_setting(_organizer_last_run_key(agent_id)) or 0)
+    except (TypeError, ValueError, Exception):  # noqa: BLE001 — best-effort
+        return 0.0
+
+
+def _save_organizer_last_run(agent_id: str, ts: float) -> None:
+    try:
+        db.set_setting(_organizer_last_run_key(agent_id), str(ts))
+    except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
+        logger.debug("[MemoryManager] could not save organizer last-run ts: %s", e)
 
 
 def _log_organizer_diff(agent_id, agent_name, session_id, prev_summary, curr_summary,
@@ -1000,19 +1069,36 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
     the organizer as conversation context so freshly-mentioned info isn't lost.
     """
     agent_id = agent['id']
-    if get_engine() != 'evomem':
+    if resolve_memory_engine(agent) != 'evomem':
         return
     try:
         folder = _get_active_collection(agent_id, session_id)
 
-        # Organize strategy. ON (default): the Knowledge Organizer sub-agent — a real
-        # agent whose workspace IS the KB — explores the vault itself and returns
-        # write-ops, spawned with NO llm_lock held (deadlock-safe). On failure we SKIP
-        # (never fall through to a duplicate-prone author). OFF/legacy (or DirExplorer
-        # unavailable): a single, non-agentic author call that needs the doc list
-        # pre-built (it can't explore).
-        mode = os.environ.get('EVOMEM_KB_ORGANIZER', 'on').strip().lower()
-        use_organizer = mode not in ('0', 'off', 'no', 'legacy')
+        # Organize strategy (per-agent override → global env), one of:
+        #  - 'agentic' (default): the Knowledge Organizer sub-agent — a real agent
+        #    whose workspace IS the KB — explores the vault itself and returns
+        #    write-ops, spawned with NO llm_lock held (deadlock-safe). On failure we
+        #    SKIP (never fall through to a duplicate-prone author). Falls back to the
+        #    non-agentic author only when DirExplorer infra is unavailable.
+        #  - 'non-agentic': a single, non-agentic author LLM call that needs the doc
+        #    list pre-built (it can't explore).
+        #  - 'off': do not file anything.
+        mode = resolve_kb_organizer_mode(agent)
+        if mode == 'off':
+            return
+
+        # Persistent cooldown: don't file again within MIN_INTERVAL of the last
+        # filing run (survives restart, unlike the per-process debounce). Filing
+        # costs tokens, so throttle it.
+        min_interval = _organizer_min_interval_seconds()
+        if min_interval > 0:
+            since = time.time() - _load_organizer_last_run(agent_id)
+            if 0 <= since < min_interval:
+                logger.debug("[MemoryManager] author_docs[%s]: %.0fs since last filing "
+                             "< min interval %.0fs; skipping", agent_id, since, min_interval)
+                return
+
+        use_organizer = (mode == 'agentic')
         docs = None
         name_to_slug = {}
         if use_organizer and _kb_organizer_infra_ok():
@@ -1066,6 +1152,8 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 logger.info("[MemoryManager] author_docs[%s]: organizer returned nothing "
                             "(skipping to avoid duplicates)", agent_id)
                 return
+            # A filing run executed — start the persistent cooldown window.
+            _save_organizer_last_run(agent_id, time.time())
             # Organizer ran (returned ops, possibly empty) — advance both cursors to
             # this point so the next run diffs the summary AND the recent turns.
             if delta_mode:
@@ -1079,6 +1167,8 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             prompt = _AUTHOR_DOCS_PROMPT.format(
                 guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
             data = _kb_llm_json(prompt, llm_lock)
+            # A filing run executed (LLM call made) — start the cooldown window.
+            _save_organizer_last_run(agent_id, time.time())
             if not isinstance(data, dict):
                 return
             docs = data.get('docs')
@@ -1426,21 +1516,26 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
 
 
 def get_memories_for_context(agent_id: str, messages: list,
-                              limit: int = 8) -> Optional[str]:
+                              limit: int = 8, engine: str = None) -> Optional[str]:
     """Retrieve relevant memories for injection into the LLM context.
 
     Primary + fallback architecture:
-    1. If EVONIC_MEMORY_ENGINE=evomem: try evomem hybrid search first.
+    1. If the resolved engine is evomem: try evomem hybrid search first.
        On any failure, transparently fall back to FTS5 pipeline.
     2. Otherwise: use FTS5 BM25 keyword search (existing behaviour).
 
+    ``engine`` is the per-agent resolved engine ('evomem'|'fts5'); when None it
+    defaults to the global env engine (get_engine()), preserving prior behavior.
+
     Returns a formatted markdown string or None if no memories exist.
     """
+    if engine is None:
+        engine = get_engine()
     try:
         query = _extract_last_user_query(messages)
 
         # === Primary: evomem ===
-        if get_engine() == "evomem" and query:
+        if engine == "evomem" and query:
             evomem_result = _try_evomem_retrieval(agent_id, query, limit)
             if evomem_result:
                 return evomem_result

@@ -32,7 +32,7 @@ from backend.agent_runtime import llm_loop as _loop
 from backend.agent_runtime import summarizer as _sum
 from backend.agent_runtime.concurrency import ConcurrencyManager
 from backend.agent_state import AgentState
-from backend.agent_runtime.memory_manager import get_memories_for_context
+from backend.agent_runtime.memory_manager import get_memories_for_context, resolve_memory_engine
 from backend.channels.registry import channel_manager
 from backend.channels.base import BaseChannel
 from backend.event_stream import event_stream
@@ -1751,8 +1751,10 @@ class AgentRuntime:
         while len(messages) > 1 and messages[-1].get('role') == 'assistant':
             messages.pop()
 
-        # Inject long-term memories (position 1, right after system prompt)
-        memory_section = get_memories_for_context(db_agent_id, messages)
+        # Inject long-term memories (position 1, right after system prompt).
+        # Engine resolved per-agent (advanced setting) → global env default.
+        memory_section = get_memories_for_context(
+            db_agent_id, messages, engine=resolve_memory_engine(agent))
         if memory_section:
             messages.insert(1, {"role": "system", "content": memory_section})
 

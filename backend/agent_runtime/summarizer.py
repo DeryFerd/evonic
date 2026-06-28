@@ -531,7 +531,7 @@ def _tail_messages_from_entries(entries: list) -> list:
             continue
         content = (entry.get('content') or '').strip()
         if content:
-            out.append({'role': role, 'content': content})
+            out.append({'role': role, 'content': content, 'ts': entry.get('ts') or 0})
     return out
 
 

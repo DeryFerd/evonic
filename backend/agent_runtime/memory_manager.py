@@ -25,6 +25,7 @@ import time
 import difflib
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from models.db import db
@@ -693,6 +694,89 @@ def _save_organized_snapshot(agent_id: str, session_id: str, summary: str) -> No
         logger.debug("[MemoryManager] could not save organizer snapshot: %s", e)
 
 
+def _recent_cursor_key(agent_id: str, session_id: str) -> str:
+    return f"kb_organizer_last_recent_ts:{agent_id}:{session_id}"
+
+
+def _load_recent_cursor(agent_id: str, session_id: str) -> float:
+    """Timestamp of the newest conversation turn already shown to the organizer."""
+    try:
+        return float(db.get_setting(_recent_cursor_key(agent_id, session_id)) or 0)
+    except (TypeError, ValueError, Exception):  # noqa: BLE001 — best-effort
+        return 0.0
+
+
+def _save_recent_cursor(agent_id: str, session_id: str, ts: float) -> None:
+    try:
+        db.set_setting(_recent_cursor_key(agent_id, session_id), str(ts))
+    except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
+        logger.debug("[MemoryManager] could not save recent cursor: %s", e)
+
+
+def _log_organizer_diff(agent_id, agent_name, session_id, prev_summary, curr_summary,
+                        delta_text, score, recent_messages, fresh_recent,
+                        last_recent_ts) -> None:
+    """Append the RAW diff (before it's compiled into the prompt) to a log file so
+    the diff quality can be analysed: the unified summary diff (prev filing →
+    current), the extracted/context-padded delta we feed, and which recent turns
+    were selected as new. Best-effort. Path via EVOMEM_KB_ORGANIZER_PROMPT_LOG
+    (default 'logs/organizer_prompt.diff'; set empty/off to disable)."""
+    rel = os.environ.get('EVOMEM_KB_ORGANIZER_PROMPT_LOG', 'logs/organizer_prompt.diff')
+    if not rel or rel.strip().lower() in ('0', 'off', 'no', 'false'):
+        return
+    try:
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        path = rel if os.path.isabs(rel) else os.path.join(base, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+
+        udiff = "\n".join(difflib.unified_diff(
+            (prev_summary or "").splitlines(),
+            (curr_summary or "").splitlines(),
+            fromfile="summary@last_filing", tofile="summary@now", lineterm="",
+        )) or "(no summary change)"
+
+        n_total = len([m for m in (recent_messages or []) if isinstance(m, dict)])
+        n_fresh = len(fresh_recent or [])
+        recent_lines = "\n".join(
+            f"  [{m.get('ts')}] {m.get('role')}: {(m.get('content') or '')[:200]}"
+            for m in (fresh_recent or [])
+        ) or "  (no new turns)"
+
+        block = (
+            "=" * 80 + "\n"
+            f"{ts} | agent={agent_id} ({agent_name}) | session={session_id}\n"
+            f"summary: {len(prev_summary or '')}→{len(curr_summary or '')} chars | "
+            f"delta_score={score} | recent: {n_fresh} new / {n_total} total "
+            f"(cursor_ts={last_recent_ts})\n"
+            + "=" * 80 + "\n"
+            "----- RAW SUMMARY DIFF (prev filing → current) -----\n" + udiff + "\n\n"
+            "----- EXTRACTED DELTA FED TO ORGANIZER (context-padded) -----\n"
+            + (delta_text or "(empty — full summary used)") + "\n\n"
+            "----- NEW RECENT TURNS FED -----\n" + recent_lines + "\n\n"
+        )
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(block)
+    except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
+        logger.debug("[MemoryManager] could not write organizer diff log: %s", e)
+
+
+def _new_recent_messages(recent_messages, last_ts: float):
+    """Return only conversation turns newer than ``last_ts`` (turns the organizer
+    hasn't seen yet), plus the max ts across ALL turns so the caller can advance
+    the cursor. Turns without a ts are always kept (can't tell if they're new)."""
+    fresh, max_ts = [], last_ts
+    for m in (recent_messages or []):
+        if not isinstance(m, dict):
+            continue
+        ts = m.get('ts') or 0
+        if ts > max_ts:
+            max_ts = ts
+        if ts == 0 or ts > last_ts:
+            fresh.append(m)
+    return fresh, max_ts
+
+
 # Per-agent organizer concurrency control: at most ONE organizer sub-agent runs
 # per agent at a time (no double-spawn), rate-limited to one run per debounce
 # window (default 60s; EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS to tune, 0 disables).
@@ -846,7 +930,7 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
             parts.append("RECENT CONVERSATION (latest turns):\n" + recent_text.strip())
         if source_text and source_text.strip():
             parts.append(f"{source_label}:\n" + source_text.strip())
-        task_msg = ("\n\n".join(parts) + "\n\nExplore the vault (your workspace) with "
+        task_msg = ("\n\n".join(parts) + '\n----------\n' + "\n\nExplore the vault (your workspace) with "
                     "Grep/Glob/Read and file any durable knowledge from the conversation "
                     "above into the right docs. EXTRACT every named entity — person, "
                     "place, organization, company, product, venue, event — and for any "
@@ -979,15 +1063,31 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                                  agent_id, delta_score, _delta_min_score())
                     return
             else:
-                delta_text = ""
+                delta_text, delta_score = "", 0
 
             # One organizer per agent at a time, debounced — never double-spawn.
             if not _organizer_try_claim(agent_id, _organizer_debounce_seconds()):
                 logger.debug("[MemoryManager] author_docs[%s]: organizer busy or "
                              "debounced; skipping this run", agent_id)
                 return
+            # Like the summary, feed only the conversation turns NEW since the last
+            # filing (the tail re-sends the same turns every run otherwise).
+            recent_max_ts = 0
+            last_recent_ts = 0
+            if delta_mode:
+                last_recent_ts = _load_recent_cursor(agent_id, session_id)
+                fresh_recent, recent_max_ts = _new_recent_messages(
+                    recent_messages, last_recent_ts)
+                recent_for_feed = fresh_recent
+            else:
+                recent_for_feed = recent_messages
+
+            # Dump the RAW diff (before it's compiled into the prompt) for analysis.
+            _log_organizer_diff(agent_id, agent.get('name', agent_id), session_id,
+                                prev_snapshot, source_text, delta_text, delta_score,
+                                recent_messages, recent_for_feed, last_recent_ts)
             try:
-                recent_text = _format_recent_messages(recent_messages)
+                recent_text = _format_recent_messages(recent_for_feed)
                 if delta_mode and delta_text.strip():
                     feed_text, source_label = delta_text, "WHAT'S NEW SINCE LAST FILING"
                 else:
@@ -1000,10 +1100,12 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 logger.info("[MemoryManager] author_docs[%s]: organizer returned nothing "
                             "(skipping to avoid duplicates)", agent_id)
                 return
-            # Organizer ran (returned ops, possibly empty) — advance the cursor to
-            # the full current summary so the next run diffs against this point.
+            # Organizer ran (returned ops, possibly empty) — advance both cursors to
+            # this point so the next run diffs the summary AND the recent turns.
             if delta_mode:
                 _save_organized_snapshot(agent_id, session_id, source_text)
+                if recent_max_ts > _load_recent_cursor(agent_id, session_id):
+                    _save_recent_cursor(agent_id, session_id, recent_max_ts)
         else:
             # Legacy author can't explore — give it the full vault listing + a
             # title/alias map for alias-aware resolution.

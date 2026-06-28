@@ -1029,7 +1029,7 @@ def api_realtime_stream():
                 if breakers.get(ch_name) and breakers[ch_name].is_disabled():
                     pass  # Already disabled
 
-            log.info("realtime %s: connection closed", conn_id[:20])
+            log.debug("realtime %s: connection closed", conn_id[:20])
 
     return Response(
         generate(),

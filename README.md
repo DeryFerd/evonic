@@ -65,11 +65,15 @@ When suspicious activity is detected, the system escalates to a human operator r
 | **Evonet** | Lightweight Go connector for remote execution without SSH or firewall rules |
 | **Scheduler** | Cron-based triggers, recurring tasks, and reminders for agents |
 | **Channels** | Connect agents to Telegram, WhatsApp, Discord, Slack, and custom interfaces |
+| **Knowledge Graph** | Interactive force-directed graph visualization of KB documents with wiki-link connections, thumbnails, search, and node type filters |
+| **KB Organizer** | Autonomous sub-agent that extracts entities, deduplicates documents, and maintains wiki-link connections across the knowledge base |
+| **Memory Engine** | Hybrid semantic + knowledge graph search (Evomem) for long-term memory with per-agent configuration |
+| **Wiki-Links** | Obsidian-style `[[Doc Title]]` links in KB documents and chat messages, rendered as clickable previews |
+| **Messaging ACL** | Per-agent whitelist/blacklist access control for agent-to-agent communication |
 | **Evaluation Engine** | Automated LLM evaluation with customizable regex and heuristic evaluators |
 | **Token Compressor** | RTK-based token compression that cuts LLM costs by reducing context without losing meaning |
 | **Agent Artifacts** | Persistent files and outputs agents produce, stored and retrievable across sessions |
 | **Injection Guard** | Multi-layer prompt injection detection that blocks manipulation and unauthorized override attempts |
-| **Supervisor Daemon** | Background supervisor that monitors agent health, restarts on failure, and tracks uptime |
 | **Backup & Restore** | Full backup and restore of all agent configurations, knowledge bases, and data |
 
 ---
@@ -149,6 +153,45 @@ Create and manage agents via the web UI (`/agents`) or CLI:
 
 ---
 
+## Knowledge Base
+
+Each agent has a `kb/` directory that stores markdown reference documents. The agent reads these on demand using `read_file` with `/_self/kb/` paths — files are **not** loaded into the system prompt automatically, keeping context lean.
+
+### Knowledge Graph
+
+KB documents connect via Obsidian-style `[[Doc Title]]` wiki-links. The agent detail page features an interactive force-directed graph visualization with:
+
+- Thumbnail images on nodes (from document frontmatter)
+- Node type filter chips (person, place, organization, event, etc.)
+- Search with auto-pan to matched nodes
+- Incoming/outgoing link counts and staleness indicators
+
+### KB Organizer
+
+An autonomous sub-agent that maintains the knowledge base after each conversation:
+
+- **Entity extraction** — identifies people, places, organizations, and events from conversation turns
+- **Deduplication** — detects and merges duplicate documents using hybrid semantic search
+- **Wiki-linking** — weaves `[[Doc Title]]` links into existing documents to keep the knowledge graph connected
+- **Dangling link reconciliation** — fixes broken links when a document exists under a different name
+
+Configurable per-agent via `kb_organizer_mode`: `agentic` (default), `non-agentic`, or `off`.
+
+---
+
+## Memory
+
+Evonic uses a hybrid memory engine (Evomem) that combines semantic vector search with a knowledge graph:
+
+- **Extract** — LLM-powered fact extraction from conversation turns
+- **Deduplicate** — prevents redundant memories via hybrid search
+- **Store** — persists facts with entity relationships
+- **Retrieve** — agents recall memories via `recall` tool with keyword, semantic, or graph traversal modes
+
+Per-agent `memory_engine` configuration allows overriding the default engine. Falls back to FTS5 (SQLite) when Evomem is unavailable.
+
+---
+
 ## Channels
 
 Connect your agents to the platforms your users already use:
@@ -189,6 +232,23 @@ Plugins are event-driven extensions that hook into Evonic's event stream. Manage
 
 ---
 
+## Workplaces
+
+Workplaces define where an agent's tools execute. Manage them via CLI:
+
+```bash
+./evonic workplace list
+./evonic workplace create --name "prod-server" --type remote
+./evonic workplace status my_workplace
+./evonic workplace connect my_workplace
+./evonic workplace disconnect my_workplace
+./evonic workplace delete my_workplace
+```
+
+Workplace types: **local** (host directory), **ssh** (remote server), or **tunnel** (Evonet connector — no public IP or firewall rules required).
+
+---
+
 ## Models
 
 Manage LLM configurations:
@@ -210,7 +270,6 @@ Manage LLM configurations:
 | `restart` | Restart the server in daemon mode |
 | `status` | Check if the server is running |
 | `setup` | Interactive first-time setup wizard |
-| `reconfigure` | Reconfigure an existing Evonic setup |
 | `pass` | Set or change the admin dashboard password |
 | `doctor` | Run system diagnostics and health checks |
 | `update` | Check for and apply self-updates |
@@ -221,9 +280,9 @@ Manage LLM configurations:
 | `model list/get/add/rm` | Manage LLM models |
 | `skill list/add/get/rm` | Manage skills |
 | `skillset list/get/apply` | Manage skillset templates |
-| `plugin install/uninstall/list/enable/disable` | Manage plugins |
+| `plugin install/uninstall/list/enable/disable/reload` | Manage plugins |
 | `channel approve` | Approve pending channel pairings |
-| `kanban add/rm/update` | Manage kanban tasks |
+| `workplace list/get/create/update/delete/status/connect/disconnect` | Manage workplaces |
 
 ---
 
@@ -305,13 +364,17 @@ Channel (Telegram, Web, WhatsApp, etc.)
 └──────────────────────────────────────────┘
     ↓
 ┌──────────────────────────────────────────┐
-│         Evaluation Engine                │
-│  (optional: regex / heuristic / LLM eval)│
+│         Memory & Knowledge               │
+│  ├─ Evomem hybrid search (semantic +     │
+│  │   knowledge graph)                    │
+│  ├─ KB Organizer (entity extraction,     │
+│  │   dedup, wiki-linking)                │
+│  └─ Knowledge graph traversal            │
 └──────────────────────────────────────────┘
     ↓
 ┌──────────────────────────────────────────┐
-│         Supervisor Daemon                │
-│  (health checks, auto-restart, uptime)   │
+│         Evaluation Engine                │
+│  (optional: regex / heuristic / LLM eval)│
 └──────────────────────────────────────────┘
     ↓
 Response → Channel → User

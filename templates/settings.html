@@ -497,12 +497,6 @@ block content %}
                 Next →
             </button>
         </div>
-        <button
-            onclick="showAddToolModal()"
-            class="mt-5 bg-emerald-500 hover:bg-emerald-600 text-white border-none px-6 py-3 rounded-md cursor-pointer text-sm"
-        >
-            + Add Tool
-        </button>
     </div>
 
     <!-- Models Tab -->
@@ -2168,7 +2162,7 @@ block content %}
 
         if (tools.length === 0) {
             container.innerHTML =
-                '<div class="text-center py-10 text-gray-500">No tools found. Click "+ Add Tool" to create one.</div>';
+                '<div class="text-center py-10 text-gray-500">No tools found.</div>';
             return;
         }
         if (filtered.length === 0) {
@@ -2199,24 +2193,6 @@ block content %}
     `,
             )
             .join("");
-    }
-
-    function showAddToolModal() {
-        $("#tool-modal-title").text("Add Tool");
-        $("#tool-form")[0].reset();
-        $("#tool-edit-id").val("");
-        $("#tool-mock-type").val("json");
-        document.getElementById("tool-no-mock").checked = false;
-        $("#tool-backend-code").val("");
-        $("#tool-test-args-real").val("{}");
-        $("#tool-test-args-mock").val("{}");
-        $("#tool-test-result-real, #tool-test-result-mock").addClass("hidden");
-        $("#tool-test-status-real, #tool-test-status-mock").addClass("hidden");
-        $("#tool-backend-save-status").addClass("hidden");
-        toggleMockResponseHelp();
-        switchToolModalTab("info");
-        switchToolModalOpTab("prod");
-        openModal("tool-modal");
     }
 
     async function editTool(toolId) {

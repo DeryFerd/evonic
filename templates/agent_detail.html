@@ -614,7 +614,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 
             <!-- Overlay: Action buttons (top-right) -->
             <div class="absolute top-4 right-4 z-10 flex gap-2">
-                <button onclick="showNewFileModal()" class="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm shadow-lg transition-colors flex items-center gap-1.5">
+                <button onclick="showNewFileModal()" class="hidden md:flex bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm shadow-lg transition-colors items-center gap-1.5">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
                     New
                 </button>
@@ -623,9 +623,9 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                     List
                 </button>
                 {% if memory_engine == 'evomem' %}
-                <button onclick="syncKB(this)" id="kb-sync-btn" class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors" title="Force a full evomem memory sync">Sync</button>
+                <button onclick="syncKB(this)" id="kb-sync-btn" class="hidden md:block bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 transition-colors" title="Force a full evomem memory sync">Sync</button>
                 {% endif %}
-                <label class="bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 cursor-pointer transition-colors">
+                <label class="hidden md:block bg-white/80 dark:bg-gray-800 backdrop-blur-sm hover:bg-white dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 px-3 py-2 rounded-lg text-sm shadow-lg border border-gray-200 dark:border-gray-600 cursor-pointer transition-colors">
                     Upload
                     <input type="file" accept=".md,.txt" class="hidden" onchange="uploadFile(this)">
                 </label>

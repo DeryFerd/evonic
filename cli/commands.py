@@ -3204,7 +3204,7 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     try:
         env_path = os.path.join(ROOT, ".env")
         key = "EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS"
-        default_val = "300"  # 5 minutes
+        default_val = "1800"  # 30 minutes
 
         in_file = False
         if os.path.isfile(env_path):
@@ -3221,7 +3221,7 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
             _update_env_var(env_path, key, default_val)
             results.append(_ok(
                 f"Added {key}={default_val} to .env "
-                f"(KB organizer min interval between filing runs — 5 min)"))
+                f"(KB organizer min interval between filing runs — 30 min)"))
             fixes_applied.append(f"Added {key}={default_val} to .env")
         else:
             results.append(_warn(

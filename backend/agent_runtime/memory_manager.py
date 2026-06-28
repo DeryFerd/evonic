@@ -727,13 +727,13 @@ def _save_recent_cursor(agent_id: str, session_id: str, ts: float) -> None:
 # Minimum wall-clock interval between filing runs, PERSISTENT across restarts
 # (the per-process debounce only guards double-spawn within one process). Stops
 # the organizer — which costs tokens — from running again too soon after the last
-# filing. Default 300s (5 min); configurable via EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS.
+# filing. Default 1800s (30 min); configurable via EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS.
 def _organizer_min_interval_seconds() -> float:
     try:
         return max(0.0, float(os.environ.get(
-            'EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS', '300')))
+            'EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS', '1800')))
     except (TypeError, ValueError):
-        return 300.0
+        return 1800.0
 
 
 def _organizer_last_run_key(agent_id: str) -> str:

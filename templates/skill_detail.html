@@ -11,12 +11,36 @@
             <span id="skill-version" class="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded font-mono"></span>
         </div>
         <div class="flex items-center gap-3">
-            <button onclick="exportSkill()"
-                    class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5"
-                    title="Export skill as .zip">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                Export
-            </button>
+            <!-- Actions Dropdown Menu -->
+            <div class="relative" id="skill-actions-dropdown">
+                <button id="skill-actions-btn" onclick="toggleActionsMenu()" aria-expanded="false" aria-haspopup="true"
+                        class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5"
+                        title="Skill actions">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+                    Actions
+                </button>
+                <div id="skill-actions-menu" class="hidden absolute right-0 mt-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg z-50 py-1" role="menu" aria-labelledby="skill-actions-btn">
+                    <button onclick="toggleEnabledFromMenu(); closeActionsMenu()" id="menu-toggle-skill"
+                            class="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                        <span id="menu-toggle-label">Enable</span>
+                    </button>
+                    <button onclick="exportSkill(); closeActionsMenu()"
+                            class="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                        Export
+                    </button>
+                    <hr class="my-1 border-gray-200 dark:border-gray-600">
+                    <button onclick="deleteSkillFromDetail(); closeActionsMenu()" id="menu-delete-skill"
+                            class="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        Delete
+                    </button>
+                </div>
+            </div>
             <label class="inline-flex items-center cursor-pointer gap-2" id="skill-enabled-label">
                 {{ toggle_widget(id='skill-enabled', onchange='toggleEnabled(this.checked)') }}
                 <span class="text-sm text-gray-600 dark:text-gray-400" id="skill-enabled-text">Enabled</span>
@@ -165,7 +189,13 @@ async function loadSkill() {
         label.classList.add('opacity-60', 'cursor-not-allowed');
         label.title = 'Core skill — required by the Explore agent and cannot be disabled.';
         document.getElementById('skill-enabled-text').textContent = 'Core skill (always on)';
+        // Disable toggle & delete in dropdown
+        const menuToggle = document.getElementById('menu-toggle-skill');
+        const menuDelete = document.getElementById('menu-delete-skill');
+        if (menuToggle) { menuToggle.disabled = true; menuToggle.classList.add('opacity-40', 'cursor-not-allowed'); }
+        if (menuDelete) { menuDelete.disabled = true; menuDelete.classList.add('opacity-40', 'cursor-not-allowed'); }
     }
+    updateActionsMenuLabel();
 
     const meta = [];
     if (skillData.author) meta.push('by ' + esc(skillData.author));
@@ -403,6 +433,7 @@ async function toggleEnabled(enabled) {
         }
     } else {
         skillData.enabled = enabled;
+        updateActionsMenuLabel();
     }
 }
 
@@ -486,6 +517,85 @@ function exportSkill() {
     link.click();
     document.body.removeChild(link);
 }
+
+// ==================== Actions Dropdown Menu ====================
+
+function toggleActionsMenu() {
+    const menu = document.getElementById('skill-actions-menu');
+    const btn = document.getElementById('skill-actions-btn');
+    const isOpen = !menu.classList.contains('hidden');
+    if (isOpen) {
+        closeActionsMenu();
+    } else {
+        menu.classList.remove('hidden');
+        btn.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function closeActionsMenu() {
+    const menu = document.getElementById('skill-actions-menu');
+    const btn = document.getElementById('skill-actions-btn');
+    menu.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+}
+
+function updateActionsMenuLabel() {
+    const label = document.getElementById('menu-toggle-label');
+    if (!label || !skillData) return;
+    label.textContent = skillData.enabled ? 'Disable' : 'Enable';
+}
+
+function toggleEnabledFromMenu() {
+    if (!skillData) return;
+    if (skillData.protected) {
+        toast.show('Core skills cannot be disabled.', 'error');
+        return;
+    }
+    toggleEnabled(!skillData.enabled);
+}
+
+async function deleteSkillFromDetail() {
+    if (!skillData) return;
+    if (skillData.protected) {
+        toast.show('Core skills cannot be deleted.', 'error');
+        return;
+    }
+    const name = skillData.name || skillData.id;
+    const confirmed = await showConfirm({
+        title: `Delete "${name}"?`,
+        message: 'This will uninstall the skill and remove all its files. This cannot be undone.',
+        confirmText: 'Delete',
+        danger: true
+    });
+    if (!confirmed) return;
+
+    const res = await fetch(`/api/skills/${SKILL_ID}`, {method: 'DELETE'});
+    if (!res.ok) {
+        const err = await res.json();
+        toast.show(err.error || 'Failed to delete skill', 'error');
+    } else {
+        window.location.href = '/skills';
+    }
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+    const dropdown = document.getElementById('skill-actions-dropdown');
+    if (dropdown && !dropdown.contains(e.target)) {
+        closeActionsMenu();
+    }
+});
+
+// Close dropdown on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const menu = document.getElementById('skill-actions-menu');
+        if (menu && !menu.classList.contains('hidden')) {
+            closeActionsMenu();
+            document.getElementById('skill-actions-btn').focus();
+        }
+    }
+});
 
 // ==================== Tool Modal ====================
 

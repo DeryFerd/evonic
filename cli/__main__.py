@@ -21,7 +21,7 @@ from cli.commands import (
     start_server, stop_server, status_server, restart_server,
     plugin_list, plugin_install, plugin_uninstall, plugin_enable, plugin_disable, plugin_new,
     plugin_reload, plugin_hotreload_enable, plugin_hotreload_disable, plugin_hotreload_status,
-    skill_list, skill_add, skill_get, skill_rm,
+    skill_list, skill_add, skill_get, skill_rm, skill_export,
     skillset_list, skillset_get, skillset_apply,
     agent_list, agent_get, agent_add, agent_enable, agent_disable, agent_remove,
     workplace_list, workplace_get, workplace_create, workplace_update, workplace_delete,
@@ -32,6 +32,7 @@ from cli.commands import (
     clear_sandbox,
     update_server, pass_setup,
     doctor_command,
+    evomem_install,
     backup_command, restore_command, verify_command, list_command,
 )
 
@@ -126,6 +127,26 @@ def main():
     doctor_parser.add_argument(
         "--with-llm-provider", action="store_true", default=False,
         help="Include LLM provider connectivity check (slow, network-dependent)",
+    )
+
+    # --- evomem ---
+    evomem_parser = subparsers.add_parser(
+        "evomem",
+        help="Manage the evomem memory-engine binary",
+        description="Provision the evomem memory-engine binary. Available subcommands: install.",
+    )
+    evomem_subparsers = evomem_parser.add_subparsers(
+        dest="evomem_command", help="Evomem management commands"
+    )
+    evomem_install_parser = evomem_subparsers.add_parser(
+        "install",
+        help="Download and install the evomem binary (latest release)",
+        description="Download, verify, and install the evomem binary from the latest "
+                    "GitHub release. Set EVOMEM_VERSION to pin a specific tag.",
+    )
+    evomem_install_parser.add_argument(
+        "--force", action="store_true", default=False,
+        help="Reinstall even if a binary is already present",
     )
 
     # --- plugin ---
@@ -243,8 +264,8 @@ def main():
     # --- skill ---
     skill_parser = subparsers.add_parser(
         "skill",
-        help="Manage skills (list, add, get, rm)",
-        description="Manage Evonic skills. Available subcommands: list, add, get, rm.",
+        help="Manage skills (list, add, get, rm, export)",
+        description="Manage Evonic skills. Available subcommands: list, add, get, rm, export.",
     )
     skill_subparsers = skill_parser.add_subparsers(
         dest="skill_command", help="Skill management commands"
@@ -288,6 +309,28 @@ def main():
     skill_rm_parser.add_argument(
         "skill_id",
         help="Skill ID to remove",
+    )
+
+    # skill export
+    skill_export_parser = skill_subparsers.add_parser(
+        "export",
+        help="Export a skill to a zip file",
+        description="Export an installed skill (including manifest, tools, and assets) into a structured zip archive.",
+    )
+    skill_export_parser.add_argument(
+        "skill_id",
+        help="Skill ID to export",
+    )
+    skill_export_parser.add_argument(
+        "-o", "--output",
+        default=None,
+        help="Output path for the zip file (defaults to ./<skill_id>.zip in the current directory)",
+    )
+    skill_export_parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose output — list every file added to the archive",
     )
 
     # --- skillset ---
@@ -832,6 +875,12 @@ def main():
         restart_server()
     elif args.command == "doctor":
         doctor_command(quick=args.quick, fix=args.fix, with_llm_provider=args.with_llm_provider)
+    elif args.command == "evomem":
+        if args.evomem_command is None:
+            evomem_parser.print_help()
+            sys.exit(0)
+        elif args.evomem_command == "install":
+            sys.exit(evomem_install(force=args.force))
     elif args.command == "plugin":
         if args.plugin_command is None:
             plugin_parser.print_help()
@@ -868,6 +917,8 @@ def main():
             skill_get(args.skill_id)
         elif args.skill_command == "rm":
             skill_rm(args.skill_id)
+        elif args.skill_command == "export":
+            skill_export(args.skill_id, output=args.output, verbose=args.verbose)
     elif args.command == "skillset":
         if args.skillset_command is None:
             skillset_parser.print_help()

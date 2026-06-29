@@ -919,6 +919,95 @@ def skill_rm(skill_id):
     print(f"Skill uninstalled: {skill_id}")
 
 
+def skill_export(skill_id, output=None, verbose=False):
+    """Export a skill identified by its ID into a structured zip archive.
+
+    Collects all files under the skill's directory (manifest, tools, source
+    code, assets, etc.), excluding build artifacts (``__pycache__``), and
+    packages them into a zip file with a ``<skill_id>/`` prefix so the
+    archive can be re-installed via ``evonic skill add``.
+
+    Args:
+        skill_id: The skill ID to export.
+        output: Optional output path for the zip file. Defaults to
+                ``./<skill_id>.zip`` in the current working directory.
+        verbose: If True, prints every file as it is added to the archive.
+    """
+    import zipfile
+
+    if not skill_id:
+        print("Error: skill_id is required.")
+        print("Usage: evonic skill export <skill_id> [-o <path>] [-v]")
+        sys.exit(1)
+
+    sm = _get_skills_manager()
+    skill = sm.get_skill(skill_id)
+
+    if skill is None:
+        print(f"Error: Skill not found: {skill_id}")
+        sys.exit(1)
+
+    skill_dir = skill.get("_dir")
+    if not skill_dir or not os.path.isdir(skill_dir):
+        print(f"Error: Skill directory not found for '{skill_id}'.")
+        sys.exit(1)
+
+    # Determine output path
+    if output is None:
+        output = os.path.join(os.getcwd(), f"{skill_id}.zip")
+    elif not os.path.isabs(output):
+        output = os.path.join(os.getcwd(), output)
+
+    # Ensure parent directory exists
+    output_dir = os.path.dirname(output)
+    if output_dir and not os.path.isdir(output_dir):
+        print(f"Error: Output directory does not exist: {output_dir}")
+        sys.exit(1)
+
+    # Collect all files under the skill directory, excluding __pycache__
+    file_paths = []
+    for root, dirs, files in os.walk(skill_dir):
+        # Skip __pycache__ directories
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in files:
+            full_path = os.path.join(root, fname)
+            # Preserve relative path inside the archive under skill_id/
+            rel_path = os.path.relpath(full_path, skill_dir)
+            arcname = f"{skill_id}/{rel_path}"
+            file_paths.append((full_path, arcname))
+
+    if not file_paths:
+        print(f"Error: No files found in skill directory for '{skill_id}'.")
+        sys.exit(1)
+
+    # Create the zip archive
+    try:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            for full_path, arcname in sorted(file_paths, key=lambda x: x[1]):
+                zf.write(full_path, arcname)
+                if verbose:
+                    print(f"  + {arcname}")
+    except PermissionError:
+        print(f"Error: Permission denied writing to '{output}'.")
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error: Could not create zip file '{output}': {e}")
+        sys.exit(1)
+
+    skill_name = skill.get("name", skill_id)
+    version = skill.get("version", "?")
+    file_count = len(file_paths)
+    print(f"Skill exported: {skill_name} ({skill_id}) v{version}")
+    print(f"Output: {output}")
+    print(f"Files:  {file_count}")
+    print()
+    print("To re-install:")
+    print(f"  evonic skill add {output}")
+    print()
+    print("To extract manually:")
+    print(f"  unzip {output} -d <target-dir>")
+
+
 # ─── Skillset Management ───────────────────────────────────────────────────────────────
 
 
@@ -2158,6 +2247,26 @@ def setup_command(non_interactive=False):
         print(f"\n  Error: {result['error']}")
         sys.exit(1)
 
+    # --- Memory engine (evomem) ---
+    # Offered interactively only (default yes). Headless/scripted runs
+    # (--non-interactive) skip the prompt; install.sh provisions evomem directly
+    # via `python -m backend.evomem_provision`. ensure_evomem() is idempotent, so
+    # the prompt is safe even when the installer already fetched the binary.
+    if not non_interactive:
+        try:
+            reply = input("\n  Install evomem memory engine? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if reply not in ("n", "no"):
+            print("  Installing evomem memory engine...")
+            from backend.evomem_provision import ensure_evomem
+            ev = ensure_evomem()
+            if ev["ok"]:
+                _ok(ev["msg"]) if ev["installed"] else _info(ev["msg"])
+            else:
+                _warn(ev["msg"])
+                _info("Run 'evonic evomem install' to retry.")
+
     print(f"\n  Setup complete! Super agent '{result['agent_id']}' created.")
     print(f"  Run 'evonic start -d' to start the platform.")
     print()
@@ -2435,6 +2544,17 @@ def _warn(msg=""):
 
 def _info(msg):
     print(f"  {_INFO}  {msg}")
+
+
+def evomem_install(force=False):
+    """Download and install the evomem memory-engine binary (latest release)."""
+    from backend.evomem_provision import ensure_evomem
+    result = ensure_evomem(force=force)
+    if result["ok"]:
+        _ok(result["msg"]) if result["installed"] else _info(result["msg"])
+    else:
+        _warn(result["msg"])
+    return 0 if result["ok"] else 1
 
 
 def doctor_command(quick=False, fix=False, with_llm_provider=False):
@@ -3188,7 +3308,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         binary_ok = os.path.isfile(binary_full) and os.access(binary_full, os.X_OK)
 
         # Check custom EVOMEM_BINARY path
-        if "EVOMEM_BINARY" in os.environ and not binary_ok:
+        custom_binary = "EVOMEM_BINARY" in os.environ
+        if custom_binary and not binary_ok:
             results.append(_warn(
                 f"EVOMEM_BINARY is set to '{binary_path}' but binary not found "
                 f"or not executable at {binary_full}"
@@ -3645,6 +3766,47 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                     _info(f"  Install {name} manually (no fix_script declared by {src}).")
     except Exception as e:
         results.append(_fail(f"Requirements check failed: {e}"))
+
+
+    # ── 17. Channel Integrations Check ────────────────────────
+    _section("17. Channel Integrations Check")
+    try:
+        from models.db import db as _chan_db
+
+        # Map channel type -> (import module, pip package) for dependency checks.
+        _channel_deps = {
+            'telegram': ('telegram', 'python-telegram-bot'),
+            'discord': ('discord', 'discord.py'),
+        }
+        configured_types = set()
+        for agent in _chan_db.get_agents():
+            for ch in _chan_db.get_channels(agent['id']):
+                if ch.get('enabled'):
+                    configured_types.add(ch.get('type'))
+
+        if not configured_types:
+            _info("  No channels configured — skipping")
+        else:
+            for ctype in sorted(configured_types):
+                dep = _channel_deps.get(ctype)
+                if not dep:
+                    _info(f"  {ctype}: no dependency check available")
+                    continue
+                module_name, pkg_name = dep
+                try:
+                    mod = importlib.import_module(module_name)
+                    ver = getattr(mod, "__version__", "?")
+                    results.append(_ok(f"{ctype} library available ({pkg_name}=={ver})"))
+                except ImportError:
+                    results.append(_fail(
+                        f"{ctype} channel enabled but {pkg_name} not installed "
+                        f"— run: pip install {pkg_name}"
+                    ))
+            if 'discord' in configured_types:
+                _info("  Discord requires the Message Content Intent "
+                      "(Bot → Privileged Gateway Intents in the Developer Portal).")
+    except Exception as e:
+        results.append(_warn(f"Channel integrations check failed: {e}"))
 
 
     _section("Summary")

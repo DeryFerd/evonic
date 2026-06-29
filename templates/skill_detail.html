@@ -11,6 +11,12 @@
             <span id="skill-version" class="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded font-mono"></span>
         </div>
         <div class="flex items-center gap-3">
+            <button onclick="exportSkill()"
+                    class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5"
+                    title="Export skill as .zip">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                Export
+            </button>
             <label class="inline-flex items-center cursor-pointer gap-2" id="skill-enabled-label">
                 {{ toggle_widget(id='skill-enabled', onchange='toggleEnabled(this.checked)') }}
                 <span class="text-sm text-gray-600 dark:text-gray-400" id="skill-enabled-text">Enabled</span>
@@ -471,6 +477,15 @@ async function saveSystemPrompt() {
 
 loadSkill();
 loadSystemPrompt();
+
+function exportSkill() {
+    const link = document.createElement('a');
+    link.href = `/api/skills/${SKILL_ID}/export`;
+    link.download = `${SKILL_ID}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 
 // ==================== Tool Modal ====================
 

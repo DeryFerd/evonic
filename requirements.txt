@@ -3,6 +3,7 @@ flask-sock>=0.2
 flask-compress>=1.14
 requests>=2.31
 python-telegram-bot>=21.0
+discord.py>=2.3
 Pillow>=10.0
 rapidfuzz>=3.0
 APScheduler>=3.10

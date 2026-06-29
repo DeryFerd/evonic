@@ -5,6 +5,7 @@ from typing import Dict, Type, Optional
 from backend.channels.base import BaseChannel
 from backend.channels.telegram import TelegramChannel
 from backend.channels.whatsapp import WhatsAppChannel
+from backend.channels.discord import DiscordChannel
 from models.db import db
 
 _logger = logging.getLogger(__name__)
@@ -13,6 +14,7 @@ _logger = logging.getLogger(__name__)
 CHANNEL_TYPES: Dict[str, Type[BaseChannel]] = {
     'telegram': TelegramChannel,
     'whatsapp': WhatsAppChannel,
+    'discord': DiscordChannel,
 }
 
 

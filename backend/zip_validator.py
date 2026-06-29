@@ -93,6 +93,9 @@ def validate_upload_zip(file_path: str, expected_filename: Optional[str] = None)
             for entry in entries:
                 if entry.endswith('/'):   # directory marker
                     continue
+                parts = entry.replace('\\', '/').split('/')
+                if '.git' in parts:
+                    continue
                 ext = os.path.splitext(entry)[1].lower()
                 if ext not in ALLOWED_EXTENSIONS:
                     return False, f"Disallowed file type in zip: {entry} (extension '{ext}' not permitted)"

@@ -1845,6 +1845,12 @@ async function saveNewVariable() {
         const varRes = await fetch(`/api/agents/${AGENT_ID}/variables`);
         const varData = await varRes.json();
         const vars = varData.variables || [];
+        if (vars.some(v => v.key === key)) {
+            showToast(`Variable "${key}" already exists.`, 'error');
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+            return;
+        }
         vars.push({ key, value, is_secret: isSecret });
         await fetch(`/api/agents/${AGENT_ID}/variables`, {
             method: 'PUT',

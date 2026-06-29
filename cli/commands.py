@@ -919,6 +919,95 @@ def skill_rm(skill_id):
     print(f"Skill uninstalled: {skill_id}")
 
 
+def skill_export(skill_id, output=None, verbose=False):
+    """Export a skill identified by its ID into a structured zip archive.
+
+    Collects all files under the skill's directory (manifest, tools, source
+    code, assets, etc.), excluding build artifacts (``__pycache__``), and
+    packages them into a zip file with a ``<skill_id>/`` prefix so the
+    archive can be re-installed via ``evonic skill add``.
+
+    Args:
+        skill_id: The skill ID to export.
+        output: Optional output path for the zip file. Defaults to
+                ``./<skill_id>.zip`` in the current working directory.
+        verbose: If True, prints every file as it is added to the archive.
+    """
+    import zipfile
+
+    if not skill_id:
+        print("Error: skill_id is required.")
+        print("Usage: evonic skill export <skill_id> [-o <path>] [-v]")
+        sys.exit(1)
+
+    sm = _get_skills_manager()
+    skill = sm.get_skill(skill_id)
+
+    if skill is None:
+        print(f"Error: Skill not found: {skill_id}")
+        sys.exit(1)
+
+    skill_dir = skill.get("_dir")
+    if not skill_dir or not os.path.isdir(skill_dir):
+        print(f"Error: Skill directory not found for '{skill_id}'.")
+        sys.exit(1)
+
+    # Determine output path
+    if output is None:
+        output = os.path.join(os.getcwd(), f"{skill_id}.zip")
+    elif not os.path.isabs(output):
+        output = os.path.join(os.getcwd(), output)
+
+    # Ensure parent directory exists
+    output_dir = os.path.dirname(output)
+    if output_dir and not os.path.isdir(output_dir):
+        print(f"Error: Output directory does not exist: {output_dir}")
+        sys.exit(1)
+
+    # Collect all files under the skill directory, excluding __pycache__
+    file_paths = []
+    for root, dirs, files in os.walk(skill_dir):
+        # Skip __pycache__ directories
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in files:
+            full_path = os.path.join(root, fname)
+            # Preserve relative path inside the archive under skill_id/
+            rel_path = os.path.relpath(full_path, skill_dir)
+            arcname = f"{skill_id}/{rel_path}"
+            file_paths.append((full_path, arcname))
+
+    if not file_paths:
+        print(f"Error: No files found in skill directory for '{skill_id}'.")
+        sys.exit(1)
+
+    # Create the zip archive
+    try:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            for full_path, arcname in sorted(file_paths, key=lambda x: x[1]):
+                zf.write(full_path, arcname)
+                if verbose:
+                    print(f"  + {arcname}")
+    except PermissionError:
+        print(f"Error: Permission denied writing to '{output}'.")
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error: Could not create zip file '{output}': {e}")
+        sys.exit(1)
+
+    skill_name = skill.get("name", skill_id)
+    version = skill.get("version", "?")
+    file_count = len(file_paths)
+    print(f"Skill exported: {skill_name} ({skill_id}) v{version}")
+    print(f"Output: {output}")
+    print(f"Files:  {file_count}")
+    print()
+    print("To re-install:")
+    print(f"  evonic skill add {output}")
+    print()
+    print("To extract manually:")
+    print(f"  unzip {output} -d <target-dir>")
+
+
 # ─── Skillset Management ───────────────────────────────────────────────────────────────
 
 

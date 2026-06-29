@@ -853,6 +853,7 @@ class LLMClient:
 
                 return {
                     "response": result,
+                    "request_payload": payload,  # byte-exact body POSTed to provider
                     "duration_ms": duration_ms,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,

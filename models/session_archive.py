@@ -1,19 +1,23 @@
 """
-session_archive.py — Archive session data to session_archive.db before /clear.
+session_archive.py — Archive byte-exact LLM I/O to session_archive.db for training.
 
-When EVONIC_SESSION_ARCHIVE=1 is set, every /clear command copies the full
-session data (chat messages, summaries, session state, and raw JSONL log) to
-shared/db/session_archive.db before the data is purged.
+When EVONIC_SESSION_ARCHIVE=1 is set, agent sessions are archived to
+shared/db/session_archive.db. The archive captures the GROUND-TRUTH the model saw
+at inference time — the exact request payload (system + messages + tools, after all
+pipeline transformations) and the raw response (content, CoT/reasoning_content,
+tool_calls, finish_reason, usage) — one row per LLM API call.
 
-The archive DB is designed as a training dataset source for improving model
-performance on Evonic agentic operations.
+Two triggers:
+  - /clear  → archives the main session (models.mixins.chat_delegation.clear_session)
+  - sub-agent turn-end → archives single-turn sub-agents (backend/agent_runtime/llm_loop)
 
-Schema tables:
-  archive_sessions      — session metadata
-  archive_messages      — chat_messages rows
-  archive_summaries     — chat_summaries row
-  archive_session_state — session_state row
-  archive_jsonl         — every raw JSONL entry (most detailed trace)
+Schema (intentionally minimal — debugging is served by the per-agent session JSONL):
+  archive_sessions   — session metadata (agent_id, agent_kind, parent_agent_id, ...)
+  archive_llm_calls  — one row per LLM call: byte-exact request + raw response
+
+The per-call records are read from the LLMTraceLog file written during inference
+(models/llm_trace.py), NOT reconstructed from chat_messages/JSONL (which differ from
+the real payload).
 """
 
 import json
@@ -37,50 +41,32 @@ CREATE TABLE IF NOT EXISTS archive_sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     agent_id TEXT NOT NULL,
+    agent_kind TEXT DEFAULT 'main',
+    parent_agent_id TEXT,
+    external_user_id TEXT,
     channel_id TEXT,
-    external_user_id TEXT NOT NULL,
-    bot_enabled BOOLEAN DEFAULT 1,
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS archive_messages (
+CREATE TABLE IF NOT EXISTS archive_llm_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     archive_id INTEGER NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT,
-    tool_calls TEXT,
-    tool_call_id TEXT,
-    metadata TEXT,
-    created_at TEXT,
-    FOREIGN KEY (archive_id) REFERENCES archive_sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS archive_summaries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    archive_id INTEGER NOT NULL UNIQUE,
-    summary TEXT NOT NULL,
-    last_message_id INTEGER,
-    message_count INTEGER,
-    created_at TEXT,
-    FOREIGN KEY (archive_id) REFERENCES archive_sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS archive_session_state (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    archive_id INTEGER NOT NULL UNIQUE,
-    content TEXT NOT NULL,
-    FOREIGN KEY (archive_id) REFERENCES archive_sessions(id)
-);
-
-CREATE TABLE IF NOT EXISTS archive_jsonl (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    archive_id INTEGER NOT NULL,
-    line_number INTEGER NOT NULL,
-    entry_type TEXT NOT NULL,
-    entry_json TEXT NOT NULL,
+    call_index INTEGER NOT NULL,
+    turn_index INTEGER,
+    model TEXT,
+    request_json TEXT,
+    response_json TEXT,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    total_tokens INTEGER,
+    finish_reason TEXT,
+    duration_ms INTEGER,
     ts INTEGER,
     FOREIGN KEY (archive_id) REFERENCES archive_sessions(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_archive_sessions_session ON archive_sessions(session_id);
+CREATE INDEX IF NOT EXISTS idx_archive_llm_calls_archive ON archive_llm_calls(archive_id);
 """
 
 
@@ -103,14 +89,14 @@ def _init_schema() -> None:
 
 
 class SessionArchiver:
-    """Archives a session's data to session_archive.db in a background thread.
+    """Archives a session's byte-exact LLM I/O to session_archive.db.
 
     Usage:
-        SessionArchiver.archive_session(agent_id, session_id)
+        SessionArchiver.archive_session(agent_id, session_id, agent_kind='main')
+        SessionArchiver.delete_for_session(session_id)  # cancel a tentative archive
 
-    The archive reads all data *before* clearing begins (fast reads from local
-    SQLite/JSONL), then writes to the archive DB in a daemon thread so the
-    /clear response is not delayed.
+    Reads the LLM-trace file (fast local read), then writes to the archive DB in a
+    daemon thread so the /clear or turn-end response is never delayed.
     """
 
     _init_lock = threading.Lock()
@@ -127,215 +113,158 @@ class SessionArchiver:
             cls._schema_initialized = True
 
     @classmethod
-    def archive_session(cls, agent_id: str, session_id: str) -> None:
-        """Read session data and launch a background thread to write the archive.
+    def archive_session(cls, agent_id: str, session_id: str,
+                        agent_kind: str = 'main',
+                        parent_agent_id: Optional[str] = None) -> None:
+        """Read the session's LLM-trace records and write the archive in the background.
 
-        This returns immediately — the actual archive write runs in a daemon
-        thread so it never blocks the /clear response.
+        Returns immediately — the actual write runs in a daemon thread.
+        `agent_id` is the DB-owning agent id (the parent id for sub-agents).
         """
         cls._ensure_schema()
-        chat_db = None
+
+        # --- Read session metadata (best-effort) ---
+        external_user_id = None
+        channel_id = None
         try:
-            # Import here to avoid circular imports
             from models.chat import agent_chat_manager
             chat_db = agent_chat_manager.get(agent_id)
-        except Exception:
-            _logger.exception(
-                "SessionArchive: could not get chat DB for %s", agent_id
-            )
-            return
-
-        # --- Read all data into memory (fast, before clearing) ---
-        try:
             session_info = chat_db.get_session(session_id)
-            if not session_info:
-                _logger.warning(
-                    "SessionArchive: session %s not found for agent %s",
-                    session_id, agent_id,
-                )
-                return
-            session_info = dict(session_info)
+            if session_info:
+                session_info = dict(session_info)
+                external_user_id = session_info.get("external_user_id")
+                channel_id = session_info.get("channel_id")
         except Exception:
             _logger.exception(
                 "SessionArchive: failed to read session info for %s", session_id
             )
+
+        # --- Read byte-exact LLM-call records ---
+        calls: List[dict] = []
+        try:
+            from models.llm_trace import llm_trace_manager
+            calls = llm_trace_manager.get(agent_id, session_id).get_all()
+        except Exception:
+            _logger.exception(
+                "SessionArchive: failed to read LLM trace for %s", session_id
+            )
+
+        if not calls:
+            _logger.info(
+                "SessionArchive: no LLM-call records for session %s — skipping",
+                session_id,
+            )
             return
-
-        messages: List[dict] = []
-        try:
-            with chat_db._connect() as conn:
-                conn.row_factory = sqlite3.Row
-                # No LIMIT: archiving requires all messages for this session
-                raw = conn.execute(
-                    "SELECT id, session_id, role, content, tool_calls, tool_call_id, metadata, created_at FROM chat_messages WHERE session_id = ? ORDER BY id ASC",
-                    (session_id,),
-                ).fetchall()
-                for r in raw:
-                    d = dict(r)
-                    if d.get("tool_calls") and isinstance(d["tool_calls"], str):
-                        try:
-                            d["tool_calls"] = json.loads(d["tool_calls"])
-                        except Exception:
-                            pass
-                    if d.get("metadata") and isinstance(d["metadata"], str):
-                        try:
-                            d["metadata"] = json.loads(d["metadata"])
-                        except Exception:
-                            pass
-                    messages.append(d)
-        except Exception:
-            _logger.exception(
-                "SessionArchive: failed to read messages for %s", session_id
-            )
-
-        summary = None
-        try:
-            raw = chat_db.get_summary(session_id)
-            if raw:
-                summary = dict(raw)
-        except Exception:
-            _logger.exception(
-                "SessionArchive: failed to read summary for %s", session_id
-            )
-
-        session_state = None
-        try:
-            raw = chat_db.get_session_state(session_id)
-            if raw:
-                session_state = raw
-        except Exception:
-            _logger.exception(
-                "SessionArchive: failed to read session_state for %s", session_id
-            )
-
-        # --- Read JSONL entries ---
-        jsonl_entries: List[dict] = []
-        try:
-            from models.chatlog import chatlog_manager
-            chatlog = chatlog_manager.get(agent_id, session_id)
-            jsonl_entries = chatlog.get_all_for_session()
-        except Exception:
-            _logger.exception(
-                "SessionArchive: failed to read JSONL for %s", session_id
-            )
 
         # --- Launch background thread to write archive ---
         t = threading.Thread(
             target=cls._write_archive,
-            args=(session_info, messages, summary, session_state, jsonl_entries),
+            args=(session_id, agent_id, agent_kind, parent_agent_id,
+                  external_user_id, channel_id, calls),
             daemon=True,
             name=f"session-archive-{session_id[:8]}",
         )
         t.start()
         _logger.info(
             "SessionArchive: launched background archive for session %s "
-            "(%d messages, %d JSONL entries)",
-            session_id, len(messages), len(jsonl_entries),
+            "(kind=%s, %d LLM calls)",
+            session_id, agent_kind, len(calls),
         )
 
     @classmethod
     def _write_archive(
         cls,
-        session_info: dict,
-        messages: List[dict],
-        summary: Optional[dict],
-        session_state: Optional[str],
-        jsonl_entries: List[dict],
+        session_id: str,
+        agent_id: str,
+        agent_kind: str,
+        parent_agent_id: Optional[str],
+        external_user_id: Optional[str],
+        channel_id: Optional[str],
+        calls: List[dict],
     ) -> None:
-        """Write all collected session data into session_archive.db.
-
-        Runs in a background daemon thread — errors are logged but never raise.
-        """
-        session_id = session_info.get("id", "")
-        agent_id = session_info.get("agent_id", "")
+        """Write the session metadata + per-call records. Errors are logged, never raised."""
         conn = _get_connection()
         try:
-            # 1. Insert session metadata
             conn.execute(
                 """INSERT INTO archive_sessions
-                   (session_id, agent_id, channel_id, external_user_id, bot_enabled)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (
-                    session_id,
-                    agent_id,
-                    session_info.get("channel_id"),
-                    session_info.get("external_user_id", ""),
-                    session_info.get("bot_enabled", 1),
-                ),
+                   (session_id, agent_id, agent_kind, parent_agent_id,
+                    external_user_id, channel_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, agent_id, agent_kind, parent_agent_id,
+                 external_user_id, channel_id),
             )
             archive_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-            # 2. Insert messages
-            for msg in messages:
-                tool_calls = msg.get("tool_calls")
-                if tool_calls is not None and not isinstance(tool_calls, str):
-                    tool_calls = json.dumps(tool_calls, ensure_ascii=False)
-                metadata = msg.get("metadata")
-                if metadata is not None and not isinstance(metadata, str):
-                    metadata = json.dumps(metadata, ensure_ascii=False)
+            for i, rec in enumerate(calls):
+                req = rec.get("request")
+                resp = rec.get("response")
+                usage = rec.get("usage") or {}
                 conn.execute(
-                    """INSERT INTO archive_messages
-                       (archive_id, role, content, tool_calls, tool_call_id, metadata, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        archive_id,
-                        msg.get("role", ""),
-                        msg.get("content"),
-                        tool_calls,
-                        msg.get("tool_call_id"),
-                        metadata,
-                        msg.get("created_at"),
-                    ),
-                )
-
-            # 3. Insert summary
-            if summary:
-                conn.execute(
-                    """INSERT INTO archive_summaries
-                       (archive_id, summary, last_message_id, message_count, created_at)
-                       VALUES (?, ?, ?, ?, ?)""",
-                    (
-                        archive_id,
-                        summary.get("summary", ""),
-                        summary.get("last_message_id"),
-                        summary.get("message_count"),
-                        summary.get("created_at"),
-                    ),
-                )
-
-            # 4. Insert session state
-            if session_state:
-                conn.execute(
-                    "INSERT INTO archive_session_state (archive_id, content) VALUES (?, ?)",
-                    (archive_id, session_state),
-                )
-
-            # 5. Insert JSONL entries (the richest data for training)
-            for i, entry in enumerate(jsonl_entries):
-                entry_type = entry.get("type", "unknown")
-                entry_ts = entry.get("ts")
-                conn.execute(
-                    """INSERT INTO archive_jsonl
-                       (archive_id, line_number, entry_type, entry_json, ts)
-                       VALUES (?, ?, ?, ?, ?)""",
+                    """INSERT INTO archive_llm_calls
+                       (archive_id, call_index, turn_index, model,
+                        request_json, response_json,
+                        prompt_tokens, completion_tokens, total_tokens,
+                        finish_reason, duration_ms, ts)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         archive_id,
                         i + 1,
-                        entry_type,
-                        json.dumps(entry, ensure_ascii=False),
-                        entry_ts,
+                        rec.get("turn_index"),
+                        rec.get("model"),
+                        json.dumps(req, ensure_ascii=False) if req is not None else None,
+                        json.dumps(resp, ensure_ascii=False) if resp is not None else None,
+                        usage.get("prompt_tokens"),
+                        usage.get("completion_tokens"),
+                        usage.get("total_tokens"),
+                        rec.get("finish_reason"),
+                        rec.get("duration_ms"),
+                        rec.get("ts"),
                     ),
                 )
 
             conn.commit()
             _logger.info(
-                "SessionArchive: archived session %s (archive_id=%d, "
-                "%d messages, %d JSONL entries)",
-                session_id, archive_id, len(messages), len(jsonl_entries),
+                "SessionArchive: archived session %s (archive_id=%d, %d LLM calls)",
+                session_id, archive_id, len(calls),
             )
         except Exception:
             _logger.exception(
                 "SessionArchive: failed to write archive for session %s", session_id
+            )
+        finally:
+            conn.close()
+
+    @classmethod
+    def delete_for_session(cls, session_id: str) -> None:
+        """Remove any archived rows for a session_id (cancels a tentative archive).
+
+        Used when a sub-agent runs a 2nd turn: its turn-1 archive is removed so
+        multi-turn sub-agents leave nothing. Sub-agent session_ids are unique per
+        spawn, so this never touches the main session's archive.
+        """
+        cls._ensure_schema()
+        conn = _get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM archive_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            for r in rows:
+                conn.execute(
+                    "DELETE FROM archive_llm_calls WHERE archive_id = ?", (r["id"],)
+                )
+            conn.execute(
+                "DELETE FROM archive_sessions WHERE session_id = ?", (session_id,)
+            )
+            conn.commit()
+            if rows:
+                _logger.info(
+                    "SessionArchive: deleted %d archive(s) for session %s",
+                    len(rows), session_id,
+                )
+        except Exception:
+            _logger.exception(
+                "SessionArchive: failed to delete archive for session %s", session_id
             )
         finally:
             conn.close()

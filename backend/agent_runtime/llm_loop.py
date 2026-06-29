@@ -242,6 +242,10 @@ def run_tool_loop(agent: Dict[str, Any],
     channel_id = agent_context.get('channel_id')
 
     chatlog = chatlog_manager.get(db_agent_id, session_id)
+    # Ordinal of THIS turn (1-based): count prior completed turns before appending
+    # turn_begin for this one. Used for byte-exact LLM-call archiving and the
+    # sub-agent single-turn gate. Computed once per turn (one file scan), not per call.
+    _turn_index = chatlog.count_entries(frozenset({'turn_end'})) + 1
     _loop_ts = int(time.time() * 1000)
     chatlog.append({'type': 'turn_begin', 'session_id': session_id, 'ts': _loop_ts})
     event_stream.emit('turn_begin', {'session_id': session_id, 'ts': _loop_ts})
@@ -1076,6 +1080,37 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
                 return {"text": error_msg, "error": True}, tool_trace, timeline
 
+        # --- Archive byte-exact LLM I/O for training (ground truth) ---
+        # `result` is now finalized (post-fallback, guaranteed success). Persist the
+        # exact request payload the provider received and its raw response (incl.
+        # CoT/reasoning_content and tool_calls). One record per API call/iteration.
+        import config as _config
+        if _config.SESSION_ARCHIVE:
+            try:
+                from models.llm_trace import llm_trace_manager
+                _resp = result.get('response') or {}
+                _req = result.get('request_payload')
+                _fr = None
+                _ch = _resp.get('choices') if isinstance(_resp, dict) else None
+                if _ch:
+                    _fr = _ch[0].get('finish_reason')
+                llm_trace_manager.get(db_agent_id, session_id).append({
+                    'ts': int(time.time() * 1000),
+                    'turn_index': _turn_index,
+                    'model': (_req or {}).get('model'),
+                    'request': _req,
+                    'response': _resp,
+                    'usage': {
+                        'prompt_tokens': result.get('prompt_tokens'),
+                        'completion_tokens': result.get('completion_tokens'),
+                        'total_tokens': result.get('total_tokens'),
+                    },
+                    'finish_reason': _fr,
+                    'duration_ms': result.get('duration_ms'),
+                })
+            except Exception:
+                _logger.exception("LLM-trace archive failed (session=%s)", session_id)
+
         choice = result['response'].get('choices', [{}])[0]
         msg = choice.get('message', {})
         raw_content = msg.get('content', '')
@@ -1346,6 +1381,26 @@ def run_tool_loop(agent: Dict[str, Any],
             chatlog.append({'type': 'final', 'session_id': session_id, 'content': _display_content,
                             'metadata': _cl_meta})
             chatlog.append({'type': 'turn_end', 'session_id': session_id, 'thinking_duration': _final_dur})
+            # Archive sub-agent session at turn-end — single-turn only. Explorer &
+            # kb-organizer are single-shot, so they archive on completion (no need to
+            # wait for parent /clear). If the sub-agent runs a 2nd turn its turns may
+            # be unrelated, so cancel the tentative turn-1 archive → multi-turn
+            # sub-agents leave nothing.
+            if agent_context.get('is_subagent'):
+                import config as _config
+                if _config.SESSION_ARCHIVE:
+                    try:
+                        from models.session_archive import SessionArchiver
+                        if _turn_index == 1:
+                            _parts = agent_id.rsplit('_', 2)
+                            _kind = _parts[1] if len(_parts) == 3 and _parts[2].isdigit() else 'sub'
+                            SessionArchiver.archive_session(
+                                db_agent_id, session_id,
+                                agent_kind=_kind, parent_agent_id=db_agent_id)
+                        else:
+                            SessionArchiver.delete_for_session(session_id)
+                    except Exception:
+                        _logger.exception("Sub-agent archive failed (session=%s)", session_id)
             # Persist mental state for next turn
             ms = agent_context.get('agent_state')
             if ms is not None:

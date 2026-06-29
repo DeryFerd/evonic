@@ -127,6 +127,10 @@ class ChatDelegationMixin:
             self._chat_db(agent_id).clear_session(session_id)
             from models.chatlog import chatlog_manager
             chatlog_manager.get(agent_id, session_id).clear()
+            # Drop the byte-exact LLM-trace file (records already read by archiver above)
+            from models.llm_trace import llm_trace_manager
+            llm_trace_manager.get(agent_id, session_id).clear()
+            llm_trace_manager.evict(agent_id, session_id)
             self._remove_session_index(session_id)
 
     def get_last_message_timestamp(self, session_id: str, agent_id: str = None) -> Optional[float]:

@@ -71,6 +71,7 @@ When suspicious activity is detected, the system escalates to a human operator r
 | **Wiki-Links** | Obsidian-style `[[Doc Title]]` links in KB documents and chat messages, rendered as clickable previews |
 | **Messaging ACL** | Per-agent whitelist/blacklist access control for agent-to-agent communication |
 | **Evaluation Engine** | Automated LLM evaluation with customizable regex and heuristic evaluators |
+| **Training Data Archive** | Opt-in capture of byte-exact LLM I/O (system prompt, messages, tools, CoT, tool calls) for building SFT datasets from real agent runs |
 | **Token Compressor** | RTK-based token compression that cuts LLM costs by reducing context without losing meaning |
 | **Agent Artifacts** | Persistent files and outputs agents produce, stored and retrievable across sessions |
 | **Injection Guard** | Multi-layer prompt injection detection that blocks manipulation and unauthorized override attempts |
@@ -258,6 +259,90 @@ Manage LLM configurations:
 ./evonic model list
 ./evonic model rm gpt4o
 ```
+
+---
+
+## Training Data Collection
+
+Evonic can archive the **exact data your agents see at inference time** and turn it
+into a training-ready dataset — ideal for fine-tuning a model on your own agentic
+behavior (tool use, reasoning, multi-step workflows).
+
+The archive is **byte-exact ground truth**: it captures the real request payload sent
+to the LLM (system prompt, full message history, and tool schemas — *after* all
+pipeline transformations) together with the raw response (final content,
+chain-of-thought / `reasoning_content`, tool calls, and token usage). It is **not**
+reconstructed from the chat database, so what you train on matches what the model
+actually received.
+
+### 1. Enable archiving
+
+Archiving is **off by default**. Enable it via environment variable:
+
+```bash
+EVONIC_SESSION_ARCHIVE=1 ./evonic start
+```
+
+When enabled, one record is written **per LLM call** (each tool-loop iteration) to a
+per-session staging file, then committed to `shared/db/session_archive.db` when a
+session is archived:
+
+- **Main agent sessions** are archived when the user runs **`/clear`**.
+- **Sub-agent sessions** (explorers, KB Organizer, and spawned sub-agents) are archived
+  at **turn-end**, as soon as they finish — only when they are **single-turn**. A
+  sub-agent that continues into a second turn is *not* recorded, since its later turns
+  may be unrelated to the first.
+
+> ⚠️ The archive contains full prompts and conversation content. Treat
+> `session_archive.db` as sensitive data and store it accordingly.
+
+### 2. Archive schema
+
+`shared/db/session_archive.db` has two tables:
+
+| Table | Contents |
+|-------|----------|
+| `archive_sessions` | Session metadata: `session_id`, `agent_id`, `agent_kind` (`main`/`sub`/`explorer`/`organizer`), `parent_agent_id`, `external_user_id` |
+| `archive_llm_calls` | One row per LLM call: `request_json` (exact payload), `response_json` (raw response incl. CoT + tool calls), `model`, `turn_index`, `call_index`, token usage, `finish_reason` |
+
+### 3. Build a training dataset
+
+Aggregate the archive into a JSONL dataset with one sample **per agent turn**, in
+OpenAI chat-messages format (chain-of-thought preserved as `reasoning_content`):
+
+```bash
+python scripts/build_training_dataset.py                       # → ./dataset.jsonl
+python scripts/build_training_dataset.py --kind explorer,organizer
+python scripts/build_training_dataset.py --no-reasoning --min-calls 2
+python scripts/build_training_dataset.py --db shared/db/session_archive.db --out my_dataset.jsonl
+```
+
+Each line is one turn, ready for SFT:
+
+```json
+{
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "reasoning_content": "CoT...", "tool_calls": [...]},
+    {"role": "tool", "tool_call_id": "...", "content": "..."},
+    {"role": "assistant", "reasoning_content": "CoT...", "content": "final answer"}
+  ],
+  "tools": [ ... ],
+  "meta": {"agent_id": "...", "agent_kind": "main", "session_id": "...",
+           "model": "...", "turn_index": 1, "num_calls": 3, "usage": {...}}
+}
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--db` | Path to the archive DB (default `shared/db/session_archive.db`) |
+| `--out` | Output JSONL path (default `./dataset.jsonl`) |
+| `--kind` | Comma-separated `agent_kind` filter (`main,sub,explorer,organizer`); empty = all |
+| `--min-calls` | Skip turns with fewer than N LLM calls |
+| `--no-reasoning` | Strip chain-of-thought (`reasoning_content`) from the output |
 
 ---
 

@@ -1210,6 +1210,20 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
         from backend.tools.agent_messaging import get_agent_messaging_tool_defs
         tools.extend(get_agent_messaging_tool_defs())
 
+    # Explorers use their own configured tool set (no parent inheritance), and
+    # their tools may come from a LAZY skill — so resolve the defs directly
+    # (get_all_tool_defs omits lazy skills) and return.
+    if agent.get('is_explorer'):
+        from backend.agent_runtime import explorer as _explorer
+        seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
+        for tool_def in _explorer.tool_defs(agent):
+            fn_name = tool_def.get('function', {}).get('name', '')
+            if not fn_name or fn_name in seen_fn_names:
+                continue
+            seen_fn_names.add(fn_name)
+            tools.append(tool_def)
+        return tools
+
     # Add assigned tools from the registry (including skill tools)
     # Sub-agents inherit parent's tool assignments.
     eid = _effective_id(agent)

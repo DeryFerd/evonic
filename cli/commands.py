@@ -2247,6 +2247,26 @@ def setup_command(non_interactive=False):
         print(f"\n  Error: {result['error']}")
         sys.exit(1)
 
+    # --- Memory engine (evomem) ---
+    # Offered interactively only (default yes). Headless/scripted runs
+    # (--non-interactive) skip the prompt; install.sh provisions evomem directly
+    # via `python -m backend.evomem_provision`. ensure_evomem() is idempotent, so
+    # the prompt is safe even when the installer already fetched the binary.
+    if not non_interactive:
+        try:
+            reply = input("\n  Install evomem memory engine? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if reply not in ("n", "no"):
+            print("  Installing evomem memory engine...")
+            from backend.evomem_provision import ensure_evomem
+            ev = ensure_evomem()
+            if ev["ok"]:
+                _ok(ev["msg"]) if ev["installed"] else _info(ev["msg"])
+            else:
+                _warn(ev["msg"])
+                _info("Run 'evonic evomem install' to retry.")
+
     print(f"\n  Setup complete! Super agent '{result['agent_id']}' created.")
     print(f"  Run 'evonic start -d' to start the platform.")
     print()
@@ -2524,6 +2544,17 @@ def _warn(msg=""):
 
 def _info(msg):
     print(f"  {_INFO}  {msg}")
+
+
+def evomem_install(force=False):
+    """Download and install the evomem memory-engine binary (latest release)."""
+    from backend.evomem_provision import ensure_evomem
+    result = ensure_evomem(force=force)
+    if result["ok"]:
+        _ok(result["msg"]) if result["installed"] else _info(result["msg"])
+    else:
+        _warn(result["msg"])
+    return 0 if result["ok"] else 1
 
 
 def doctor_command(quick=False, fix=False, with_llm_provider=False):
@@ -3277,7 +3308,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         binary_ok = os.path.isfile(binary_full) and os.access(binary_full, os.X_OK)
 
         # Check custom EVOMEM_BINARY path
-        if "EVOMEM_BINARY" in os.environ and not binary_ok:
+        custom_binary = "EVOMEM_BINARY" in os.environ
+        if custom_binary and not binary_ok:
             results.append(_warn(
                 f"EVOMEM_BINARY is set to '{binary_path}' but binary not found "
                 f"or not executable at {binary_full}"
@@ -3734,6 +3766,47 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                     _info(f"  Install {name} manually (no fix_script declared by {src}).")
     except Exception as e:
         results.append(_fail(f"Requirements check failed: {e}"))
+
+
+    # ── 17. Channel Integrations Check ────────────────────────
+    _section("17. Channel Integrations Check")
+    try:
+        from models.db import db as _chan_db
+
+        # Map channel type -> (import module, pip package) for dependency checks.
+        _channel_deps = {
+            'telegram': ('telegram', 'python-telegram-bot'),
+            'discord': ('discord', 'discord.py'),
+        }
+        configured_types = set()
+        for agent in _chan_db.get_agents():
+            for ch in _chan_db.get_channels(agent['id']):
+                if ch.get('enabled'):
+                    configured_types.add(ch.get('type'))
+
+        if not configured_types:
+            _info("  No channels configured — skipping")
+        else:
+            for ctype in sorted(configured_types):
+                dep = _channel_deps.get(ctype)
+                if not dep:
+                    _info(f"  {ctype}: no dependency check available")
+                    continue
+                module_name, pkg_name = dep
+                try:
+                    mod = importlib.import_module(module_name)
+                    ver = getattr(mod, "__version__", "?")
+                    results.append(_ok(f"{ctype} library available ({pkg_name}=={ver})"))
+                except ImportError:
+                    results.append(_fail(
+                        f"{ctype} channel enabled but {pkg_name} not installed "
+                        f"— run: pip install {pkg_name}"
+                    ))
+            if 'discord' in configured_types:
+                _info("  Discord requires the Message Content Intent "
+                      "(Bot → Privileged Gateway Intents in the Developer Portal).")
+    except Exception as e:
+        results.append(_warn(f"Channel integrations check failed: {e}"))
 
 
     _section("Summary")

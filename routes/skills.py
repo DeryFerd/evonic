@@ -231,10 +231,11 @@ def api_export_skill(skill_id):
                 pass
             return response
 
+        version = skill.get('version', '0.1.0')
         return send_file(
             tmp_path,
             as_attachment=True,
-            download_name=f'{skill_id}.zip',
+            download_name=f'{skill_id}-evonic-plugin-v{version}.zip',
             mimetype='application/zip',
         )
     except Exception:

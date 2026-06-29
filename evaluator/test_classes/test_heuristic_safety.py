@@ -663,6 +663,62 @@ def test_sql_approval_info():
     print("✅ test_sql_approval_info passed")
 
 
+def test_root_filesystem_scan_detected():
+    """Test that 'find /' and 'tree /' are detected as requires_approval."""
+    # Should be detected
+    positive_cases = [
+        "find /",
+        "find / -name '*.env'",
+        "find / -type f",
+        "tree /",
+        "tree / -L 2",
+        "tree / --du",
+    ]
+    for code in positive_cases:
+        result = check_safety(code, tool_type='bash')
+        assert result['level'] == 'requires_approval', \
+            f"Expected 'requires_approval' for '{code}', got '{result['level']}' (score={result['score']})"
+        assert 'root_filesystem_scan' in result.get('blocked_patterns', []), \
+            f"Expected 'root_filesystem_scan' in blocked_patterns for '{code}', got {result.get('blocked_patterns')}"
+
+    print("✅ test_root_filesystem_scan_detected passed")
+
+
+def test_root_filesystem_scan_no_false_positive():
+    """Test that non-root find/tree commands are NOT flagged."""
+    negative_cases = [
+        "find /tmp",
+        "find /workspace -name '*.py'",
+        "find ~/.config",
+        "tree /tmp",
+        "tree /workspace",
+        "tree ~/project",
+        "find .",
+        "find",
+        "tree",
+        "tree .",
+    ]
+    for code in negative_cases:
+        result = check_safety(code, tool_type='bash')
+        assert result['level'] == 'safe', \
+            f"Expected 'safe' for '{code}', got '{result['level']}' (score={result['score']})"
+
+    print("✅ test_root_filesystem_scan_no_false_positive passed")
+
+
+def test_root_filesystem_scan_approval_info():
+    """Test that approval_info for root filesystem scan has correct metadata."""
+    result = check_safety("find / -name '*.env'", tool_type='bash')
+    assert result['requires_approval'] == True, f"Expected requires_approval=True, got {result}"
+    assert result['approval_info'] is not None
+    assert result['approval_info']['risk_level'] == 'medium', \
+        f"Expected risk_level 'medium', got '{result['approval_info']['risk_level']}'"
+    assert 'root_filesystem_scan' in result['approval_info']['categories'], \
+        f"Expected root_filesystem_scan in categories, got {result['approval_info']['categories']}"
+
+    print("✅ test_root_filesystem_scan_approval_info passed")
+
+
 
 
 if __name__ == '__main__':
@@ -714,6 +770,9 @@ if __name__ == '__main__':
         test_sql_false_positive_case_insensitive,
         test_sql_with_complex_identifiers,
         test_sql_approval_info,
+        test_root_filesystem_scan_detected,
+        test_root_filesystem_scan_no_false_positive,
+        test_root_filesystem_scan_approval_info,
     ]
     
     passed = 0

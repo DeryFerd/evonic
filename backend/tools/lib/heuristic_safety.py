@@ -200,6 +200,9 @@ BASH_DANGEROUS_PATTERNS: list[dict[str, Any]] = [
     {"pattern": r"\bmv\s+.*\.ssh/", "weight": 14, "category": "ssh_access", "description": "Moving .ssh directory contents"},
     {"pattern": r"\bid_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?\b", "weight": 12, "category": "ssh_key", "description": "Reference to SSH private/public key file"},
     {"pattern": r"\bauthorized_keys2?\b", "weight": 10, "category": "ssh_key", "description": "Reference to authorized_keys file"},
+    # Root filesystem scan detection (performance concern, not security)
+    {"pattern": r"\bfind\s+/(?:\s|$)", "weight": 8, "category": "root_filesystem_scan", "description": "Root filesystem scan via find (performance concern)"},
+    {"pattern": r"\btree\s+/(?:\s|$)", "weight": 8, "category": "root_filesystem_scan", "description": "Root filesystem scan via tree (performance concern)"},
 ]
 
 
@@ -629,6 +632,9 @@ def _generate_approval_info(
     elif "sqlite_access" in categories or "sqlite_db_file" in categories:
         risk_level = "medium"
         description = "This action accesses local SQLite database files which may contain sensitive data."
+    elif "root_filesystem_scan" in categories:
+        risk_level = "medium"
+        description = "This action scans the entire root filesystem which can take a very long time and may expose sensitive system files."
     elif "privilege_escalation" in categories or "permission_escalation" in categories:
         risk_level = "medium"
         description = "This action may escalate privileges or change permissions."

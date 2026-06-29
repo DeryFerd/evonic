@@ -1124,5 +1124,22 @@ def _register_builtins():
         "List background jobs for this session",
     )
 
+    # /kb-organize — Manually trigger KB organizer sub-agent for the current agent
+    def kb_organize_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        from backend.agent_runtime.memory_manager import manual_kb_organize
+        return manual_kb_organize(agent_id, session_id)
+
+    command_registry.register(
+        "kb-organize",
+        kb_organize_handler,
+        "Manually trigger KB organizer sub-agent for the current agent",
+    )
+
 # Register builtins at import time
 _register_builtins()

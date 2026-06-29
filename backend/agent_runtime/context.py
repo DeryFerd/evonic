@@ -599,6 +599,29 @@ def _build_kb_listing(effective_id: str) -> list:
         "`recall(query='<doc>.md', mode='links')` to explore a doc's link "
         "neighborhood."
     )
+    lines.append("")
+    lines.append(
+        "**Image embedding in KB docs**: To embed an image in a KB document "
+        "(`.md` file), you MUST use renderable markdown image syntax — NOT HTML "
+        "`<img>` tags, NOT local filesystem paths, and NOT plain text mentions. "
+        "The correct procedure:"
+    )
+    lines.append(
+        "1. Save the image as an artifact first using "
+        "`save_artifact(source_path=\"...\")`"
+    )
+    lines.append(
+        "2. Reference it using markdown image format: "
+        "`![description](/api/agents/<agent_id>/artifacts/<filename>)`"
+    )
+    lines.append(
+        "3. NEVER use local filesystem paths (`data/attachments/...`) — they "
+        "won't render in the KB viewer"
+    )
+    lines.append(
+        "4. NEVER just mention \"ada foto\" without embedding it — always use "
+        "the proper `![...](...)` markdown syntax"
+    )
 
     # Inject notes.md instructions only if notes.md exists in KB
     if 'notes.md' in files:
@@ -646,7 +669,6 @@ def _build_kb_listing(effective_id: str) -> list:
             "information"
         )
 
-    return lines
 
 
 def _build_static_prompt(agent: Dict[str, Any]) -> str:
@@ -722,7 +744,7 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
     parts.append(
         "2. If found: store it immediately via remember() (factual data), "
-        "update notes.md (tastes/preferences/style), or update SYSTEM.md (critical rules)."
+        "store it as a preference via remember() for non-factual style notes, or update SYSTEM.md (critical rules)."
     )
     parts.append(
         "3. This applies to BOTH explicit and implicit cues. Even casual mentions count."

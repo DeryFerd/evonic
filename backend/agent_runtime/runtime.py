@@ -70,7 +70,7 @@ def _llm_log_path(agent_id: str) -> str:
 WRAPPER_PREFIX = (
         """[Pre-response check: Before you answer or reply to the user's request, first verify the following:
 
-1. Does the message contain explicit or implicit information—such as instructions, or shared personal details, facts, preferences, phone numbers, secret keys, addresses, PINs, etc.? If yes, save it to memory using the `remember()` tool. If the message contains style notes, rules, or procedures that don't always need to be applied, record them in the `notes.md` knowledge base. If the message contains a request to change style or rules that is highly critical and must be applied on every turn, write it to `SYSTEM.md`.
+1. Does the message contain explicit or implicit information—such as instructions, or shared personal details, facts, preferences, phone numbers, secret keys, addresses, PINs, etc.? If yes, save it to memory using the `remember()` tool. If the message contains style notes, rules, or procedures that don't always need to be applied, record them via `remember()` for non-factual style notes. If the message contains a request to change style or rules that is highly critical and must be applied on every turn, write it to `SYSTEM.md`.
 2. Does the message relate to a specific project or task? If so, read the relevant knowledge base files first—there may be an existing KB containing per-item/per-project procedures.
 3. Only after completing these steps, reply to the user naturally.]
 

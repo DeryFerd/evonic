@@ -257,10 +257,7 @@ class SkillsManager:
                     if not extract_path_real.startswith(tmp_dir_real + os.sep):
                         return {'error': f'Path traversal detected in zip: {entry}'}
                 
-                for info in zf.infolist():
-                    if '.git' in info.filename.replace('\\', '/').split('/'):
-                        continue
-                    zf.extract(info, tmp_dir)
+                zf.extractall(tmp_dir)
 
             # Find skill.json — at root or one level deep
             manifest_path = self._find_manifest(tmp_dir)

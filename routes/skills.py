@@ -216,7 +216,7 @@ def api_export_skill(skill_id):
     try:
         with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
             for root, dirs, files in os.walk(skill_dir):
-                dirs[:] = [d for d in dirs if d not in ('__pycache__', '.git')]
+                dirs[:] = [d for d in dirs if d != '__pycache__']
                 for fname in files:
                     full_path = os.path.join(root, fname)
                     rel_path = os.path.relpath(full_path, skill_dir)

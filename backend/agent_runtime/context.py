@@ -329,6 +329,56 @@ def _list_collections(kb_dir: str) -> list:
     return lines
 
 
+# Max number of KB files enumerated in the system-prompt listing. The rest are
+# summarized as a count + a pointer to the `recall` tool, so the prompt stays
+# bounded even with thousands of KB files.
+_KB_LISTING_LIMIT = 5
+
+# Files with dedicated handling elsewhere — never counted toward the recent-N
+# listing (_kb_index.md body is injected separately; notes.md has its own section).
+_KB_LISTING_EXCLUDE = {'_kb_index.md', 'notes.md'}
+
+_KB_RECALL_HINT = (
+    "To find any other knowledge file, use `recall(query='<keywords>')` — an "
+    "optimized full-content search over your whole knowledge base — then open "
+    "the result with `read_file`. Use `recall(query='<file>.md', mode='links')` "
+    "to explore a doc's link neighborhood."
+)
+
+
+def _kb_file_recency(kb_dir: str, fname: str, graph_pages: dict) -> float:
+    """Return a comparable recency key (epoch seconds) for a KB file.
+
+    Prefers the evomem graph `updated_at` (ISO string); falls back to disk mtime
+    when the graph has no entry (e.g. evomem not synced). Lets graph-backed and
+    disk-only files sort together on one float scale.
+    """
+    gdata = graph_pages.get(os.path.splitext(fname)[0], {}) if graph_pages else {}
+    ts = gdata.get('updated_at')
+    if ts:
+        try:
+            dt = datetime.fromisoformat(ts)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except (ValueError, TypeError):
+            pass
+    try:
+        return os.path.getmtime(os.path.join(kb_dir, fname))
+    except OSError:
+        return 0.0
+
+
+def _select_recent_kb(kb_dir: str, files: list, graph_pages: dict,
+                      limit: int = _KB_LISTING_LIMIT) -> list:
+    """Return up to `limit` filenames sorted by recency (most recent first)."""
+    return sorted(
+        files,
+        key=lambda f: _kb_file_recency(kb_dir, f, graph_pages),
+        reverse=True,
+    )[:limit]
+
+
 def _build_kb_listing(effective_id: str) -> list:
     """Build the KB listing.
 
@@ -386,12 +436,13 @@ def _build_kb_listing(effective_id: str) -> list:
         graph_pages = graph["pages"] if graph else {}
         target_updated_at = graph["target_updated_at"] if graph else {}
 
-        # Filter out _kb_index.md from graph metadata
-        regular_files = [f for f in files if f != '_kb_index.md']
+        # Files eligible for the recent-N listing (exclude dedicated-handling files)
+        regular_files = [f for f in files if f not in _KB_LISTING_EXCLUDE]
         if regular_files:
-            lines.append("### Graph metadata (auto-generated):")
+            shown = _select_recent_kb(kb_dir, regular_files, graph_pages)
+            lines.append("### Graph metadata (auto-generated, most recent):")
             if graph_pages:
-                for f in regular_files:
+                for f in shown:
                     # graph slugs are filename stems (e.g. 'notes'); files are
                     # filenames (e.g. 'notes.md').
                     gdata = graph_pages.get(os.path.splitext(f)[0], {})
@@ -413,51 +464,45 @@ def _build_kb_listing(effective_id: str) -> list:
 
                     lines.append(f"- {f}: {inc_str}, {out_str}{tag_str}")
             else:
-                for f in regular_files:
+                for f in shown:
                     lines.append(f"- {f}: no graph data available yet")
+            if len(regular_files) > len(shown):
+                lines.append(
+                    f"- …and {len(regular_files) - len(shown)} more knowledge "
+                    f"file(s) not listed. {_KB_RECALL_HINT}"
+                )
             lines.append("")
-    else:
+    elif [f for f in files if f not in _KB_LISTING_EXCLUDE]:
         # --- Fallback: graph-aware listing (no _kb_index.md) ---
-        lines.append(
-            "You can read these files using `read_file` with `/_self/kb/` path prefix. "
-            "Link between docs with Obsidian-style `[[Doc Title]]` — written "
-            "inline in your sentences — which resolves to a doc by title anywhere "
-            "in the knowledge base."
-        )
-        lines.append("")
-
-        # Disk metadata
-        file_info: dict = {}
-        for f in files:
-            fp = os.path.join(kb_dir, f)
-            size = os.path.getsize(fp)
-            fm = _extract_kb_frontmatter(fp)
-            file_info[f] = {
-                "size": size,
-                "description": fm["description"],
-                "tags": fm["tags"],
-            }
-
-        # Graph metadata from evomem
+        # Graph metadata from evomem (also drives recency ordering)
         graph = get_kb_graph_metadata(effective_id)
         graph_pages = graph["pages"] if graph else {}
         target_updated_at = graph["target_updated_at"] if graph else {}
 
-        for slug, gdata in graph_pages.items():
-            # graph slugs are filename stems; file_info is keyed by filename.
-            fname = slug + ".md"
-            if fname in file_info:
-                if gdata.get("tags"):
-                    file_info[fname]["tags"] = gdata["tags"]
+        candidates = [f for f in files if f not in _KB_LISTING_EXCLUDE]
+        shown = _select_recent_kb(kb_dir, candidates, graph_pages)
 
-        for f in files:
-            info = file_info[f]
+        lines.append(
+            "Your most recently updated knowledge files are listed below. Read one "
+            "with `read_file` (path prefix `/_self/kb/`). Link between docs with "
+            "Obsidian-style `[[Doc Title]]` — written inline in your sentences — "
+            "which resolves to a doc by title anywhere in the knowledge base."
+        )
+        lines.append("")
+
+        # Disk metadata — only for the files actually shown (avoids O(N) reads)
+        for f in shown:
+            fp = os.path.join(kb_dir, f)
+            fm = _extract_kb_frontmatter(fp)
             gdata = graph_pages.get(os.path.splitext(f)[0], {})
 
-            size_str = _format_size(info["size"])
-            tags = info.get("tags") or gdata.get("tags") or []
+            try:
+                size_str = _format_size(os.path.getsize(fp))
+            except OSError:
+                size_str = "?"
+            tags = fm["tags"] or gdata.get("tags") or []
             tag_str = f" [tags: {', '.join(tags)}]" if tags else ""
-            desc = info["description"]
+            desc = fm["description"]
             if desc and len(desc) > 120:
                 desc = desc[:117] + "..."
             desc_str = f" — {desc}" if desc else ""
@@ -477,6 +522,13 @@ def _build_kb_listing(effective_id: str) -> list:
                     out_parts.append(tgt + flag)
                 lines.append(f"    → references: {', '.join(out_parts)}")
 
+            lines.append("")
+
+        if len(candidates) > len(shown):
+            lines.append(
+                f"…and {len(candidates) - len(shown)} more knowledge file(s) not "
+                f"listed. {_KB_RECALL_HINT}"
+            )
             lines.append("")
 
     # --- Collections (user-created session/group folders, one level under kb/) ---
@@ -1090,7 +1142,7 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     # Explorer sub-agents (the Explore tool's explorers AND the KB organizer) are
     # isolated workers: they get ONLY their configured tools — the direxplorer
     # read-only set (Grep/Read/Glob) plus any EXTRAS the user added in the explorer
-    # skill settings. They must NOT receive built-ins (remember/read/recall/...),
+    # skill settings. They must NOT receive built-ins (remember/recall/...),
     # universal, messaging, or parent tools. Resolve FIRST and return; their tools
     # may come from a LAZY skill, hence resolving directly via _explorer.tool_defs.
     if agent.get('is_explorer'):

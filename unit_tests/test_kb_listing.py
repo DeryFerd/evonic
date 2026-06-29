@@ -225,7 +225,7 @@ class TestKbListingFormat:
 
     def test_full_listing_format(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "User guide notes", ["preferences"]),
+            "guide.md": ("content", "User guide notes", ["preferences"]),
             "api.md": ("content", "API reference", ["reference"]),
         }, tmp_path)
 
@@ -241,12 +241,12 @@ class TestKbListingFormat:
         assert "[[Doc Title]]" in text  # Obsidian-style title links
         assert "### KB Usage" in text
         assert "- api.md" in text
-        assert "- notes.md" in text
+        assert "- guide.md" in text
         assert "[tags: reference]" in text or "[tags: preferences]" in text
 
     def test_tags_from_frontmatter_displayed(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "desc", ["preferences", "instructions"]),
+            "guide.md": ("content", "desc", ["preferences", "instructions"]),
         }, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
@@ -260,7 +260,7 @@ class TestKbListingFormat:
 
     def test_file_size_displayed(self, tmp_path):
         content = "x" * 3000  # ~3 KB
-        kb_dir = self._make_fake_kb_dir({"notes.md": (content, "desc", None)}, tmp_path)
+        kb_dir = self._make_fake_kb_dir({"guide.md": (content, "desc", None)}, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -273,7 +273,7 @@ class TestKbListingFormat:
 
     def test_description_from_frontmatter(self, tmp_path):
         kb_dir = self._make_fake_kb_dir({
-            "notes.md": ("content", "My important notes", None),
+            "guide.md": ("content", "My important notes", None),
         }, tmp_path)
 
         from backend.agent_runtime.context import _build_kb_listing
@@ -401,7 +401,7 @@ class TestEdgeCases:
 
         kb_dir = tmp_path / "test-agent" / "kb"
         kb_dir.mkdir(parents=True)
-        fpath = kb_dir / "notes.md"
+        fpath = kb_dir / "guide.md"
         fpath.write_text(
             f"---\ndescription: {long_desc}\n---\ncontent", encoding="utf-8"
         )
@@ -457,7 +457,7 @@ class TestSubAgentInheritance:
         # Create parent KB
         parent_kb = tmp_path / "parent" / "kb"
         parent_kb.mkdir(parents=True)
-        (parent_kb / "notes.md").write_text(
+        (parent_kb / "guide.md").write_text(
             "---\ndescription: parent doc\n---\ncontent", encoding="utf-8"
         )
 
@@ -470,7 +470,7 @@ class TestSubAgentInheritance:
             result = _build_kb_listing(eid)
 
         text = "\n".join(result)
-        assert "notes.md" in text
+        assert "guide.md" in text
         assert "parent doc" in text
 
 

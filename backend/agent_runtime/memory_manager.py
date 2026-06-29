@@ -175,7 +175,7 @@ Given the conversation below, file any durable, long-term knowledge into the vau
 - KNOWN subject → UPDATE its doc: use its real vault slug (its path, no .md), Read the body first, and add ONLY the genuinely-new info.
 - NEW subject → CREATE a doc: pure-name title, nicknames in aliases, full prose with inline [[links]] to every other named subject.
 - WRONG inline [[link]] or a factual error in an existing doc → EDIT it: action "edit" with the doc's `slug`, a SHORT `old_str` (one phrase, sentence, or a single [[link]] copied verbatim — keep it short and UNIQUE so the fix can't hit the wrong place), and `new_str`. E.g. old_str "[[Mas Wijaya]]" → new_str "[[Raden Wijaya Kusuma]]". Edit targets the BODY prose ONLY — do NOT use it to change frontmatter (title/type/aliases/tags) or to blank out a whole doc. NEVER emit an edit whose `new_str` is identical to `old_str` — an edit must CHANGE the text; if nothing changes, omit the op entirely.
-- RETRO-LINK existing docs (IMPORTANT — frequently the MOST valuable work, and easy to miss): once a subject HAS a doc (you just created it, or it already existed), OTHER docs often still mention that subject as PLAIN TEXT because its doc didn't exist when they were written. Your job is to connect them: Grep the vault for the subject's name + aliases, and for each bare mention in another doc's body that is NOT already inside [[ ]], EDIT that doc (action "edit") to wrap it as a [[link]]. Keep `old_str` short and UNIQUE (include a couple of surrounding words so it matches exactly one spot). E.g. old_str "Komisaris Independen Grace Natalie" → new_str "Komisaris Independen [[Grace Natalie]]". Leaving a plain-text mention of an entity that HAS a doc is WRONG — emit one "edit" op per doc that needs linking (it is normal and good for a run to return ONLY edit ops, even when nothing new is created).
+- RETRO-LINK existing docs (IMPORTANT — frequently the MOST valuable work, and easy to miss): once a subject HAS a doc (you just created it, or it already existed), OTHER docs often still mention that subject as PLAIN TEXT because its doc didn't exist when they were written. Your job is to connect them: Grep the vault for the subject's name + aliases, and for each bare mention in another doc's body that is NOT already inside [[ ]], emit a "link" op — action "link" with that doc's `slug`, the plain `text` to wrap (the bare mention, exactly as it appears), and the `target` doc title to link it to. The writer wraps the mention as a [[link]] for you, so you do NOT supply old_str/new_str and CANNOT waste a turn on a no-op. E.g. {"action":"link","slug":"acme-corp","text":"Grace Natalie","target":"Grace Natalie"}. Use "link" ONLY to wrap PLAIN text — never on a mention already inside [[ ]]. Leaving a plain-text mention of an entity that HAS a doc is WRONG — emit one "link" op per doc that needs linking (it is normal and good for a run to return ONLY link ops, even when nothing new is created).
 - DANGLING [[link]] (a link whose target doc does NOT exist under that exact name) → RECONCILE it: the SAME entity may already live in a doc under a DIFFERENT name (canonical title vs. nickname/abbrev/fuller-or-shorter form). Grep `title:`/`aliases:` and bodies for the linked text and its variants; if you find the matching doc, FIX it — PREFER adding the variant to that doc's `aliases` (an "update" op with its slug + the augmented `aliases` list) so the natural phrasing keeps resolving; otherwise rewrite the link to the doc's canonical title with an "edit" op (e.g. old_str "[[Mas Wijaya]]" → new_str "[[Raden Wijaya Kusuma]]"). Only if NO related doc exists and the entity is durable, CREATE one. Don't leave links pointing at nothing.
 - WRONG doc name/slug (a typo, OR a slug polluted with a nickname like "abdurrahman-wahid-gus-dur") → RENAME it: action "rename" with the existing `slug` and the corrected PURE `new_title` (move the nickname to aliases). The old name is kept as an alias so existing [[links]] still resolve; you may also include `body` to add new info.
 - DUPLICATED CONTENT in an existing doc (the same section, or the whole body, appears TWICE — e.g. it was concatenated to itself) → DEDUPE it: action "dedupe" with just the doc's `slug`. This safely removes verbatim repeated blocks; do NOT try to fix duplication with `edit`.
@@ -185,11 +185,12 @@ OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
 {"docs":[
  {"action":"update","slug":"<confirmed existing slug>","title":"<existing title>","type":"<existing type>","description":"<one-line; reuse if unchanged>","tags":["..."],"aliases":["<nickname/abbrev, else omit>"],"thumbnail":"<representative image URL — set if the doc has none yet, else omit>","body":"<ONLY new prose to append, inline [[Links]] + inline ![desc](url) for any relevant photo; don't restate existing>"},
  {"action":"create","title":"<PURE canonical name, no nickname>","type":"place","description":"<one-line>","tags":["place"],"aliases":["<nickname/abbrev, e.g. Mas Wijaya / DAP, else omit>"],"thumbnail":"<representative image/photo/logo URL, else omit>","body":"<FULL prose, inline [[Links]] for every OTHER named entity, and inline ![desc](url) for any relevant photo>"},
- {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<replacement text>"},
+ {"action":"edit","slug":"<existing slug>","old_str":"<EXACT unique text to replace>","new_str":"<DIFFERENT replacement text>"},
+ {"action":"link","slug":"<existing slug>","text":"<plain mention to wrap>","target":"<doc title to link to>"},
  {"action":"rename","slug":"<existing slug>","new_title":"<corrected PURE name>","body":"<optional new prose>"},
  {"action":"dedupe","slug":"<existing slug with duplicated content>"}
 ]}
-RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str that DIFFERS from old_str (never old_str==new_str; also used to RETRO-LINK plain-text mentions in other docs to a subject that now has a doc); rename=existing slug + corrected new_title; dedupe=existing slug; set `thumbnail` (frontmatter) to a subject's representative image/logo URL on create (and on update when missing), and/or embed inline images in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "edit" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
+RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str that DIFFERS from old_str (only for a real text FIX — wrong word/link/fact; never old_str==new_str, and NEVER for retro-linking); link=existing slug + plain `text` + `target` (the writer wraps a plain-text mention as [[link]] — use this, NOT edit, to retro-link); rename=existing slug + corrected new_title; dedupe=existing slug; set `thumbnail` (frontmatter) to a subject's representative image/logo URL on create (and on update when missing), and/or embed inline images in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "link" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
 
 Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
 
@@ -992,7 +993,8 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
                     "mention to another doc). Then WIRE UP LINKS: when you Read an "
                     "existing doc, look for named entities mentioned as PLAIN TEXT that "
                     "are not yet wrapped in [[ ]] — wrap each one in a [[wiki-link]] via "
-                    "an 'edit' op (create the target doc first if it doesn't exist). "
+                    "a 'link' op (slug + the plain `text` + `target` doc title; create "
+                    "the target doc first if it doesn't exist). "
                     "Also RECONCILE dangling [[links]]: if a link doesn't resolve, the "
                     "target may already exist under a different name — check and fix it "
                     "(add the variant as an alias, or repoint the link to the canonical "
@@ -1226,6 +1228,19 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 if slug_hint and old_str:
                     with _kb_page_lock(agent_id, slug_hint):
                         if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
+                            modified.append(slug_hint)
+                            edited += 1
+                continue
+
+            # Link: deterministic retro-link — wrap a plain-text mention as [[link]].
+            # The model only names the phrase + target doc (no old_str/new_str), so it
+            # cannot waste a turn on a no-op edit; the writer does the actual wrapping.
+            if action == 'link':
+                text = (d.get('text') or d.get('mention') or '').strip()
+                target = (d.get('target') or d.get('title') or text).strip()
+                if slug_hint and text:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.link_in_doc(agent_id, slug_hint, text, target):
                             modified.append(slug_hint)
                             edited += 1
                 continue

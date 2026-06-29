@@ -294,6 +294,44 @@ def test_author_docs_edit_action(brain):
     assert "[[Abdurrahman Wahid]]" in W.read_doc(AGENT, "x")["body"]
 
 
+# ── deterministic retro-link (replaces no-op-prone edit retro-linking) ────────
+
+def test_link_in_doc_wraps_plain_mention(brain):
+    W.upsert_doc(AGENT, title="YMS", doc_type="note", description="d",
+                 body="The team manages ERPNext operations daily.")
+    assert W.link_in_doc(AGENT, "yms", "ERPNext", "ERPNext") is True
+    assert "manages [[ERPNext]] operations" in W.read_doc(AGENT, "yms")["body"]
+
+
+def test_link_in_doc_alias_form_when_target_differs(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="met Mas Wijaya there")
+    assert W.link_in_doc(AGENT, "x", "Mas Wijaya", "Raden Wijaya Kusuma") is True
+    assert "[[Raden Wijaya Kusuma|Mas Wijaya]]" in W.read_doc(AGENT, "x")["body"]
+
+
+def test_link_in_doc_skips_already_linked(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="uses [[ERPNext]] daily")
+    assert W.link_in_doc(AGENT, "x", "ERPNext", "ERPNext") is False   # no plain mention → no-op
+
+
+def test_link_in_doc_no_partial_word_match(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="the ERP module only")
+    assert W.link_in_doc(AGENT, "x", "ERPNext", "ERPNext") is False   # 'ERP' must not match
+
+
+def test_link_in_doc_wraps_only_first_mention(brain):
+    W.upsert_doc(AGENT, title="X", doc_type="note", description="d", body="ERPNext then ERPNext again")
+    assert W.link_in_doc(AGENT, "x", "ERPNext", "ERPNext") is True
+    assert W.read_doc(AGENT, "x")["body"] == "[[ERPNext]] then ERPNext again"
+
+
+def test_author_docs_link_action(brain):
+    W.upsert_doc(AGENT, title="YMS", doc_type="note", description="d",
+                 body="manages ERPNext operations")
+    _run_author([{"action": "link", "slug": "yms", "text": "ERPNext", "target": "ERPNext"}])
+    assert "[[ERPNext]]" in W.read_doc(AGENT, "yms")["body"]
+
+
 # ── dedupe self-duplicated docs ──────────────────────────────────────────────
 
 def test_dedupe_body():

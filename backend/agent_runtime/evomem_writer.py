@@ -409,6 +409,59 @@ def replace_in_doc(agent_id: str, slug: str, old_str: str, new_str: str,
         return False
 
 
+def _first_unlinked_span(body: str, text: str):
+    """Span of the FIRST plain-text (not already inside ``[[ ]]``) occurrence of
+    ``text`` in ``body``, or None. Boundaries reject partial-word hits ("ERP" in
+    "ERPNext") and any mention already adjacent to ``[``/``]``/``|`` (i.e. already a
+    link or alias), so a re-link is never attempted on text that's already linked.
+    """
+    m = re.search(r'(?<![\w\[|])' + re.escape(text) + r'(?![\w\]|])', body)
+    return (m.start(), m.end()) if m else None
+
+
+def link_in_doc(agent_id: str, slug: str, text: str, target: str = "") -> bool:
+    """Retro-link: wrap the FIRST un-bracketed mention of ``text`` in a doc's body
+    as an inline ``[[link]]``. Deterministic — the model only names the phrase and
+    its target doc, so (unlike ``edit`` with old_str/new_str) it can never emit a
+    no-op where the replacement equals the target.
+
+    ``target`` is the canonical doc title to link to; defaults to ``text``. When it
+    differs from the visible phrase, an alias link ``[[target|text]]`` is written so
+    the prose still reads naturally. Body-only; frontmatter is preserved. Returns
+    False when ``text`` is empty, the doc is missing, or no un-linked mention exists.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    target = (target or "").strip() or text
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        span = _first_unlinked_span(body, text)
+        if span is None:
+            return False                       # already linked / not present → no-op
+        s, e = span
+        link = f"[[{target}]]" if target == text else f"[[{target}|{text}]]"
+        new_body = body[:s] + link + body[e:]
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body,
+                                        thumbnail=fm.get("thumbnail")))
+        vlog("writer[%s]: link_in_doc %s -> [[%s]]", agent_id, slug, target)
+        return True
+    except Exception as e:
+        logger.debug("link_in_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
+
+
 def create_collection(agent_id: str, folder: str, title: str,
                      kind: str = "session", description: str = None) -> str:
     """Create a collection folder (one level under kb/) with an ``index.md`` of

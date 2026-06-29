@@ -283,6 +283,8 @@ Archiving is **off by default**. Enable it via environment variable:
 EVONIC_SESSION_ARCHIVE=1 ./evonic start
 ```
 
+Or set in `.env` to make Evonic always run in archive session enabled.
+
 When enabled, one record is written **per LLM call** (each tool-loop iteration) to a
 per-session staging file, then committed to `shared/db/session_archive.db` when a
 session is archived:

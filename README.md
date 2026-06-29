@@ -200,7 +200,7 @@ Connect your agents to the platforms your users already use:
 |---------|--------|---------|
 | **Telegram** | ✅ Implemented | `python-telegram-bot` |
 | **WhatsApp** | ✅ Implemented | `@whiskeysockets/baileys` (Node.js sidecar) |
-| **Discord** | 🔄 Planned | `discord.py` |
+| **Discord** | ✅ Implemented | `discord.py` |
 | **Slack** | 🔄 Planned | `slack-sdk` |
 
 ---

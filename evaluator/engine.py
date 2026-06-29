@@ -409,7 +409,11 @@ class EvaluationEngine:
         else:
             from evaluator.llm_client import llm_client as run_llm_client
 
-        
+        # Point pass2 evaluator at the same model used for this run,
+        # so it doesn't fall back to the (possibly offline) global default.
+        from evaluator.answer_extractor import answer_extractor as _ae
+        _ae.client = run_llm_client
+
         try:
             from backend.llm_usage_events import usage_context
             with usage_context('evaluator', session_id=str(run_id)):
@@ -577,10 +581,11 @@ class EvaluationEngine:
 
             # Handle tool_calling domain with multi-turn loop
             if domain == "tool_calling":
+                system_prompt = None  # legacy tests don't define a system prompt
                 from evaluator.tools import tool_framework
                 tools = tool_framework.tools
                 self._log(f'[TOOLS] Available: {[t["function"]["name"] for t in tools]}')
-                
+
                 # Run tool calling loop
                 loop_result = self._run_tool_calling_loop(prompt, tools, system_prompt=system_prompt, run_llm_client=_client)
 

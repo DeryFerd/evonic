@@ -92,6 +92,25 @@ def _version_tuple(tag: str):
     Returns a comparable object that works with both packaging.version and
     tuple-based comparison for backward compatibility.
     """
+    # git describe of a commit AHEAD of a release tag, e.g.
+    # "v0.8.7-193-g183c448" (193 commits past v0.8.7), optionally "-dirty".
+    # Such a build is NEWER than its base tag, so normalize it to a PEP 440
+    # post-release (0.8.7.post193) which sorts ABOVE the base release. Without
+    # this, packaging (<22) parses the whole string as a LegacyVersion that
+    # sorts BELOW the tag, producing a bogus "update available: v0.8.7-193-... → v0.8.7".
+    describe = re.match(
+        r'v?(\d+)\.(\d+)\.(\d+)-(\d+)-g[0-9a-fA-F]+(?:-dirty)?$', tag or ''
+    )
+    if describe:
+        maj, minor, patch, ahead = (int(describe.group(i)) for i in range(1, 5))
+        version_obj = None
+        if HAS_PACKAGING:
+            try:
+                version_obj = pkg_version.parse(f'{maj}.{minor}.{patch}.post{ahead}')
+            except (ValueError, TypeError):
+                pass
+        return _VersionComparable(version_obj, (maj, minor, patch, ahead))
+
     # Fallback tuple parsing
     m = re.match(r'v?(\d+)(?:\.(\d+))?(?:\.(\d+))?', tag or '')
     if not m:

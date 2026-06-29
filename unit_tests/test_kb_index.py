@@ -91,7 +91,7 @@ class TestKbListingIntegration:
 
     def test_index_missing_fallback(self, tmp_path):
         kb_dir = _make_kb_dir(tmp_path, {
-            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "guide.md": '---\ndescription: Guide\n---\ncontent',
         })
         from backend.agent_runtime.context import _build_kb_listing
 
@@ -101,7 +101,7 @@ class TestKbListingIntegration:
 
         text = "\n".join(result)
         assert "### Graph metadata" not in text  # fallback uses per-file format
-        assert "notes.md" in text
+        assert "guide.md" in text
         # Empty graph relations are omitted (no noisy "<none>" lines)
         assert "referenced by" not in text
         assert "references:" not in text
@@ -130,6 +130,95 @@ class TestKbListingIntegration:
 
         with patch("backend.agent_runtime.context._AGENTS_DIR", str(tmp_path)):
             assert _build_kb_listing("test-agent") == []
+
+
+# ─── Listing cap tests (top-N recent) ──────────────────────────────────────
+
+class TestKbListingCap:
+    """The file listing is capped at _KB_LISTING_LIMIT (5) recent files; the
+    rest are summarized with a count + a `recall` pointer."""
+
+    def _set_mtimes_desc(self, kb_dir, names):
+        """Stamp mtimes so names[0] is oldest and names[-1] is newest."""
+        for i, name in enumerate(names):
+            ts = 1_000_000 + i * 100
+            os.utime(kb_dir / name, (ts, ts))
+
+    def test_fallback_caps_at_five(self, tmp_path):
+        import re
+        names = [f"doc{i:02d}.md" for i in range(8)]
+        files = {n: f'---\ndescription: D{n}\n---\ncontent' for n in names}
+        kb_dir = _make_kb_dir(tmp_path, files)
+        self._set_mtimes_desc(kb_dir, names)  # doc07 newest .. doc00 oldest
+
+        from backend.agent_runtime.context import _build_kb_listing
+        with patch("backend.agent_runtime.context._AGENTS_DIR", str(tmp_path)), \
+             patch("backend.agent_runtime.context.get_kb_graph_metadata", return_value=None):
+            result = _build_kb_listing("test-agent")
+        text = "\n".join(result)
+
+        listed = re.findall(r"^- doc\d+\.md ", text, flags=re.MULTILINE)
+        assert len(listed) == 5, f"expected 5 listed, got {len(listed)}"
+        # Most recent five shown; oldest three omitted from the per-file listing.
+        for n in ["doc07.md", "doc06.md", "doc05.md", "doc04.md", "doc03.md"]:
+            assert f"- {n} " in text
+        for n in ["doc00.md", "doc01.md", "doc02.md"]:
+            assert f"- {n} " not in text
+        # Truncation summary + recall pointer present.
+        assert "…and 3 more" in text
+        assert "recall(query=" in text
+
+    def test_fallback_no_truncation_when_five_or_fewer(self, tmp_path):
+        import re
+        names = [f"doc{i:02d}.md" for i in range(4)]
+        files = {n: f'---\ndescription: D{n}\n---\ncontent' for n in names}
+        kb_dir = _make_kb_dir(tmp_path, files)
+
+        from backend.agent_runtime.context import _build_kb_listing
+        with patch("backend.agent_runtime.context._AGENTS_DIR", str(tmp_path)), \
+             patch("backend.agent_runtime.context.get_kb_graph_metadata", return_value=None):
+            result = _build_kb_listing("test-agent")
+        text = "\n".join(result)
+
+        listed = re.findall(r"^- doc\d+\.md ", text, flags=re.MULTILINE)
+        assert len(listed) == 4
+        assert "more knowledge file" not in text
+
+    def test_index_branch_caps_graph_metadata(self, tmp_path):
+        import re
+        names = [f"doc{i:02d}.md" for i in range(8)]
+        files = {n: f'---\ndescription: D{n}\n---\ncontent' for n in names}
+        files["_kb_index.md"] = '---\ndescription: Index\ntags: [meta, index]\n---\n\n# KB Index\n'
+        kb_dir = _make_kb_dir(tmp_path, files)
+        self._set_mtimes_desc(kb_dir, names)
+
+        from backend.agent_runtime.context import _build_kb_listing
+        with patch("backend.agent_runtime.context._AGENTS_DIR", str(tmp_path)), \
+             patch("backend.agent_runtime.context.get_kb_graph_metadata", return_value=None):
+            result = _build_kb_listing("test-agent")
+        text = "\n".join(result)
+
+        # graph_pages is None → "no graph data" per-file lines; capped at 5.
+        listed = re.findall(r"^- doc\d+\.md: ", text, flags=re.MULTILINE)
+        assert len(listed) == 5
+        assert "…and 3 more" in text
+        assert "recall(query=" in text
+
+    def test_notes_md_excluded_from_listing(self, tmp_path):
+        kb_dir = _make_kb_dir(tmp_path, {
+            "notes.md": '---\ndescription: Notes\n---\ncontent',
+            "guide.md": '---\ndescription: Guide\n---\ncontent',
+        })
+        from backend.agent_runtime.context import _build_kb_listing
+        with patch("backend.agent_runtime.context._AGENTS_DIR", str(tmp_path)), \
+             patch("backend.agent_runtime.context.get_kb_graph_metadata", return_value=None):
+            result = _build_kb_listing("test-agent")
+        text = "\n".join(result)
+
+        # notes.md has its own dedicated section, so it must NOT appear as a
+        # per-file listing entry; guide.md should.
+        assert "- notes.md (" not in text
+        assert "- guide.md (" in text
 
 
 # ─── Agent coaching tests ───────────────────────────────────────────────────

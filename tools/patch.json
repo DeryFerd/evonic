@@ -18,11 +18,14 @@
           "view": "diff"
         }
       },
-      "required": ["file_path", "patch"]
+      "required": [
+        "file_path",
+        "patch"
+      ]
     }
   },
-  "mock_response": "var result;\nvar args = ARGS;\nvar patch = args.patch || '';\nvar filePath = args.file_path || 'unknown';\n\n// Count hunks applied\nvar hunkCount = (patch.match(/^@@/gm) || []).length;\n\nif (!patch) {\n  result = { error: \"Missing required argument: 'patch'\" };\n} else if (hunkCount === 0) {\n  result = { error: 'No valid hunks found in patch. Make sure it contains @@ hunk headers.' };\n} else {\n  result = {\n    result: 'success',\n    file_path: filePath,\n    hunks_applied: hunkCount\n  };\n}\n\nconsole.log(JSON.stringify(result));",
-  "mock_response_type": "javascript",
+  "mock_response": "patch_text = args.get('patch', '')\nfile_path = args.get('file_path', 'unknown')\nif not patch_text:\n    result = {'error': \"Missing required argument: 'patch'\"}\nelse:\n    hunk_count = patch_text.count('@@') // 2\n    if hunk_count == 0:\n        result = {'error': 'No valid hunks found in patch. Make sure it contains @@ hunk headers.'}\n    else:\n        result = {'result': 'success', 'file_path': file_path, 'hunks_applied': hunk_count}",
+  "mock_response_type": "python",
   "system_prompt": "## patch — Usage Rules\n\n**ALWAYS read the file immediately before constructing a patch.** Never rely on line numbers or content from memory or a previous read — each patch you apply shifts line numbers in the file.\n\n### Workflow\n1. `read_file` the target file\n2. Construct the patch from the *current* file content\n3. Apply with `patch`\n4. If you need to patch the same file again, go back to step 1\n\n",
   "created_at": "2026-04-12T00:00:00.000000",
   "updated_at": "2026-04-17T00:00:00.000000"

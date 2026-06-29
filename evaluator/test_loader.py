@@ -183,7 +183,7 @@ class ToolDefinition:
     description: str = ""
     function: Dict[str, Any] = None  # OpenAI function schema
     mock_response: Any = None  # JSON object or JS code string
-    mock_response_type: str = "json"  # 'json' or 'javascript'
+    mock_response_type: str = "json"  # 'json', 'javascript', or 'python'
     no_mock: bool = False  # If True, use real backend instead of mock (fail if no backend)
     path: str = ""
     created_at: str = ""

@@ -15,7 +15,10 @@
         },
         "action": {
           "type": "string",
-          "enum": ["run", "destroy"],
+          "enum": [
+            "run",
+            "destroy"
+          ],
           "description": "Action to perform. 'run' (default) executes the script. 'destroy' tears down the container for this session and frees resources (also destroys the shared runpy container)."
         },
         "timeout": {
@@ -30,11 +33,13 @@
           }
         }
       },
-      "required": ["script"]
+      "required": [
+        "script"
+      ]
     }
   },
-  "mock_response": "var args = ARGS;\nvar script = args.script || '';\nvar action = args.action || 'run';\nif (action === 'destroy') {\n  console.log(JSON.stringify({ result: 'container_destroyed', session_id: 'mock-session' }));\n} else if (!script) {\n  console.log(JSON.stringify({ error: \"Missing required argument: 'script'\" }));\n} else {\n  console.log(JSON.stringify({ stdout: '', stderr: '', exit_code: 0, execution_time: 0.05 }));\n}",
-  "mock_response_type": "javascript",
+  "mock_response": "script = args.get('script', '')\naction = args.get('action', 'run')\nif action == 'destroy':\n    result = {'result': 'container_destroyed', 'session_id': 'mock-session'}\nelif not script:\n    result = {'error': \"Missing required argument: 'script'\"}\nelse:\n    result = {'stdout': '', 'stderr': '', 'exit_code': 0, 'execution_time': 0.05}",
+  "mock_response_type": "python",
   "created_at": "2026-04-13T00:00:00.000000",
   "updated_at": "2026-04-13T00:00:00.000000"
 }

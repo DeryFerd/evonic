@@ -945,12 +945,18 @@ class EvaluationEngine:
                 if node.func.id in ('exec', 'eval', 'compile', '__import__'):
                     return {"error": f"Python mock: {node.func.id}() is not allowed"}
 
+        import datetime as _dt
+        # Pre-warm _strptime lazy import so datetime.strptime works under {'__builtins__': {}}
+        _dt.datetime.strptime('2000-01-01', '%Y-%m-%d')
         namespace = {
             'args': args,
             'math': math,
             'json': json,
             're': __import__('re'),
             'result': None,
+            # Date/time types for mock calculations (e.g., check_price)
+            'datetime': _dt.datetime,
+            'timedelta': _dt.timedelta,
             # Safe builtins that mock code commonly needs
             'sum': sum, 'len': len, 'int': int, 'str': str,
             'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
@@ -961,7 +967,7 @@ class EvaluationEngine:
             'isinstance': isinstance, 'True': True, 'False': False, 'None': None,
         }
         try:
-            exec(py_code, {'__builtins__': {}}, namespace)
+            exec(py_code, {'__builtins__': {'__import__': __import__}}, namespace)
             result = namespace.get('result')
             if result is None:
                 return {"error": "mock did not set result"}

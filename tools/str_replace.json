@@ -26,11 +26,15 @@
           "default": 1
         }
       },
-      "required": ["file_path", "old_str", "new_str"]
+      "required": [
+        "file_path",
+        "old_str",
+        "new_str"
+      ]
     }
   },
-  "mock_response": "var result;\nvar args = ARGS;\nvar filePath = args.file_path || 'unknown';\nvar oldStr = args.old_str || '';\nvar newStr = args.new_str;\nvar count = args.count || 1;\n\nif (!oldStr) {\n  result = { error: \"'old_str' must not be empty\" };\n} else if (newStr === undefined || newStr === null) {\n  result = { error: \"Missing required argument: 'new_str'\" };\n} else {\n  result = { result: 'success', replacements: count };\n}\n\nconsole.log(JSON.stringify(result));",
-  "mock_response_type": "javascript",
+  "mock_response": "old_str = args.get('old_str', '')\nnew_str = args.get('new_str')\ncount_val = args.get('count', 1)\nif not old_str:\n    result = {'error': \"'old_str' must not be empty\"}\nelif new_str is None:\n    result = {'error': \"Missing required argument: 'new_str'\"}\nelse:\n    result = {'result': 'success', 'replacements': count_val}",
+  "mock_response_type": "python",
   "system_prompt": "## str_replace — Usage Rules\n\n**Prefer str_replace over patch for simple edits.** It is more reliable because it does not depend on line numbers.\n\n### When to use str_replace vs patch\n- `str_replace`: replacing a function body, changing a value, fixing a line — anything where you can identify the text uniquely\n- `patch`: inserting a new block of code with no unique surrounding text, or making many changes across a file in one shot\n\n### Workflow\n1. `read_file` the target file to get the current content\n2. Copy the exact text you want to replace into `old_str` (including 1-2 lines of context)\n3. Write the replacement in `new_str`\n4. If the error says 'not found', re-read the file — the content may have changed\n5. If the error says 'found N times', make `old_str` more specific\n\n### Common mistakes to avoid\n- Do **not** guess `old_str` from memory — always copy it from the file\n- Do **not** use partial matches; include enough context to be unambiguous",
   "created_at": "2026-04-20T00:00:00.000000",
   "updated_at": "2026-04-20T00:00:00.000000"

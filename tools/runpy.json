@@ -39,6 +39,6 @@
       ]
     }
   },
-  "mock_response": "var args = ARGS;\nvar code = args.code || '';\nvar action = args.action || 'run';\nif (action === 'destroy') {\n  console.log(JSON.stringify({ result: 'container_destroyed', session_id: 'mock-session' }));\n} else if (!code) {\n  console.log(JSON.stringify({ error: \"Missing required argument: 'code'\" }));\n} else {\n  // Simulate a simple execution result\n  console.log(JSON.stringify({ stdout: '42\\n', stderr: '', exit_code: 0, execution_time: 0.05 }));\n}",
-  "mock_response_type": "javascript"
+  "mock_response": "code = args.get('code', '')\naction = args.get('action', 'run')\nif action == 'destroy':\n    result = {'result': 'container_destroyed', 'session_id': 'mock-session'}\nelif not code:\n    result = {'error': \"Missing required argument: 'code'\"}\nelse:\n    result = {'stdout': '42\\n', 'stderr': '', 'exit_code': 0, 'execution_time': 0.05}",
+  "mock_response_type": "python"
 }

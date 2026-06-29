@@ -54,15 +54,22 @@ def _format_llm_error(error_type: str, context: Optional[Dict[str, Any]] = None)
 
 
 def _split_trailing_think_close(text: str) -> Tuple[str, Optional[str]]:
-    """Split text on </think> marker — returns (actual_thinking, trailing_final_response).
+    """Split text on </think> or </thinking> marker — returns (actual_thinking, trailing_final_response).
 
     Some backends accidentally include </think> and the final response inside
     the reasoning_content field. This extracts the trailing response.
-    Returns (original_text, None) if no </think> found or nothing follows it.
+    Returns (original_text, None) if no close tag found or nothing follows it.
     """
-    if not text or "</think>" not in text:
+    if not text:
         return text, None
-    parts = text.split("</think>", 1)
+    close_tag = None
+    if "</thinking>" in text:
+        close_tag = "</thinking>"
+    elif "</think>" in text:
+        close_tag = "</think>"
+    else:
+        return text, None
+    parts = text.split(close_tag, 1)
     actual = parts[0].strip()
     trailing = parts[1].strip() if len(parts) > 1 else ""
     return actual or text, trailing or None
@@ -73,7 +80,7 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     Strip thinking tags from content with auto-format detection.
 
     Supports:
-    - Standard: <think>...</think>
+    - Standard: <think>...</think> or <thinking>...</thinking>
     - Gemma 4: <|channel>thought...<channel|>
 
     Returns:
@@ -85,7 +92,7 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     if is_gemma4_format(content):
         return strip_gemma4_thinking(content)
 
-    thinking_pattern = r"<think>(.*?)</think>"
+    thinking_pattern = r"<(?:think|thinking)>(.*?)</(?:think|thinking)>"
     thinking_matches = re.findall(thinking_pattern, content, re.DOTALL)
     cleaned = re.sub(thinking_pattern, "", content, flags=re.DOTALL).strip()
     thinking_content = "\n".join(thinking_matches) if thinking_matches else None
@@ -96,21 +103,22 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     _fix_bold = lambda s: re.sub(r'(^|\s)\*\* ', r'\1**', s) if s else s
     cleaned = _fix_bold(cleaned)
 
-    # Edge case: model put the final response inside <think>...</think>, leaving cleaned empty.
-    # Check if thinking_content itself has an embedded </think> that signals end-of-thinking.
+    # Edge case: model put the final response inside <think>/<thinking> tags, leaving cleaned empty.
+    # Check if thinking_content itself has an embedded </think>/</thinking> that signals end-of-thinking.
     if not cleaned and thinking_content:
         actual_thinking, embedded_final = _split_trailing_think_close(thinking_content)
         if embedded_final:
             return _fix_bold(embedded_final), actual_thinking
 
-    # Fallback: handle missing opening <think> tag (common with vLLM)
-    if not thinking_content and "</think>" in content:
-        parts = content.split("</think>", 1)
+    # Fallback: handle missing opening <think>/<thinking> tag (common with vLLM)
+    if not thinking_content and ("</think>" in content or "</thinking>" in content):
+        close_tag = "</thinking>" if "</thinking>" in content else "</think>"
+        parts = content.split(close_tag, 1)
         thinking_text = parts[0].strip()
         cleaned_text = parts[1].strip() if len(parts) > 1 else ""
         if thinking_text:
             return _fix_bold(cleaned_text) or "", thinking_text
-        return _fix_bold(cleaned_text) or content.replace("</think>", "").strip(), None
+        return _fix_bold(cleaned_text) or content.replace(close_tag, "").strip(), None
 
     return cleaned, thinking_content
 
@@ -1023,7 +1031,7 @@ class LLMClient:
 
         reasoning_text = (reasoning_content or "").strip()
         embedded_final = None
-        if reasoning_text and "</think>" in reasoning_text:
+        if reasoning_text and ("</think>" in reasoning_text or "</thinking>" in reasoning_text):
             reasoning_text, embedded_final = _split_trailing_think_close(reasoning_text)
         if reasoning_text:
             cleaned = strip_thinking_tags(content)[0] if content else ""
@@ -1031,7 +1039,7 @@ class LLMClient:
                 cleaned = embedded_final
             # Check for Qwen-style XML tool calls that may appear in
             # reasoning_content instead of content (common with Qwen-based models).
-            # Two forms: (a) trailing after </think> in embedded_final,
+            # Two forms: (a) trailing after </think> or </thinking> in embedded_final,
             # (b) directly in reasoning_text when content is empty.
             xml_source = None
             if embedded_final and "<tool_call>" in embedded_final:

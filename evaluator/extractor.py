@@ -207,8 +207,8 @@ class AnswerExtractor:
         if is_gemma4_format(content):
             return strip_gemma4_thinking(content)
         
-        # Standard format: <think>...</think>
-        pattern = r'<think>(.*?)</think>'
+        # Standard format: <think>...</think> or <thinking>...</thinking>
+        pattern = r'<(?:think|thinking)>(.*?)</(?:think|thinking)>'
         matches = re.findall(pattern, content, re.DOTALL)
         cleaned = re.sub(pattern, '', content, flags=re.DOTALL).strip()
         thinking = '\n'.join(matches) if matches else None

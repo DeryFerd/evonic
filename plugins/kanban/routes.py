@@ -247,7 +247,7 @@ def create_blueprint():
         # Strip thinking/reasoning tags if present
         if '<think' in reply or '<reasoning' in reply:
             import re
-            reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL)
+            reply = re.sub(r'<(?:think|thinking)>.*?</(?:think|thinking)>', '', reply, flags=re.DOTALL)
             reply = re.sub(r'<reasoning>.*?</reasoning>', '', reply, flags=re.DOTALL)
             reply = reply.strip()
 

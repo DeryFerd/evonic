@@ -96,6 +96,8 @@ ARTIFACT_TOOLS = frozenset({
     'copy_status',
 })
 
+VISION_TOOLS = frozenset({'describe_image'})
+
 
 def _validate_user_id(user_id: str) -> str:
     """Validate and normalize a user_id parameter.
@@ -288,6 +290,11 @@ def api_create_agent():
         if artifacts_enabled is None or artifacts_enabled:
             for tool_id in ARTIFACT_TOOLS:
                 db.add_agent_tool(agent_id, tool_id)
+        # Add vision tools for agents with vision enabled
+        vision_enabled = data.get('vision_enabled')
+        if vision_enabled is None or vision_enabled:
+            for tool_id in VISION_TOOLS:
+                db.add_agent_tool(agent_id, tool_id)
         # Create notes.md template if it does not already exist
         _notes_md = os.path.join(_kb_dir(agent_id), 'notes.md')
         if not os.path.isfile(_notes_md):
@@ -355,6 +362,17 @@ def api_update_agent(agent_id):
                     db.add_agent_tool(agent_id, tool_id)
             else:
                 for tool_id in ARTIFACT_TOOLS:
+                    db.remove_agent_tool(agent_id, tool_id)
+    # Handle vision_enabled toggle: manage vision tools
+    if 'vision_enabled' in data:
+        old_vision = bool(existing.get('vision_enabled', 1))
+        new_vision = bool(data['vision_enabled'])
+        if new_vision != old_vision:
+            if new_vision:
+                for tool_id in VISION_TOOLS:
+                    db.add_agent_tool(agent_id, tool_id)
+            else:
+                for tool_id in VISION_TOOLS:
                     db.remove_agent_tool(agent_id, tool_id)
     db.update_agent(agent_id, data)
     agent = db.get_agent(agent_id)
@@ -456,13 +474,19 @@ def api_set_agent_tools(agent_id):
     if agent:
         artifacts_enabled = agent.get('artifacts_enabled', True)
         if artifacts_enabled:
-            # Ensure all artifact tools are present — silently re-add if omitted
             for tool_id in ARTIFACT_TOOLS:
                 if tool_id not in tool_ids:
                     tool_ids.append(tool_id)
         else:
-            # Ensure no artifact tools are present — silently strip if added
             tool_ids = [tid for tid in tool_ids if tid not in ARTIFACT_TOOLS]
+        # Enforce vision_enabled lock: vision tools managed by vision setting
+        vision_enabled = agent.get('vision_enabled', 1)
+        if vision_enabled:
+            for tool_id in VISION_TOOLS:
+                if tool_id not in tool_ids:
+                    tool_ids.append(tool_id)
+        else:
+            tool_ids = [tid for tid in tool_ids if tid not in VISION_TOOLS]
     db.set_agent_tools(agent_id, tool_ids)
     return jsonify({'success': True, 'tools': tool_ids})
 

@@ -1487,6 +1487,8 @@ const BUILTIN_TOOLS_ENABLED = {{ 'true' if agent.builtin_tools_enabled else 'fal
 // Tools managed exclusively by the Artifacts (Saved Files) toggle in agent settings.
 // They are read-only in the Tools tab — cannot be toggled manually.
 const ARTIFACT_TOOL_IDS = ['save_artifact', 'list_artifacts', 'read_attachment', 'cleanup_attachments', 'portal_copy', 'copy_status'];
+const VISION_ENABLED = {{ 'true' if agent.vision_enabled else 'false' }};
+const VISION_TOOL_IDS = ['describe_image'];
 let currentEditFile = null;
 let agentTools = [];
 let chatLoaded = false;
@@ -1976,6 +1978,7 @@ async function saveGeneral() {
         return;
     }
     showToast("Settings saved successfully!", "success");
+    loadTools();
     } finally {
         if (!workspaceChanged) setSaveLoading(btnId, false);
     }
@@ -3099,10 +3102,13 @@ function renderToolsList() {
 
     const sortByName = (a, b) => (a.name || a.id).localeCompare(b.name || b.id);
     const isArtifactTool = (t) => ARTIFACT_TOOL_IDS.includes(t.id);
+    const isVisionTool = (t) => VISION_TOOL_IDS.includes(t.id);
+    const isLockedTool = (t) => isArtifactTool(t) || isVisionTool(t);
     const builtins  = BUILTIN_TOOLS_ENABLED ? allToolsDefs.filter(t => t._builtin).sort(sortByName) : [];
-    const assigned  = allToolsDefs.filter(t => !t._builtin && !isArtifactTool(t) && isToolAssigned(t.id)).sort(sortByName);
-    const available = allToolsDefs.filter(t => !t._builtin && !isArtifactTool(t) && !isToolAssigned(t.id)).sort(sortByName);
+    const assigned  = allToolsDefs.filter(t => !t._builtin && !isLockedTool(t) && isToolAssigned(t.id)).sort(sortByName);
+    const available = allToolsDefs.filter(t => !t._builtin && !isLockedTool(t) && !isToolAssigned(t.id)).sort(sortByName);
     const artifactTools = allToolsDefs.filter(t => isArtifactTool(t)).sort(sortByName);
+    const visionTools = allToolsDefs.filter(t => isVisionTool(t)).sort(sortByName);
 
     let html = '';
 
@@ -3215,6 +3221,41 @@ function renderToolsList() {
         </div>`;
         }).join('');
     }
+
+    // Vision tools — locked, managed by the Vision (Image Recognition) toggle in agent settings
+    if (visionTools.length > 0) {
+        const lockLabel = VISION_ENABLED ? 'Vision is ON — managed by Settings' : 'Vision is OFF — managed by Settings';
+        html += visionTools.map(t => {
+            const safeId = escapeHtml(t.id);
+            const isChecked = VISION_ENABLED;
+            return `
+        <div class="tool-row flex items-center justify-between p-3 bg-gray-50 border border-gray-200 rounded-md cursor-pointer dark:bg-gray-800 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700"
+             data-assigned="false"
+             data-builtin="false"
+             data-locked="true"
+             data-tool-id="${safeId}"
+             onclick="showToolDetail('${safeId}')">
+            <div class="min-w-0 flex-1 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 text-gray-400 flex-shrink-0">
+                        <path fill-rule="evenodd" d="M10 1a4.5 4.5 0 00-4.5 4.5V9H5a2 2 0 00-2 2v6a2 2 0 002 2h10a2 2 0 002-2v-6a2 2 0 00-2-2h-.5V5.5A4.5 4.5 0 0010 1zm3 8V5.5a3 3 0 10-6 0V9h6z" clip-rule="evenodd"/>
+                    </svg>
+                    <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(t.name || t.id)}</span>
+                    ${t._skill_id ? `<span class="text-xs bg-indigo-50 text-indigo-500 px-1.5 py-0.5 rounded">${escapeHtml(t._skill_id)}</span>` : ''}
+                </div>
+                <p class="text-xs text-gray-400 font-mono mt-0.5">${safeId}</p>
+                <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(t.description || '')}</p>
+            </div>
+            <label class="relative flex-shrink-0 ml-3 cursor-not-allowed"
+                   onclick="event.stopPropagation()"
+                   title="${lockLabel}">
+                <input type="checkbox" ${isChecked ? 'checked' : ''} disabled
+                       class="sr-only peer">
+                <span class="dyn-toggle opacity-60"></span>
+            </label>
+        </div>`;
+        }).join('');
+    }
     list.innerHTML = html;
     filterToolsList();
     updateToolsBadge(assigned.length);
@@ -3288,6 +3329,11 @@ async function toggleTool(toolId) {
     // Artifact tools are managed exclusively by the Artifacts toggle in agent settings
     if (ARTIFACT_TOOL_IDS.includes(toolId)) {
         showToast('Artifact tools are managed by the Artifacts toggle in agent settings (Advanced tab).', 'info');
+        return;
+    }
+    // Vision tools are managed exclusively by the Vision toggle in agent settings
+    if (VISION_TOOL_IDS.includes(toolId)) {
+        showToast('Vision tools are managed by the Vision (Image Recognition) toggle in Settings tab.', 'info');
         return;
     }
     const tool = allToolsDefs.find(t => t.id === toolId);

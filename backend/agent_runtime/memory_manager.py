@@ -1077,6 +1077,128 @@ def _split_title_aliases(title: str):
     return clean, aliases
 
 
+def _apply_kb_ops(agent_id: str, session_id: str, docs: list, folder: str) -> str:
+    """Apply write-ops from the KB organizer (create/update/rename/edit/dedup) and
+    return a human-readable summary string. Shared by the automatic ``_author_docs``
+    pipeline and the manual ``/kb-organize`` slash command.
+
+    Emits ``doc_updated`` events and marks the writer dirty so the evomem sync picks
+    up changes.
+    """
+    if not isinstance(docs, list) or not docs:
+        return "KB organizer found nothing new to file."
+
+    _, name_to_slug = _kb_doc_listing(agent_id)
+
+    modified, created, updated, renamed, edited, deduped = [], 0, 0, 0, 0, 0
+    try:
+        for d in docs[:12]:
+            if not isinstance(d, dict):
+                continue
+            action = (d.get('action') or '').strip().lower()
+            title = (d.get('title') or '').strip()
+            body = (d.get('body') or '').strip()
+            slug_hint = (d.get('slug') or '').strip()
+
+            # Dedupe: clean a doc whose content got duplicated (self-concatenation).
+            if action in ('dedupe', 'dedup'):
+                if slug_hint:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.dedupe_doc(agent_id, slug_hint):
+                            modified.append(slug_hint)
+                            deduped += 1
+                continue
+
+            # Edit: surgical exact-unique-match replacement (fix a wrong [[link]]).
+            if action in ('edit', 'patch'):
+                old_str = d.get('old_str') or d.get('old') or ''
+                new_str = d.get('new_str') or d.get('new') or ''
+                if old_str.strip() == new_str.strip():
+                    continue
+                if slug_hint and old_str:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
+                            modified.append(slug_hint)
+                            edited += 1
+                continue
+
+            # Rename: fix a typo'd / alias-polluted doc name.
+            if action == 'rename':
+                new_title, _ = _split_title_aliases((d.get('new_title') or '').strip())
+                if not slug_hint or not new_title:
+                    continue
+                with _kb_page_lock(agent_id, slug_hint):
+                    new_rel = evomem_writer.rename_doc(agent_id, slug_hint, new_title)
+                    if new_rel:
+                        renamed += 1
+                        modified.append(new_rel)
+                        if body:
+                            cur = (evomem_writer.read_doc(agent_id, new_rel) or {}).get('body') or ''
+                            if body not in cur:
+                                evomem_writer.append_to_doc(agent_id, new_rel, body)
+                continue
+
+            if not title or not body:
+                continue
+            title, paren_aliases = _split_title_aliases(title)
+            aliases = [a for a in (d.get('aliases') or []) if isinstance(a, str) and a.strip()]
+            aliases = list(dict.fromkeys(aliases + paren_aliases))
+            doc_type = (d.get('type') or 'note').strip()
+            description = (d.get('description') or '').strip()
+            tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
+            thumbnail = (d.get('thumbnail') or '').strip() or None
+
+            base_slug = evomem_writer.slugify(title)
+            lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
+            with _kb_page_lock(agent_id, lock_key):
+                target = _resolve_doc_slug2(agent_id, slug_hint, title, folder, name_to_slug)
+                if target:
+                    existing_doc = evomem_writer.read_doc(agent_id, target)
+                    existing_body = (existing_doc or {}).get('body') or ''
+                    delta = None if (body and body in existing_body) else body
+                    if (delta or thumbnail) and evomem_writer.append_to_doc(
+                            agent_id, target, delta or '', thumbnail=thumbnail):
+                        modified.append(target)
+                        updated += 1
+                else:
+                    rel = evomem_writer.upsert_doc(
+                        agent_id, title=title, body=body, doc_type=doc_type,
+                        description=description, folder=folder, tags=tags,
+                        aliases=aliases, thumbnail=thumbnail)
+                    if rel:
+                        modified.append(rel)
+                        created += 1
+                        if folder:
+                            evomem_writer.add_to_collection_index(agent_id, folder, title)
+
+        if modified:
+            evomem_writer.mark_dirty(agent_id)
+            _emit_doc_updated(agent_id, modified)
+        logger.info("[MemoryManager] _apply_kb_ops[%s]: %d created, %d updated, %d renamed, "
+                    "%d edited, %d deduped (folder=%s)", agent_id, created, updated, renamed,
+                    edited, deduped, folder or 'root')
+
+        parts = []
+        if created:
+            parts.append(f"{created} created")
+        if updated:
+            parts.append(f"{updated} updated")
+        if renamed:
+            parts.append(f"{renamed} renamed")
+        if edited:
+            parts.append(f"{edited} edited")
+        if deduped:
+            parts.append(f"{deduped} deduped")
+
+        if parts:
+            return f"KB organized: {', '.join(parts)}."
+        else:
+            return "KB organizer found nothing new to file."
+    except Exception:
+        logger.debug("_apply_kb_ops exception (non-fatal) for %s", agent_id)
+        return "KB organizer failed to produce results. Try increasing EVOMEM_KB_ORGANIZER_TIMEOUT."
+
+
 def _author_docs(agent: dict, session_id: str, source_text: str,
                  llm_lock: threading.Lock, recent_messages=None) -> None:
     """Organize a conversation into the agent's knowledge vault.
@@ -1194,104 +1316,7 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
             if not isinstance(data, dict):
                 return
             docs = data.get('docs')
-        if not isinstance(docs, list) or not docs:
-            return
-
-        modified, created, updated, renamed, edited, deduped = [], 0, 0, 0, 0, 0
-        for d in docs[:12]:
-            if not isinstance(d, dict):
-                continue
-            action = (d.get('action') or '').strip().lower()
-            title = (d.get('title') or '').strip()
-            body = (d.get('body') or '').strip()
-            slug_hint = (d.get('slug') or '').strip()
-
-            # Dedupe: clean a doc whose content got duplicated (self-concatenation).
-            if action in ('dedupe', 'dedup'):
-                if slug_hint:
-                    with _kb_page_lock(agent_id, slug_hint):
-                        if evomem_writer.dedupe_doc(agent_id, slug_hint):
-                            modified.append(slug_hint)
-                            deduped += 1
-                continue
-
-            # Edit: surgical exact-unique-match replacement (fix a wrong [[link]]).
-            if action in ('edit', 'patch'):
-                old_str = d.get('old_str') or d.get('old') or ''
-                new_str = d.get('new_str') or d.get('new') or ''
-                # Skip no-op edits where the replacement is identical to the target
-                # (the organizer often emits these) — nothing to change.
-                if old_str.strip() == new_str.strip():
-                    continue
-                if slug_hint and old_str:
-                    with _kb_page_lock(agent_id, slug_hint):
-                        if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
-                            modified.append(slug_hint)
-                            edited += 1
-                continue
-
-            # Rename: fix a typo'd / alias-polluted doc name.
-            if action == 'rename':
-                new_title, _ = _split_title_aliases((d.get('new_title') or '').strip())
-                if not slug_hint or not new_title:
-                    continue
-                with _kb_page_lock(agent_id, slug_hint):
-                    new_rel = evomem_writer.rename_doc(agent_id, slug_hint, new_title)
-                    if new_rel:
-                        renamed += 1
-                        modified.append(new_rel)
-                        if body:  # also fold in any new info from the same op
-                            cur = (evomem_writer.read_doc(agent_id, new_rel) or {}).get('body') or ''
-                            if body not in cur:
-                                evomem_writer.append_to_doc(agent_id, new_rel, body)
-                continue
-
-            if not title or not body:
-                continue
-            # Keep the slug = PURE name: strip a trailing parenthetical nickname into
-            # aliases, and merge any aliases the model supplied.
-            title, paren_aliases = _split_title_aliases(title)
-            aliases = [a for a in (d.get('aliases') or []) if isinstance(a, str) and a.strip()]
-            aliases = list(dict.fromkeys(aliases + paren_aliases))
-            doc_type = (d.get('type') or 'note').strip()
-            description = (d.get('description') or '').strip()
-            tags = [t for t in (d.get('tags') or []) if isinstance(t, str) and t.strip()]
-            thumbnail = (d.get('thumbnail') or '').strip() or None
-
-            base_slug = evomem_writer.slugify(title)
-            lock_key = (f"{folder}/{base_slug}" if folder else base_slug)
-            with _kb_page_lock(agent_id, lock_key):
-                # Collision guard: resolve by slug hint -> title/alias -> slug. A
-                # create whose title/alias already exists becomes an update here, so
-                # a duplicate is never minted even if the resolver mislabels the op.
-                target = _resolve_doc_slug2(agent_id, slug_hint, title, folder, name_to_slug)
-                if target:
-                    # The resolver already returns delta-only prose; guard against
-                    # re-appending content the doc already contains (no LLM call).
-                    existing_doc = evomem_writer.read_doc(agent_id, target)
-                    existing_body = (existing_doc or {}).get('body') or ''
-                    delta = None if (body and body in existing_body) else body
-                    if (delta or thumbnail) and evomem_writer.append_to_doc(
-                            agent_id, target, delta or '', thumbnail=thumbnail):
-                        modified.append(target)
-                        updated += 1
-                else:
-                    rel = evomem_writer.upsert_doc(
-                        agent_id, title=title, body=body, doc_type=doc_type,
-                        description=description, folder=folder, tags=tags,
-                        aliases=aliases, thumbnail=thumbnail)
-                    if rel:
-                        modified.append(rel)
-                        created += 1
-                        if folder:
-                            evomem_writer.add_to_collection_index(agent_id, folder, title)
-
-        if modified:
-            evomem_writer.mark_dirty(agent_id)
-            _emit_doc_updated(agent_id, modified)
-        logger.info("[MemoryManager] author_docs[%s]: %d created, %d updated, %d renamed, "
-                    "%d edited, %d deduped (folder=%s)", agent_id, created, updated, renamed,
-                    edited, deduped, folder or 'root')
+        _apply_kb_ops(agent_id, session_id, docs, folder)
     except Exception:
         logger.debug("author_docs exception (non-fatal) for %s", agent_id)
 
@@ -1303,6 +1328,48 @@ def process_knowledge(agent: dict, session_id: str, summary: str,
     ``recent_messages`` is the summarizer's ``tail_messages`` (latest turns) passed
     to the organizer as context. Best-effort; non-fatal on any error."""
     _author_docs(agent, session_id, summary, llm_lock, recent_messages=recent_messages)
+
+
+def manual_kb_organize(agent_id: str, session_id: str) -> str:
+    """Manually trigger the KB Organizer sub-agent for the current agent.
+
+    Unlike the automatic ``_author_docs`` pipeline, this bypasses all cooldowns,
+    delta checks, debounce guards, and the ``llm_lock`` — the caller (slash
+    command handler) is outside the agent's LLM loop.
+
+    Returns a human-readable status string suitable for display in the chat.
+    """
+    # Validate agent exists
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return "Error: Agent not found."
+
+    # Validate evomem engine
+    if resolve_memory_engine(agent) != 'evomem':
+        return "KB organizer requires evomem memory engine."
+
+    # Validate DirExplorer skill infrastructure
+    if not _kb_organizer_infra_ok():
+        return "KB organizer infrastructure (DirExplorer skill) is not available."
+
+    # Get conversation summary
+    rec = db.get_summary(session_id, agent_id=agent_id)
+    if not rec or not rec.get('summary'):
+        return "Nothing to organize yet — no conversation summary available."
+
+    summary = rec['summary']
+
+    # Get active collection folder
+    folder = _get_active_collection(agent_id, session_id)
+
+    # Spawn organizer (bypasses cooldowns, delta checks, debounce — manual trigger)
+    docs = _spawn_kb_organizer(agent, summary, recent_text="", source_label="MANUAL TRIGGER")
+
+    if docs is None:
+        return "KB organizer failed to produce results. Try increasing EVOMEM_KB_ORGANIZER_TIMEOUT."
+
+    # Apply the write-ops
+    return _apply_kb_ops(agent_id, session_id, docs, folder)
 
 
 def _extract_dimension(content: str, category: str,

@@ -55,6 +55,15 @@ class TestZipValidator(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn('empty', err.lower())
 
+    def test_accepts_zip_with_git_directory(self):
+        path = self._write_zip('git.zip', {
+            'my-skill/skill.json': '{}',
+            'my-skill/.git/config': '[core]',
+            'my-skill/.git/HEAD': 'ref: refs/heads/master',
+        })
+        ok, err = zv.validate_upload_zip(path)
+        self.assertTrue(ok, err)
+
     def test_rejects_non_zip_file(self):
         path = os.path.join(self.tmp, 'not.zip')
         with open(path, 'w') as f:

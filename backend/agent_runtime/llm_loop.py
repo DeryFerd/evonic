@@ -246,6 +246,15 @@ def run_tool_loop(agent: Dict[str, Any],
     # turn_begin for this one. Used for byte-exact LLM-call archiving and the
     # sub-agent single-turn gate. Computed once per turn (one file scan), not per call.
     _turn_index = chatlog.count_entries(frozenset({'turn_end'})) + 1
+    # Sub-agent identity for training-archive metadata (computed once per turn).
+    _is_subagent = bool(agent_context.get('is_subagent'))
+    if _is_subagent:
+        _id_parts = agent_id.rsplit('_', 2)
+        _agent_kind = _id_parts[1] if len(_id_parts) == 3 and _id_parts[2].isdigit() else 'sub'
+        _parent_agent_id = db_agent_id
+    else:
+        _agent_kind = 'main'
+        _parent_agent_id = None
     _loop_ts = int(time.time() * 1000)
     chatlog.append({'type': 'turn_begin', 'session_id': session_id, 'ts': _loop_ts})
     event_stream.emit('turn_begin', {'session_id': session_id, 'ts': _loop_ts})
@@ -1096,6 +1105,10 @@ def run_tool_loop(agent: Dict[str, Any],
                     _fr = _ch[0].get('finish_reason')
                 llm_trace_manager.get(db_agent_id, session_id).append({
                     'ts': int(time.time() * 1000),
+                    'session_id': session_id,
+                    'agent_id': agent_id,
+                    'agent_kind': _agent_kind,
+                    'parent_agent_id': _parent_agent_id,
                     'turn_index': _turn_index,
                     'model': (_req or {}).get('model'),
                     'request': _req,
@@ -1386,17 +1399,15 @@ def run_tool_loop(agent: Dict[str, Any],
             # wait for parent /clear). If the sub-agent runs a 2nd turn its turns may
             # be unrelated, so cancel the tentative turn-1 archive → multi-turn
             # sub-agents leave nothing.
-            if agent_context.get('is_subagent'):
+            if _is_subagent:
                 import config as _config
                 if _config.SESSION_ARCHIVE:
                     try:
                         from models.session_archive import SessionArchiver
                         if _turn_index == 1:
-                            _parts = agent_id.rsplit('_', 2)
-                            _kind = _parts[1] if len(_parts) == 3 and _parts[2].isdigit() else 'sub'
                             SessionArchiver.archive_session(
                                 db_agent_id, session_id,
-                                agent_kind=_kind, parent_agent_id=db_agent_id)
+                                agent_kind=_agent_kind, parent_agent_id=_parent_agent_id)
                         else:
                             SessionArchiver.delete_for_session(session_id)
                     except Exception:

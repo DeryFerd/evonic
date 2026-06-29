@@ -309,17 +309,27 @@ session is archived:
 
 ### 3. Build a training dataset
 
-Aggregate the archive into a JSONL dataset with one sample **per agent turn**, in
-OpenAI chat-messages format (chain-of-thought preserved as `reasoning_content`):
+Aggregate into JSONL with one sample **per agent turn**, in OpenAI chat-messages
+format (chain-of-thought preserved as `reasoning_content`). There are **two sources**,
+written to **separate files** so you can treat them differently:
+
+- **`--source db`** → `dataset_archive.jsonl` — curated, committed sessions only.
+- **`--source traces`** → `dataset_traces.jsonl` — raw `llm_traces/` logs, including
+  sessions not yet `/clear`'d and multi-turn sub-agents not kept in the DB.
+
+A **completeness guard** drops any turn whose final call is still a tool call (an
+in-progress turn from a live session), so only turns that ended with a real answer are
+emitted.
 
 ```bash
-python scripts/build_training_dataset.py                       # → ./dataset.jsonl
-python scripts/build_training_dataset.py --kind explorer,organizer
-python scripts/build_training_dataset.py --no-reasoning --min-calls 2
-python scripts/build_training_dataset.py --db shared/db/session_archive.db --out my_dataset.jsonl
+python scripts/build_training_dataset.py                       # both → two files
+python scripts/build_training_dataset.py --source db           # archive DB only
+python scripts/build_training_dataset.py --source traces       # llm_traces only
+python scripts/build_training_dataset.py --kind explorer,organizer --no-reasoning
 ```
 
-Each line is one turn, ready for SFT:
+Each line is one turn, ready for SFT (apply your model's chat template + loss masking
+downstream as usual):
 
 ```json
 {
@@ -340,8 +350,11 @@ Each line is one turn, ready for SFT:
 
 | Flag | Description |
 |------|-------------|
+| `--source` | `db`, `traces`, or `all` (default `all` → both files) |
 | `--db` | Path to the archive DB (default `shared/db/session_archive.db`) |
-| `--out` | Output JSONL path (default `./dataset.jsonl`) |
+| `--agents-dir` | Agents dir holding `<id>/llm_traces/*.jsonl` (default `agents/`) |
+| `--out-db` | Output JSONL for the archive-DB dataset (default `dataset_archive.jsonl`) |
+| `--out-traces` | Output JSONL for the llm_traces dataset (default `dataset_traces.jsonl`) |
 | `--kind` | Comma-separated `agent_kind` filter (`main,sub,explorer,organizer`); empty = all |
 | `--min-calls` | Skip turns with fewer than N LLM calls |
 | `--no-reasoning` | Strip chain-of-thought (`reasoning_content`) from the output |

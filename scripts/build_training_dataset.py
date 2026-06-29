@@ -1,42 +1,38 @@
 #!/usr/bin/env python3
 """
-build_training_dataset.py — aggregate session_archive.db into a training-ready JSONL.
+build_training_dataset.py — build training-ready JSONL datasets from Evonic's
+archived LLM I/O.
 
-The archive (shared/db/session_archive.db) stores byte-exact LLM I/O captured at
-inference time (one row per LLM API call). This script reconstructs one sample PER
-AGENT TURN in OpenAI chat-messages format, ready for SFT:
+Two independent sources, written to SEPARATE files (no cross-source dedup):
 
-    {
-      "messages": [
-        {"role": "system", "content": "..."},
-        {"role": "user", "content": "..."},
-        {"role": "assistant", "reasoning_content": "CoT...", "content": "...",
-         "tool_calls": [...]},
-        {"role": "tool", "tool_call_id": "...", "content": "..."},
-        ...
-        {"role": "assistant", "reasoning_content": "CoT...", "content": "final"}
-      ],
-      "tools": [ ...function schemas the model could call... ],
-      "meta": {"agent_id", "agent_kind", "parent_agent_id", "session_id",
-               "model", "turn_index", "num_calls", "finish_reason", "usage"}
-    }
+  1. session_archive.db  — curated, committed sessions (main on /clear, single-turn
+                           sub-agents on turn-end). Always complete turns.
+  2. llm_traces/*.jsonl  — raw per-call staging logs under agents/<id>/llm_traces/.
+                           Captures everything inference produced, including sessions
+                           not yet /clear'd and multi-turn sub-agents not in the DB.
 
-Reconstruction (per turn, calls ordered by call_index):
+Both are reconstructed into one sample PER AGENT TURN, in OpenAI chat-messages format
+(chain-of-thought preserved as `reasoning_content`). A completeness guard drops any
+turn whose final call is still a tool_call (an in-progress turn from a live session) —
+so only turns that ended with a real answer are emitted.
+
+Reconstruction (per turn, calls in order):
   - messages = the LAST call's request.messages (the final, complete context the model
     actually saw — includes every prior assistant tool_call, tool result, and any
     system re-injection), then the final assistant response is appended.
   - Per-step CoT is recovered by matching tool_call ids → reasoning_content from each
     call's raw response (robust to mid-turn system re-injection; not order-dependent).
-  - Anthropic-style payloads (system as a top-level field) are accommodated by
-    prepending a system message when messages[0] is not already a system message.
+  - Anthropic-style payloads (system as a top-level field) are accommodated.
 
 Usage:
-    python scripts/build_training_dataset.py
-    python scripts/build_training_dataset.py --db shared/db/session_archive.db \
-        --out dataset.jsonl --kind main,explorer --no-reasoning --min-calls 1
+    python scripts/build_training_dataset.py                      # both → two files
+    python scripts/build_training_dataset.py --source db
+    python scripts/build_training_dataset.py --source traces --out-traces traces.jsonl
+    python scripts/build_training_dataset.py --kind explorer,organizer --no-reasoning
 """
 
 import argparse
+import glob
 import json
 import os
 import sqlite3
@@ -46,14 +42,15 @@ from typing import Any, Dict, List, Optional
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_DB = os.path.join(_REPO_ROOT, "shared", "db", "session_archive.db")
+_DEFAULT_AGENTS = os.path.join(_REPO_ROOT, "agents")
 
 
-def _loads(s: Optional[str]) -> Any:
-    if not s:
-        return None
+def _loads(s: Any) -> Any:
+    if s is None or isinstance(s, (dict, list)):
+        return s
     try:
         return json.loads(s)
-    except (json.JSONDecodeError, ValueError):
+    except (json.JSONDecodeError, ValueError, TypeError):
         return None
 
 
@@ -61,12 +58,10 @@ def _extract_assistant(response: Any) -> Optional[Dict[str, Any]]:
     """Build an OpenAI-style assistant message from a raw provider response."""
     if not isinstance(response, dict):
         return None
-    # OpenAI-compatible
     choices = response.get("choices")
     if choices:
         msg = (choices[0] or {}).get("message", {}) or {}
-        out: Dict[str, Any] = {"role": "assistant"}
-        out["content"] = msg.get("content")
+        out: Dict[str, Any] = {"role": "assistant", "content": msg.get("content")}
         cot = msg.get("reasoning_content") or msg.get("reasoning")
         if cot:
             out["reasoning_content"] = cot
@@ -84,8 +79,7 @@ def _extract_assistant(response: Any) -> Optional[Dict[str, Any]]:
                 text_parts.append(block.get("text", ""))
             elif block.get("type") == "tool_use":
                 tool_calls.append({
-                    "id": block.get("id"),
-                    "type": "function",
+                    "id": block.get("id"), "type": "function",
                     "function": {"name": block.get("name"),
                                  "arguments": json.dumps(block.get("input", {}),
                                                          ensure_ascii=False)},
@@ -98,27 +92,23 @@ def _extract_assistant(response: Any) -> Optional[Dict[str, Any]]:
 
 
 def _tool_call_ids(msg: Dict[str, Any]) -> List[str]:
-    ids = []
-    for tc in (msg.get("tool_calls") or []):
-        if isinstance(tc, dict) and tc.get("id"):
-            ids.append(tc["id"])
-    return ids
+    return [tc["id"] for tc in (msg.get("tool_calls") or [])
+            if isinstance(tc, dict) and tc.get("id")]
 
 
-def _build_turn_sample(calls: List[sqlite3.Row], meta: Dict[str, Any],
+def _build_turn_sample(records: List[Dict[str, Any]], meta: Dict[str, Any],
                        include_reasoning: bool) -> Optional[Dict[str, Any]]:
-    """Reconstruct one OpenAI chat-messages sample from a turn's ordered calls."""
-    parsed = []
-    for c in calls:
-        req = _loads(c["request_json"])
-        resp = _loads(c["response_json"])
-        if req is None:
-            continue
-        parsed.append((c, req, resp))
+    """Reconstruct one OpenAI chat-messages sample from a turn's ordered records.
+
+    Each record: {request, response, turn_index, model, finish_reason, pt, ct}.
+    Returns None if the turn is empty or incomplete (final call still a tool_call).
+    """
+    parsed = [r for r in records if r.get("request")]
     if not parsed:
         return None
 
-    last_c, last_req, last_resp = parsed[-1]
+    last = parsed[-1]
+    last_req = last["request"]
     messages = list(last_req.get("messages") or [])
 
     # Anthropic: system lives outside messages — prepend it if missing.
@@ -127,24 +117,23 @@ def _build_turn_sample(calls: List[sqlite3.Row], meta: Dict[str, Any],
         sys_text = sys_field if isinstance(sys_field, str) else json.dumps(sys_field, ensure_ascii=False)
         messages = [{"role": "system", "content": sys_text}] + messages
 
-    # Append the final assistant response to complete the turn.
-    final_asst = _extract_assistant(last_resp)
+    final_asst = _extract_assistant(last["response"])
     if final_asst is None:
         return None
+    # Completeness guard: a finished turn ends with a real answer, not a pending
+    # tool call. Drops in-progress turns pulled from live (un-cleared) trace files.
+    if final_asst.get("tool_calls"):
+        return None
+
     messages = messages + [final_asst]
 
-    # Recover per-step CoT: tool_call id -> reasoning_content from each call's response.
     if include_reasoning:
         cot_by_id: Dict[str, str] = {}
-        for _c, _req, _resp in parsed:
-            asst = _extract_assistant(_resp)
-            if not asst:
-                continue
-            cot = asst.get("reasoning_content")
-            if not cot:
-                continue
-            for tcid in _tool_call_ids(asst):
-                cot_by_id[tcid] = cot
+        for r in parsed:
+            asst = _extract_assistant(r.get("response"))
+            if asst and asst.get("reasoning_content"):
+                for tcid in _tool_call_ids(asst):
+                    cot_by_id[tcid] = asst["reasoning_content"]
         for m in messages:
             if m.get("role") == "assistant" and not m.get("reasoning_content"):
                 for tcid in _tool_call_ids(m):
@@ -155,104 +144,174 @@ def _build_turn_sample(calls: List[sqlite3.Row], meta: Dict[str, Any],
         for m in messages:
             m.pop("reasoning_content", None)
 
-    tools = last_req.get("tools")
-
-    # usage: sum across the turn's calls
-    pt = sum((c["prompt_tokens"] or 0) for c in calls)
-    ct = sum((c["completion_tokens"] or 0) for c in calls)
-    sample = {
+    pt = sum((r.get("pt") or 0) for r in parsed)
+    ct = sum((r.get("ct") or 0) for r in parsed)
+    return {
         "messages": messages,
-        "tools": tools,
+        "tools": last_req.get("tools"),
         "meta": {
             **meta,
-            "turn_index": last_c["turn_index"],
-            "num_calls": len(calls),
-            "model": last_c["model"],
-            "finish_reason": last_c["finish_reason"],
-            "usage": {"prompt_tokens": pt, "completion_tokens": ct,
-                      "total_tokens": pt + ct},
+            "turn_index": last.get("turn_index"),
+            "num_calls": len(parsed),
+            "model": last.get("model"),
+            "finish_reason": last.get("finish_reason"),
+            "usage": {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": pt + ct},
         },
     }
-    return sample
+
+
+def _emit_turns(records_by_turn: Dict[Any, List[Dict[str, Any]]], turn_order: List[Any],
+                base_meta: Dict[str, Any], out, args, stats: Dict[str, int]) -> None:
+    """Build + write one sample per turn for a single session."""
+    for ti in turn_order:
+        recs = records_by_turn[ti]
+        if len(recs) < args.min_calls:
+            stats["skipped"] += 1
+            continue
+        sample = _build_turn_sample(recs, base_meta, not args.no_reasoning)
+        if sample is None:
+            stats["skipped"] += 1
+            continue
+        out.write(json.dumps(sample, ensure_ascii=False) + "\n")
+        stats["samples"] += 1
+        stats[f"kind:{base_meta.get('agent_kind', 'main')}"] += 1
+
+
+def build_from_db(db_path: str, out_path: str, kinds, args) -> Dict[str, int]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    sessions = conn.execute(
+        "SELECT id, session_id, agent_id, agent_kind, parent_agent_id, external_user_id "
+        "FROM archive_sessions ORDER BY id ASC"
+    ).fetchall()
+    stats: Dict[str, int] = defaultdict(int)
+    with open(out_path, "w", encoding="utf-8") as out:
+        for s in sessions:
+            kind = s["agent_kind"] or "main"
+            if kinds and kind not in kinds:
+                continue
+            rows = conn.execute(
+                "SELECT * FROM archive_llm_calls WHERE archive_id = ? ORDER BY call_index ASC",
+                (s["id"],),
+            ).fetchall()
+            by_turn: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+            order: List[Any] = []
+            for r in rows:
+                ti = r["turn_index"]
+                if ti not in by_turn:
+                    order.append(ti)
+                by_turn[ti].append({
+                    "request": _loads(r["request_json"]), "response": _loads(r["response_json"]),
+                    "turn_index": ti, "model": r["model"], "finish_reason": r["finish_reason"],
+                    "pt": r["prompt_tokens"], "ct": r["completion_tokens"],
+                })
+            base_meta = {
+                "source": "db", "agent_id": s["agent_id"], "agent_kind": kind,
+                "parent_agent_id": s["parent_agent_id"], "session_id": s["session_id"],
+                "external_user_id": s["external_user_id"],
+            }
+            _emit_turns(by_turn, order, base_meta, out, args, stats)
+    conn.close()
+    return stats
+
+
+def build_from_traces(agents_dir: str, out_path: str, kinds, args) -> Dict[str, int]:
+    stats: Dict[str, int] = defaultdict(int)
+    files = sorted(glob.glob(os.path.join(agents_dir, "*", "llm_traces", "*.jsonl")))
+    with open(out_path, "w", encoding="utf-8") as out:
+        for fp in files:
+            # One file = one session. Read all records.
+            recs: List[Dict[str, Any]] = []
+            try:
+                with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            recs.append(json.loads(line))
+                        except (json.JSONDecodeError, ValueError):
+                            continue
+            except OSError:
+                continue
+            if not recs:
+                continue
+            first = recs[0]
+            kind = first.get("agent_kind") or "main"
+            if kinds and kind not in kinds:
+                continue
+            by_turn: Dict[Any, List[Dict[str, Any]]] = defaultdict(list)
+            order: List[Any] = []
+            for r in recs:
+                ti = r.get("turn_index")
+                if ti not in by_turn:
+                    order.append(ti)
+                usage = r.get("usage") or {}
+                by_turn[ti].append({
+                    "request": r.get("request"), "response": r.get("response"),
+                    "turn_index": ti, "model": r.get("model"),
+                    "finish_reason": r.get("finish_reason"),
+                    "pt": usage.get("prompt_tokens"), "ct": usage.get("completion_tokens"),
+                })
+            base_meta = {
+                "source": "trace", "agent_id": first.get("agent_id"), "agent_kind": kind,
+                "parent_agent_id": first.get("parent_agent_id"),
+                "session_id": first.get("session_id"), "external_user_id": None,
+            }
+            _emit_turns(by_turn, order, base_meta, out, args, stats)
+    return stats
+
+
+def _report(label: str, out_path: str, stats: Dict[str, int]) -> None:
+    print(f"[{label}] wrote {stats.get('samples', 0)} samples → {out_path}")
+    kinds = {k.split(":", 1)[1]: v for k, v in stats.items() if k.startswith("kind:")}
+    if kinds:
+        print("  by agent_kind: " + ", ".join(f"{k}={v}" for k, v in sorted(kinds.items())))
+    if stats.get("skipped"):
+        print(f"  skipped {stats['skipped']} turn(s) (incomplete, below --min-calls, or unparseable)")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--source", choices=["db", "traces", "all"], default="all",
+                    help="which source(s) to build from (default: all → two files)")
     ap.add_argument("--db", default=_DEFAULT_DB, help="path to session_archive.db")
-    ap.add_argument("--out", default=os.path.join(_REPO_ROOT, "dataset.jsonl"),
-                    help="output JSONL path")
+    ap.add_argument("--agents-dir", default=_DEFAULT_AGENTS,
+                    help="agents/ dir containing <id>/llm_traces/*.jsonl")
+    ap.add_argument("--out-db", default=os.path.join(_REPO_ROOT, "dataset_archive.jsonl"),
+                    help="output JSONL for the session_archive.db dataset")
+    ap.add_argument("--out-traces", default=os.path.join(_REPO_ROOT, "dataset_traces.jsonl"),
+                    help="output JSONL for the llm_traces dataset")
     ap.add_argument("--kind", default="",
-                    help="comma-separated agent_kind filter (main,sub,explorer,organizer). Empty = all")
+                    help="comma-separated agent_kind filter (main,sub,explorer,organizer)")
     ap.add_argument("--min-calls", type=int, default=1,
                     help="skip turns with fewer than N LLM calls")
     ap.add_argument("--no-reasoning", action="store_true",
                     help="strip reasoning_content (CoT) from assistant messages")
     args = ap.parse_args()
 
-    if not os.path.exists(args.db):
-        print(f"error: archive DB not found: {args.db}", file=sys.stderr)
-        print("       (run agents with EVONIC_SESSION_ARCHIVE=1 first)", file=sys.stderr)
-        return 1
-
     kinds = {k.strip() for k in args.kind.split(",") if k.strip()}
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
+    did_any = False
 
-    sessions = conn.execute(
-        "SELECT id, session_id, agent_id, agent_kind, parent_agent_id, external_user_id "
-        "FROM archive_sessions ORDER BY id ASC"
-    ).fetchall()
+    if args.source in ("db", "all"):
+        if not os.path.exists(args.db):
+            print(f"warning: archive DB not found: {args.db} — skipping db source", file=sys.stderr)
+        else:
+            _report("db", args.out_db, build_from_db(args.db, args.out_db, kinds, args))
+            did_any = True
 
-    n_samples = 0
-    n_turns_skipped = 0
-    stats_by_kind: Dict[str, int] = defaultdict(int)
+    if args.source in ("traces", "all"):
+        if not os.path.isdir(args.agents_dir):
+            print(f"warning: agents dir not found: {args.agents_dir} — skipping traces source",
+                  file=sys.stderr)
+        else:
+            _report("traces", args.out_traces, build_from_traces(args.agents_dir, args.out_traces, kinds, args))
+            did_any = True
 
-    with open(args.out, "w", encoding="utf-8") as out:
-        for s in sessions:
-            if kinds and (s["agent_kind"] or "main") not in kinds:
-                continue
-            rows = conn.execute(
-                "SELECT * FROM archive_llm_calls WHERE archive_id = ? ORDER BY call_index ASC",
-                (s["id"],),
-            ).fetchall()
-            if not rows:
-                continue
-            # Group this session's calls by turn_index (preserve order).
-            turns: "defaultdict[Any, List[sqlite3.Row]]" = defaultdict(list)
-            order: List[Any] = []
-            for r in rows:
-                ti = r["turn_index"]
-                if ti not in turns:
-                    order.append(ti)
-                turns[ti].append(r)
-
-            base_meta = {
-                "agent_id": s["agent_id"],
-                "agent_kind": s["agent_kind"] or "main",
-                "parent_agent_id": s["parent_agent_id"],
-                "session_id": s["session_id"],
-                "external_user_id": s["external_user_id"],
-            }
-            for ti in order:
-                calls = turns[ti]
-                if len(calls) < args.min_calls:
-                    n_turns_skipped += 1
-                    continue
-                sample = _build_turn_sample(calls, base_meta, not args.no_reasoning)
-                if sample is None:
-                    n_turns_skipped += 1
-                    continue
-                out.write(json.dumps(sample, ensure_ascii=False) + "\n")
-                n_samples += 1
-                stats_by_kind[base_meta["agent_kind"]] += 1
-
-    conn.close()
-    print(f"Wrote {n_samples} samples to {args.out}")
-    if stats_by_kind:
-        print("  by agent_kind: " + ", ".join(f"{k}={v}" for k, v in sorted(stats_by_kind.items())))
-    if n_turns_skipped:
-        print(f"  skipped {n_turns_skipped} turn(s) (below --min-calls or unparseable)")
+    if not did_any:
+        print("error: no source available to build from", file=sys.stderr)
+        return 1
     return 0
 
 

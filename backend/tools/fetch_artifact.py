@@ -52,6 +52,19 @@ def execute(agent: dict, args: dict) -> dict:
     if not os.path.isfile(source_path):
         return {'error': f'Artifact not found: "{filename}". Use list_artifacts to see available files.'}
 
+    # Local agents (no workplace, no sandbox) can access artifacts directly via
+    # bash/runpy at the artifacts directory. Return the absolute path instead of
+    # copying the file — there's no sandbox to copy into.
+    workplace_id = agent.get('workplace_id')
+    sandbox_enabled = agent.get('sandbox_enabled', False)
+    if not workplace_id and not sandbox_enabled:
+        return {
+            'result': 'You are running as a local agent and can access artifacts directly.',
+            'filepath': source_path,
+            'filename': filename,
+            'hint': f'This file is at: {source_path}. Use read_file, bash, or runpy to access it directly.',
+        }
+
     # Default destination: /workspace/<filename> in the execution environment
     if not dest_path:
         dest_path = os.path.join('/workspace', filename)
@@ -64,8 +77,6 @@ def execute(agent: dict, args: dict) -> dict:
         source_size = len(data)
 
         # --- Resolve execution backend ---
-        workplace_id = agent.get('workplace_id')
-        sandbox_enabled = agent.get('sandbox_enabled', False)
 
         if workplace_id:
             from backend.workplaces.manager import workplace_manager

@@ -407,7 +407,7 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                             <option value="sefton" {{ 'selected' if agent.kb_organizer_mode == 'sefton' else '' }}>SEFTON (search + nightly tidy)</option>
                             <option value="off" {{ 'selected' if agent.kb_organizer_mode == 'off' else '' }}>Off</option>
                         </select>
-                        <p class="text-xs text-gray-400 mt-1">Files conversation knowledge into the vault. <span class="text-amber-600 dark:text-amber-500 font-medium">Agentic</span> spawns a Knowledge Organizer sub-agent that explores the vault and links docs — best quality but <strong>incurs extra token cost</strong> per run. <span class="font-medium">Evomem Lookup (non-agentic)</span> files via a single LLM call — cheaper, no vault exploration. <span class="font-medium">SEFTON</span> (Search Engine First, Tidy On Night) files cheaply via evomem search (~5 min debounce) plus a nightly agentic deep-tidy at 03:00. Only applies when Memory Engine is Evomem. Default follows the server's <code>EVOMEM_KB_ORGANIZER</code>.</p>
+                        <p class="text-xs text-gray-400 mt-1">Files conversation knowledge into the vault. <span class="text-amber-600 dark:text-amber-500 font-medium">Agentic</span> spawns a Knowledge Organizer sub-agent that explores the vault and links docs; best quality but <strong>incurs extra token cost</strong> per run. <span class="font-medium">Evomem Lookup (non-agentic)</span> files via a single LLM call; cheaper, no vault exploration. <span class="font-medium">SEFTON</span> (Search Engine First, Tidy On Night) files cheaply via evomem search (~5 min debounce) plus a nightly agentic deep-tidy at 03:00. Only applies when Memory Engine is Evomem. Default follows the server's <code>EVOMEM_KB_ORGANIZER</code>.</p>
                     </div>
                     <div>
                         <label class="block mb-1 text-gray-600 dark:text-gray-300 text-sm font-medium">Message Buffer (seconds)</label>
@@ -1699,7 +1699,7 @@ function showTab(name) {
 
     if (name === 'knowledge') {
         if (kbGraphMode === 'graph') {
-            if (kbGraphData) renderKBGraph();
+            if (kbGraphData && kbGraphDataEpoch === window._agentEpoch) renderKBGraph();
             else loadKBGraph();
         } else {
             loadKBFiles();
@@ -2571,16 +2571,21 @@ async function createNewFile() {
 // ==================== KB Graph View ====================
 let kbGraphMode = 'graph';
 let kbGraphData = null;
+let kbGraphDataEpoch = -1;
 let kbGraphSimulation = null;
 let kbGraphShowOrphans = true;
 let kbGraphZoom = null;
 let kbGraphSvg = null;
 
 async function loadKBGraph() {
+    const epoch = window._agentEpoch;
     try {
         const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
         if (res.status === 401) { showToast('Authentication required for graph view', 'error'); return; }
-        kbGraphData = await res.json();
+        const data = await res.json();
+        if (epoch !== window._agentEpoch) return; // agent switched mid-flight
+        kbGraphData = data;
+        kbGraphDataEpoch = epoch;
         if (kbGraphMode === 'graph') renderKBGraph();
     } catch(e) {
         console.error('Failed to load KB graph:', e);
@@ -6262,6 +6267,12 @@ window.softSwitchAgent = async function (newId, opts = {}) {
     _planEditorFetchedFor = null;
     _planEditorOriginal = null;
     window.chatUI = _createChatUI();
+
+    // Reset KB state so the Knowledge tab doesn't show stale data
+    kbGraphData = null;
+    kbGraphDataEpoch = -1;
+    kbTree = [];
+    kbTreeState = {};
 
     // --- Update server-rendered header bits ---
     const nameEl = document.getElementById('agent-header-name');

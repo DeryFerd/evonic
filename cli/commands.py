@@ -2910,6 +2910,49 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Skill check failed: {e}"))
 
+
+    # ── 6b. Sandbox Availability Check ─────────────────────────────────
+    _section("6b. Sandbox Availability Check")
+
+    try:
+        from models.db import db
+        agents = db.get_agents()
+        sandbox_agents = [
+            a for a in agents
+            if a.get("sandbox_enabled") and a.get("enabled")
+        ]
+
+        if not sandbox_agents:
+            results.append(_ok("No agents have sandbox enabled — skipping Docker check"))
+        else:
+            docker_available = False
+            try:
+                result = subprocess.run(
+                    ["docker", "info"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    docker_available = True
+                    results.append(_ok("Docker is available and responsive"))
+                else:
+                    results.append(_warn(
+                        f"Docker CLI found but daemon returned exit code {result.returncode}"
+                    ))
+            except FileNotFoundError:
+                results.append(_warn("Docker is not installed or not in PATH"))
+            except subprocess.TimeoutExpired:
+                results.append(_warn("Docker daemon timed out — may be unresponsive"))
+            except Exception as e:
+                results.append(_warn(f"Docker check failed: {e}"))
+
+            if not docker_available:
+                names = [f"{a.get('name', a.get('id'))} ({a['id']})" for a in sandbox_agents]
+                results.append(_warn(
+                    f"Docker unavailable but {len(sandbox_agents)} agent(s) have "
+                    f"sandbox enabled: {', '.join(names)}"
+                ))
+    except Exception as e:
+        results.append(_fail(f"Sandbox agent check failed: {e}"))
     # ── 7. LLM Provider Check ────────────────────────────────
     _section("7. LLM Provider Check")
 

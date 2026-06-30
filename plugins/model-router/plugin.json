@@ -14,7 +14,7 @@
       "label": "Model → Model Mapping",
       "type": "textarea",
       "default": "{}",
-      "description": "JSON mapping public model aliases (keys) to internal model_name values (values). Used by /v1/models and /v1/chat/completions.\n\nExample:\n{\n  \"flash\": \"deepseek-v4-flash\",\n  \"pro\": \"deepseek-v4-pro\"\n}"
+      "description": "JSON mapping public model aliases (keys) to internal model_name values (values). Used by /plugin/model-router/v1/models and /plugin/model-router/v1/chat/completions.\n\nExample:\n{\n  \"flash\": \"deepseek-v4-flash\",\n  \"pro\": \"deepseek-v4-pro\"\n}"
     },
     {
       "name": "SYSTEM_PROMPTS",

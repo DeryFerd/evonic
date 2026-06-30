@@ -1250,6 +1250,13 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     # Sub-agents inherit parent's tool assignments.
     eid = _effective_id(agent)
     assigned_ids = set(db.get_agent_tools(eid))
+
+    # Auto-assign describe_image for vision-enabled agents.
+    # Mirrors the auto-assignment in runtime.py and prefetch.py so that
+    # build_tools includes the tool definition (not just the hint).
+    if agent.get('vision_enabled', 1):
+        assigned_ids.add('describe_image')
+
     if assigned_ids:
         seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
         for tool_def in tool_registry.get_all_tool_defs():

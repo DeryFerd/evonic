@@ -140,6 +140,17 @@ def execute(agent: dict, args: dict) -> Any:
 
     # --- Detect MIME type ---
     mime_type, _ = mimetypes.guess_type(path)
+    # mimetypes may not know .webp or other newer formats on some systems.
+    # Fall back to extension-based detection when mimetypes returns unknown.
+    if not mime_type:
+        _ext_map = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+        }
+        mime_type = _ext_map.get(os.path.splitext(path)[1].lower())
     if not mime_type or mime_type not in _SUPPORTED_IMAGE_TYPES:
         detected = mime_type or "unknown"
         return (

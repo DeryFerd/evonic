@@ -12,7 +12,7 @@
           "type": "string"
         },
         "query": {
-          "description": "Optional specific question about the image. If omitted, returns a general description of the image.",
+          "description": "Optional specific question about the image. Write your question in English. If omitted, returns a general description of the image.",
           "type": "string"
         }
       },

@@ -100,8 +100,9 @@ class Scheduler:
             log.error("Attachments cleanup failed: %s", e, exc_info=True)
 
     def _sefton_tidy_all(self):
-        """Nightly SEFTON tidy: run agentic organizer for all sefton-mode agents."""
+        """Nightly SEFTON tidy: run KB Janitor for sefton-mode agents active in last 24h."""
         try:
+            from datetime import datetime, timedelta, timezone
             from models.db import db
             from backend.agent_runtime.memory_manager import (
                 resolve_kb_organizer_mode, sefton_tidy_agent,
@@ -111,8 +112,27 @@ class Scheduler:
                              if resolve_kb_organizer_mode(a) == 'sefton']
             if not sefton_agents:
                 return
-            log.info("SEFTON tidy: %d agent(s) to process", len(sefton_agents))
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            log.info("SEFTON tidy: %d sefton agent(s), cutoff %s",
+                     len(sefton_agents), cutoff.isoformat())
+
             for agent in sefton_agents:
+                last_active = agent.get('last_active_at')
+                if not last_active:
+                    log.info("SEFTON tidy [%s]: skipped (never active)", agent['id'])
+                    continue
+                if isinstance(last_active, str):
+                    last_active_dt = datetime.fromisoformat(
+                        last_active.replace('Z', '+00:00'))
+                else:
+                    last_active_dt = last_active
+                if last_active_dt.tzinfo is None:
+                    last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                if last_active_dt < cutoff:
+                    log.info("SEFTON tidy [%s]: skipped (last active %s)",
+                             agent['id'], last_active_dt.isoformat())
+                    continue
                 try:
                     result = sefton_tidy_agent(agent['id'])
                     log.info("SEFTON tidy [%s]: %s", agent['id'], result)

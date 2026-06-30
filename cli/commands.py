@@ -3431,7 +3431,7 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         from models.db import db as _db
 
         global_engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
-        global_kb_mode = os.environ.get("EVOMEM_KB_ORGANIZER", "agentic").strip().lower()
+        global_kb_mode = os.environ.get("EVOMEM_KB_ORGANIZER", "sefton").strip().lower()
 
         _evomem_required_modes = {"agentic", "sefton"}
 

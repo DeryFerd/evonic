@@ -899,7 +899,7 @@ def resolve_kb_organizer_mode(agent) -> str:
     val = (agent or {}).get('kb_organizer_mode')
     val = val.strip().lower() if isinstance(val, str) else ''
     if not val:
-        val = os.environ.get('EVOMEM_KB_ORGANIZER', 'agentic').strip().lower()
+        val = os.environ.get('EVOMEM_KB_ORGANIZER', 'sefton').strip().lower()
     if val in ('agentic', 'on', '1', 'yes', 'true'):
         return 'agentic'
     if val in ('non-agentic', 'nonagentic', 'legacy'):
@@ -908,7 +908,7 @@ def resolve_kb_organizer_mode(agent) -> str:
         return 'sefton'
     if val in ('off', 'no', '0', 'false', 'none'):
         return 'off'
-    return 'agentic'
+    return 'sefton'
 
 
 def _delta_min_score() -> int:

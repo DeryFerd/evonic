@@ -3425,6 +3425,57 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"KB organizer config check failed: {e}"))
 
+    # ── 11c. Memory Engine + KB Organizer Compatibility ───
+    _section("11c. Memory Engine / KB Organizer Compatibility")
+    try:
+        from models.db import db as _db
+
+        global_engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
+        global_kb_mode = os.environ.get("EVOMEM_KB_ORGANIZER", "agentic").strip().lower()
+
+        _evomem_required_modes = {"agentic", "sefton"}
+
+        _kb_mode_aliases = {
+            "on": "agentic", "1": "agentic", "yes": "agentic", "true": "agentic",
+            "nonagentic": "non-agentic", "legacy": "non-agentic",
+            "off": "off", "no": "off", "0": "off", "false": "off", "none": "off",
+        }
+        norm_global_kb = _kb_mode_aliases.get(global_kb_mode, global_kb_mode)
+
+        if global_engine == "fts5" and norm_global_kb in _evomem_required_modes:
+            results.append(_warn(
+                f"EVONIC_MEMORY_ENGINE=fts5 but EVOMEM_KB_ORGANIZER={global_kb_mode} "
+                f"— '{norm_global_kb}' mode requires evomem. Agents without a per-agent "
+                f"override will skip KB filing."
+            ))
+        else:
+            results.append(_ok(
+                f"Global defaults compatible "
+                f"(engine={global_engine}, kb_organizer={norm_global_kb})"
+            ))
+
+        agents = _db.get_agents() or []
+        bad_agents = []
+        for ag in agents:
+            ag_engine = (ag.get("memory_engine") or "").strip().lower() or global_engine
+            ag_kb = (ag.get("kb_organizer_mode") or "").strip().lower()
+            ag_kb_norm = _kb_mode_aliases.get(ag_kb, ag_kb) if ag_kb else norm_global_kb
+            if ag_engine == "fts5" and ag_kb_norm in _evomem_required_modes:
+                bad_agents.append((ag.get("name") or ag.get("id", "?"), ag_kb_norm))
+
+        if bad_agents:
+            for name, mode in bad_agents:
+                results.append(_warn(
+                    f"Agent '{name}': memory_engine=fts5 but "
+                    f"kb_organizer_mode={mode} (requires evomem)"
+                ))
+        elif agents:
+            results.append(_ok(
+                f"All {len(agents)} agent(s) have compatible engine/organizer settings"
+            ))
+    except Exception as e:
+        results.append(_fail(f"Engine/organizer compatibility check failed: {e}"))
+
     # ── 12. PromptPurify ML Safety Check ──
     _section("12. PromptPurify ML Safety Check")
 

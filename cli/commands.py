@@ -3050,8 +3050,11 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
             elif not artifacts_on and has_list:
                 spurious_list.append((aid, aname))
 
-            if artifacts_on and not has_fetch:
+            needs_fetch = a.get('workplace_id') is not None or a.get('sandbox_enabled', 0) == 1
+            if artifacts_on and needs_fetch and not has_fetch:
                 missing_fetch.append((aid, aname))
+            elif artifacts_on and not needs_fetch and has_fetch:
+                spurious_fetch.append((aid, aname))
             elif not artifacts_on and has_fetch:
                 spurious_fetch.append((aid, aname))
 

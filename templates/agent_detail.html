@@ -1699,7 +1699,7 @@ function showTab(name) {
 
     if (name === 'knowledge') {
         if (kbGraphMode === 'graph') {
-            if (kbGraphData) renderKBGraph();
+            if (kbGraphData && kbGraphDataEpoch === window._agentEpoch) renderKBGraph();
             else loadKBGraph();
         } else {
             loadKBFiles();
@@ -2571,16 +2571,21 @@ async function createNewFile() {
 // ==================== KB Graph View ====================
 let kbGraphMode = 'graph';
 let kbGraphData = null;
+let kbGraphDataEpoch = -1;
 let kbGraphSimulation = null;
 let kbGraphShowOrphans = true;
 let kbGraphZoom = null;
 let kbGraphSvg = null;
 
 async function loadKBGraph() {
+    const epoch = window._agentEpoch;
     try {
         const res = await fetch('/api/agents/' + AGENT_ID + '/kb-graph');
         if (res.status === 401) { showToast('Authentication required for graph view', 'error'); return; }
-        kbGraphData = await res.json();
+        const data = await res.json();
+        if (epoch !== window._agentEpoch) return; // agent switched mid-flight
+        kbGraphData = data;
+        kbGraphDataEpoch = epoch;
         if (kbGraphMode === 'graph') renderKBGraph();
     } catch(e) {
         console.error('Failed to load KB graph:', e);
@@ -6262,6 +6267,12 @@ window.softSwitchAgent = async function (newId, opts = {}) {
     _planEditorFetchedFor = null;
     _planEditorOriginal = null;
     window.chatUI = _createChatUI();
+
+    // Reset KB state so the Knowledge tab doesn't show stale data
+    kbGraphData = null;
+    kbGraphDataEpoch = -1;
+    kbTree = [];
+    kbTreeState = {};
 
     // --- Update server-rendered header bits ---
     const nameEl = document.getElementById('agent-header-name');

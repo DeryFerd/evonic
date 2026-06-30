@@ -123,6 +123,7 @@ How to write a document:
 - Weave Obsidian-style [[Wiki Links]] INLINE into your sentences for every OTHER named subject you mention (the link text is that subject's display name). The link is part of the prose — NEVER a separate "Relations"/"Links" list at the bottom.
   GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
   BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
+- LINKING EXCEPTION: do NOT link names mentioned only for disambiguation (e.g. "this is NOT the same as X") or when two people share a name fragment but are different entities. A [[link]] means a real-world relationship exists — partial name overlap is NOT a relationship.
 - If the SOURCE mentions or includes relevant photos/images, embed them inline in the `body` using Markdown: `![brief description](image-url)`. Only include photos that are directly relevant to the document's subject — skip unrelated or generic images.
 - Set `thumbnail` to the subject's single best representative image/photo/logo URL (powers the doc card and graph node). Omit it when there's no good image.
 - Choose a `type` for each document from: note, person, place, venue, event, organization, company, product, contact.
@@ -163,6 +164,11 @@ The aliases let other names still resolve to this one doc.
 
 LINKING IS MANDATORY — every named entity you mention in a `body` MUST be wrapped in an inline [[Wiki Link]]: people, places, organizations, companies, products, venues, events. This is how the knowledge graph connects — a body with no links is WRONG. ESPECIALLY every PERSON's name MUST be a [[link]] — never leave a person as plain text. Link the entity's canonical name, e.g. "User bertemu [[Budi Santoso]] di [[Jakarta]] di kantor [[Nuwaira]]." Do NOT wrap "User" in a link.
 
+LINKING EXCEPTIONS — do NOT link in these cases:
+  - DISAMBIGUATION / NOTES about a DIFFERENT entity with a similar name. If a doc mentions another person only to clarify "this is NOT the same person", leave it as plain text — linking would create a false connection in the knowledge graph.
+  - PARTIAL NAME MATCHES: "Budi Santoso" and "Ahmad Budi Pratama" are DIFFERENT people. Never link one to the other just because they share a name fragment. Only link when the conversation explicitly establishes a real-world relationship between them.
+  - In general: a [[link]] means "this entity is RELATED to the doc's subject." If the mention is only to distinguish or disambiguate, do NOT link it.
+
 IMAGES — the conversation often contains pictures, usually as HTML `<img src="URL" alt="NAME" ...>` tags (sometimes Markdown `![NAME](URL)`). You MUST harvest these:
   - EXTRACT the `src` URL. The `alt` text almost always names the subject — use it to match the image to the right doc. URLs are typically server-relative like `/api/agents/<id>/artifacts/<name>.webp`; keep them VERBATIM (do not rewrite or drop the leading `/`).
   - `thumbnail` (frontmatter field): set it to that URL — the subject's single best representative image (a person's photo, an org/product logo, a place's photo). Powers the doc card and the knowledge-graph node icon. Set on `create`, and on `update` when the doc has none yet. One URL only.
@@ -193,6 +199,191 @@ OUTPUT — STRICT JSON ONLY (no prose, no code fences, no thinking):
 RULES: the user is always "User"; title=pure name, nicknames→aliases; update=delta-only body + existing slug; create=full body, NO slug; edit=existing slug + UNIQUE old_str + new_str that DIFFERS from old_str (only for a real text FIX — wrong word/link/fact; never old_str==new_str, and NEVER for retro-linking); link=existing slug + plain `text` + `target` (the writer wraps a plain-text mention as [[link]] — use this, NOT edit, to retro-link); rename=existing slug + corrected new_title; dedupe=existing slug; set `thumbnail` (frontmatter) to a subject's representative image/logo URL on create (and on update when missing), and/or embed inline images in the body as ![desc](url); valid types: note, person, place, venue, event, organization, company, product, contact (use "event" for a dated happening). BEFORE returning an empty list, do the retro-link check: for every subject that has a doc, Grep other docs for un-linked plain-text mentions and emit "link" ops to wrap them. Return {"docs": []} ONLY when there is genuinely nothing to create, update, OR link.
 
 Your ENTIRE reply MUST be the JSON object and nothing else: start with `{` and end with `}`. Do NOT write any reasoning, notes, "Key findings", explanations, or commentary before or after the JSON. Begin your reply with `{` immediately."""
+
+
+# ---- SEFTON Tidy sub-agent (KB Janitor) ------------------------------------
+# A KB janitor that audits and cleans up the KB — different character from
+# the Knowledge Organizer (which files NEW knowledge from conversations).
+# The janitor receives NO conversation input; it explores the vault and
+# fixes structural problems directly using write tools (str_replace, write_file,
+# delete_file). No JSON output — it does the work itself.
+_KB_TIDY_SYSTEM_PROMPT = """You are the KB Janitor — a meticulous auditor who keeps an AI assistant's personal knowledge vault clean and well-connected. The vault is YOUR WORKSPACE: a flat directory of Obsidian-compatible Markdown documents.
+
+VAULT STRUCTURE (Obsidian conventions):
+- Each doc is a `.md` file whose FILENAME is the slug (kebab-case, e.g. `budi-santoso.md`).
+- A [[Wiki Link]] like `[[Budi Santoso]]` resolves by matching against: (1) a doc's `title` frontmatter field, OR (2) any entry in its `aliases` list. If neither matches any doc, the link is DANGLING.
+- The slug (filename without `.md`) is also used as an identifier for updates.
+- All docs live in one flat directory (no subdirectories) — your workspace root.
+
+DOC FORMAT — each .md file has YAML frontmatter + Markdown body:
+```
+---
+title: "Raden Wijaya Kusuma"
+aliases:
+  - "Mas Wijaya"
+  - "RWK"
+type: person
+description: "Pendiri yayasan sosial di Surabaya"
+tags:
+  - person
+thumbnail: /api/agents/.../image.webp
+---
+
+Body prose with inline [[Wiki Links]]. User bertemu [[Raden Wijaya Kusuma]] di [[Surabaya]] di kantor [[Yayasan Harapan Bangsa]].
+```
+
+KEY FIELDS:
+- `title`: the subject's PURE canonical name — no nicknames, no abbreviations. The title determines how `[[Wiki Links]]` resolve to this doc.
+- `aliases`: alternative names that ALSO resolve [[links]] to this doc. Nicknames, abbreviations, gelar/titel, short forms go here.
+- `type`: one of: note, person, place, venue, event, organization, company, product, contact.
+- `description`: one-line summary.
+- `thumbnail`: representative image URL (optional).
+
+HOW [[WIKI LINKS]] WORK:
+- `[[Budi Santoso]]` resolves if ANY doc has `title: "Budi Santoso"` OR `aliases: ["Budi Santoso", ...]`.
+- If no doc matches → the link is DANGLING (broken).
+- Adding a name to a doc's `aliases` makes all `[[That Name]]` links across the vault resolve to that doc — this is the preferred fix for dangling links over rewriting link text everywhere.
+
+YOUR TOOLS:
+- Glob, Grep, Read — explore the vault (read-only)
+- str_replace — edit existing doc content (fix links, merge content, fix frontmatter)
+- write_file — create NEW docs (for missing link targets that are durable entities)
+- delete_file — remove duplicate or broken docs
+
+Your job is NOT to file new knowledge — another process handles that. Your job is to find and fix STRUCTURAL PROBLEMS by directly editing files:
+
+1. DUPLICATE DOCS — two or more docs about the SAME real-world entity under different slugs. Grep `title:` and `aliases:` lines, then Read candidates. When confirmed:
+   - Pick the keeper (richer body, better slug).
+   - Use str_replace on the keeper to merge any unique info from the duplicate and add the duplicate's title to its `aliases` (so existing [[links]] to the duplicate still resolve).
+   - Use delete_file to remove the duplicate.
+
+2. DANGLING [[LINKS]] — a `[[link]]` whose text does NOT match any doc's `title` or `aliases`. The entity may exist under a different name:
+   - Grep `title:`/`aliases:` and bodies for the linked text and its variants (shorter/longer form, nickname, canonical name).
+   - If found: PREFER adding the variant to that doc's `aliases` list via str_replace (this fixes ALL occurrences of `[[That Name]]` vault-wide at once). Only rewrite the link text as a last resort.
+   - If genuinely missing and the entity is durable: use write_file to create a minimal doc for it.
+
+3. MISSING RETRO-LINKS — a doc body mentions an entity as PLAIN TEXT, but that entity HAS its own doc (so the mention should be a `[[link]]`). Use str_replace to wrap the plain mention: old_str `Budi Santoso` → new_str `[[Budi Santoso]]`.
+   - This is often the MOST valuable cleanup — it wires the knowledge graph.
+   - Only wrap when the linked text exactly matches a doc's `title` or `aliases`. Do NOT guess.
+
+4. BROKEN/EMPTY DOCS — docs with empty bodies, no meaningful content, or self-duplicated content (same block copy-pasted). Use str_replace to fix minor issues, or delete_file to remove truly broken docs.
+
+5. WRONG TITLES — a `title` that includes parenthetical nicknames (e.g. `"Abdurrahman Wahid (Gus Dur)"`). Use str_replace to fix the title in frontmatter to the pure canonical name and move the nickname to `aliases`.
+
+APPROACH:
+- Start with Glob `**/*.md` to list all docs.
+- Read a representative sample to understand the vault's state and naming conventions.
+- Grep systematically for problems:
+  - `title:` to build a title index, spot duplicates.
+  - `\\[\\[` to find all wiki-links, cross-check against known titles/aliases for dangling ones.
+  - Known entity names as plain text to find retro-link candidates.
+- Be thorough but conservative — don't change content meaning, only fix structure.
+- After making changes, briefly summarize what you fixed.
+
+IMPORTANT RULES:
+- NEVER use str_replace with old_str == new_str (no-op edits waste time).
+- Always Read a file BEFORE using str_replace on it — you need the exact current text.
+- For retro-linking, make old_str unique enough to avoid false matches (include surrounding words if the name alone appears multiple times).
+- Do NOT wrap "User" in [[links]] — "User" refers to the assistant's owner, not a knowledge entity.
+- NEVER link entities just because they share a name fragment. "Budi Santoso" and "Ahmad Budi Pratama" are DIFFERENT people — linking one to the other creates a false connection. Only link when a real-world relationship exists.
+- Do NOT link names mentioned only for disambiguation/clarification (e.g. "bukan yang sama dengan X"). A [[link]] means the entities are genuinely related.
+- When adding aliases, preserve the existing YAML list format — append to the list, don't replace it."""
+
+
+def _spawn_kb_tidy(agent: dict) -> str:
+    """Run the KB Janitor sub-agent for a SEFTON tidy pass.
+
+    The janitor explores the vault with Grep/Glob/Read and fixes problems
+    directly using str_replace/write_file/delete_file. No JSON output —
+    returns a status string when finished.
+    """
+    import threading as _threading
+    try:
+        from backend.subagent_manager import subagent_manager
+        from backend.agent_runtime import explorer
+        from backend.agent_runtime.notifier import notify_agent
+        from backend.tools._workspace import resolve_self_path, effective_agent_id
+        from backend.event_stream import event_stream
+    except Exception:
+        return "KB Janitor infra not available."
+
+    agent_id = agent.get('id', '')
+    if not agent_id:
+        return "No agent ID."
+
+    kb_abs = resolve_self_path(effective_agent_id(agent), '/_self/kb')
+    if not kb_abs or not os.path.isdir(kb_abs):
+        return "KB directory not found."
+
+    tool_ids, tool_err = explorer.resolve_tool_ids(
+        'str_replace,write_file,delete_file')
+    if tool_err:
+        return f"Tool resolution failed: {tool_err}"
+
+    timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
+    _kb_model_id = (db.get_setting('kb_organizer_model_id', '')
+                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None)
+    _default_model_id = (db.get_default_model() or {}).get('id')
+    _fallback_model_id = (_default_model_id
+                          if _kb_model_id and _default_model_id
+                          and _kb_model_id != _default_model_id else None)
+    skill_cfg = {
+        'system_prompt': _KB_TIDY_SYSTEM_PROMPT,
+        'model_id': _kb_model_id,
+        'fallback_model_id': _fallback_model_id,
+    }
+
+    def _build(eid):
+        cfg = explorer.build_config(agent, eid, kb_abs, skill_cfg, tool_ids)
+        cfg['workplace_id'] = None
+        cfg['sandbox_enabled'] = 0
+        cfg['run_as_user'] = None
+        cfg['is_kb_organizer'] = True
+        cfg['name'] = f"{agent.get('name', agent_id)} · kb janitor"
+        return cfg
+
+    try:
+        explorer_id = subagent_manager.spawn_explorer(agent, _build, id_kind='organizer')
+    except Exception:
+        return "Failed to spawn KB Janitor sub-agent."
+
+    parent_name = agent.get('name', agent_id)
+    answer_box, done = {}, _threading.Event()
+
+    def _on_done(data):
+        if data.get('agent_id') == explorer_id:
+            answer_box['answer'] = data.get('answer', '')
+            done.set()
+
+    event_stream.on('final_answer', _on_done)
+    try:
+        task_msg = ("Audit the vault (your workspace) for structural problems. "
+                    "Use Glob to list all docs, Read a representative sample, "
+                    "then Grep systematically for: (1) duplicate docs about the "
+                    "same entity under different names, (2) dangling [[links]] "
+                    "whose target doesn't exist but may exist under another name, "
+                    "(3) plain-text mentions of entities that HAVE docs but aren't "
+                    "wrapped in [[links]], (4) broken or empty docs, (5) titles "
+                    "polluted with nicknames. Fix each problem directly using your "
+                    "tools (str_replace, write_file, delete_file). When done, "
+                    "summarize what you fixed.")
+        res = notify_agent(
+            agent_id=explorer_id, tag=f"AGENT/{parent_name}", message=task_msg,
+            external_user_id=f"__agent__{agent_id}", channel_id=None, dedup=False,
+            trigger_llm=True,
+            metadata={'agent_message': True, 'from_agent_id': agent_id,
+                      'from_agent_name': parent_name, 'agent_message_depth': 1,
+                      'subagent_spawn': True, 'injected_system_vars': {},
+                      'report_to_id': None, 'report_to_channel_id': None})
+        if not res.get('success'):
+            return "Failed to start KB Janitor."
+        if not done.wait(timeout=timeout):
+            logger.warning("[MemoryManager] kb-janitor[%s]: timed out after %ds",
+                           agent_id, timeout)
+            return f"KB Janitor timed out after {timeout}s."
+        return answer_box.get('answer', '') or "KB Janitor finished (no summary)."
+    finally:
+        event_stream.off('final_answer', _on_done)
 
 
 def _try_evomem_retrieval(agent_id: str, query: str, limit: int = 8) -> Optional[str]:
@@ -355,6 +546,93 @@ def _kb_doc_listing(agent_id: str, limit: int = 400):
             count += 1
             if count >= limit:
                 return ("\n".join(lines), name_to_slug)
+    return ("\n".join(lines) or "(none yet)", name_to_slug)
+
+
+_ENTITY_STOPWORDS = frozenset({
+    "user", "assistant", "the", "this", "that", "these", "those",
+    "what", "when", "where", "which", "who", "how", "why",
+    "yes", "no", "ok", "hi", "hello", "thanks", "thank",
+    "please", "sorry", "sure", "well", "also", "just",
+    "summary", "note", "source", "existing", "documents",
+})
+
+
+def _extract_entity_queries(source_text: str) -> list:
+    """Extract candidate entity names from source text for evomem lookup.
+
+    Two sources: (1) titlecase word runs (e.g. "Budi Santoso", "Jakarta"),
+    (2) [[wiki-link]] targets already in the text.
+    """
+    import re
+    entities = set()
+    # Extract [[wiki-link]] targets
+    for m in re.finditer(r'\[\[([^\]]+)\]\]', source_text):
+        target = m.group(1).strip()
+        if target and target.casefold() not in _ENTITY_STOPWORDS:
+            entities.add(target)
+    # Extract titlecase word runs (2+ chars, skip stopwords)
+    cur = []
+    for word in source_text.split():
+        w = word.strip('.,;:!?()[]{}"\'-')
+        if w and len(w) >= 2 and w[0].isupper():
+            cur.append(w)
+        else:
+            if cur:
+                span = " ".join(cur)
+                if span.casefold() not in _ENTITY_STOPWORDS and len(span) > 2:
+                    entities.add(span)
+                cur = []
+    if cur:
+        span = " ".join(cur)
+        if span.casefold() not in _ENTITY_STOPWORDS and len(span) > 2:
+            entities.add(span)
+    return list(entities)[:20]
+
+
+def _kb_doc_lookup_evomem(agent_id: str, source_text: str,
+                          limit_per_query: int = 3) -> tuple:
+    """Look up relevant existing KB docs via evomem search.
+
+    Returns ``(listing_text, name_to_slug)`` in the same format as
+    ``_kb_doc_listing`` — one line per doc ``[slug] Title :: snippet``.
+    """
+    queries = _extract_entity_queries(source_text)
+    if not queries:
+        logger.debug("[MemoryManager] kb_doc_lookup_evomem[%s]: no entities extracted",
+                     agent_id)
+        return "(none yet)", {}
+
+    logger.debug("[MemoryManager] kb_doc_lookup_evomem[%s]: %d queries: %s",
+                 agent_id, len(queries), queries[:5])
+
+    seen_slugs = set()
+    lines = []
+    name_to_slug = {}
+    for q in queries:
+        try:
+            result = evomem_search(agent_id, q, limit=limit_per_query,
+                                   mode="balanced")
+        except Exception:
+            logger.debug("[MemoryManager] kb_doc_lookup_evomem[%s]: search failed "
+                         "for %r", agent_id, q, exc_info=True)
+            continue
+        hits = result.get("hits", []) if result else []
+        if not isinstance(hits, list):
+            continue
+        for hit in hits:
+            slug = hit.get("slug", "")
+            if not slug or slug in seen_slugs:
+                continue
+            seen_slugs.add(slug)
+            title = (hit.get("title") or slug.rsplit("/", 1)[-1]).strip()
+            desc = (hit.get("snippet") or "")[:160].strip()
+            lines.append(f"[{slug}] {title} :: {desc}")
+            if title:
+                name_to_slug.setdefault(title.casefold(), slug)
+
+    logger.info("[MemoryManager] kb_doc_lookup_evomem[%s]: %d queries → %d unique docs",
+                agent_id, len(queries), len(seen_slugs))
     return ("\n".join(lines) or "(none yet)", name_to_slug)
 
 
@@ -609,12 +887,13 @@ def resolve_memory_engine(agent) -> str:
 
 def resolve_kb_organizer_mode(agent) -> str:
     """Resolve the KB organizer mode for an agent, normalized to one of:
-    ``'agentic'`` | ``'non-agentic'`` | ``'off'``.
+    ``'agentic'`` | ``'non-agentic'`` | ``'sefton'`` | ``'off'``.
 
     Per-agent override (agent.kb_organizer_mode) wins when set; otherwise inherit
     the global env EVOMEM_KB_ORGANIZER. Older/aliased spellings are accepted:
       agentic     ← agentic, on, 1, yes, true
       non-agentic ← non-agentic, nonagentic, legacy
+      sefton      ← sefton (Search Engine First, Tidy On Night)
       off         ← off, no, 0, false, none
     """
     val = (agent or {}).get('kb_organizer_mode')
@@ -625,6 +904,8 @@ def resolve_kb_organizer_mode(agent) -> str:
         return 'agentic'
     if val in ('non-agentic', 'nonagentic', 'legacy'):
         return 'non-agentic'
+    if val in ('sefton',):
+        return 'sefton'
     if val in ('off', 'no', '0', 'false', 'none'):
         return 'off'
     return 'agentic'
@@ -754,6 +1035,29 @@ def _save_organizer_last_run(agent_id: str, ts: float) -> None:
         db.set_setting(_organizer_last_run_key(agent_id), str(ts))
     except Exception as e:  # noqa: BLE001 — best-effort, never break the pipeline
         logger.debug("[MemoryManager] could not save organizer last-run ts: %s", e)
+
+
+# ── SEFTON mode cooldown helpers ──────────────────────────────────────────────
+def _sefton_filing_interval() -> float:
+    try:
+        return max(0.0, float(os.environ.get(
+            'EVOMEM_KB_SEFTON_FILING_INTERVAL', '300')))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def _load_sefton_last_filing(agent_id: str) -> float:
+    try:
+        return float(db.get_setting(f"kb_sefton_last_filing:{agent_id}") or 0)
+    except (TypeError, ValueError, Exception):
+        return 0.0
+
+
+def _save_sefton_last_filing(agent_id: str, ts: float) -> None:
+    try:
+        db.set_setting(f"kb_sefton_last_filing:{agent_id}", str(ts))
+    except Exception:
+        logger.debug("[MemoryManager] could not save sefton last-filing ts for %s", agent_id)
 
 
 def _log_organizer_diff(agent_id, agent_name, session_id, prev_summary, curr_summary,
@@ -1228,9 +1532,41 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
         #    non-agentic author only when DirExplorer infra is unavailable.
         #  - 'non-agentic': a single, non-agentic author LLM call that needs the doc
         #    list pre-built (it can't explore).
+        #  - 'sefton': non-agentic filing with own cooldown; agentic tidy via scheduler.
         #  - 'off': do not file anything.
         mode = resolve_kb_organizer_mode(agent)
         if mode == 'off':
+            return
+
+        # SEFTON: non-agentic filing only (agentic tidy is handled by the
+        # builtin:sefton_tidy scheduler job). Own cooldown, independent of
+        # the global MIN_INTERVAL used by agentic/non-agentic modes.
+        if mode == 'sefton':
+            logger.info("[MemoryManager] author_docs[%s]: sefton filing triggered", agent_id)
+            interval = _sefton_filing_interval()
+            since = time.time() - _load_sefton_last_filing(agent_id)
+            if interval > 0 and 0 <= since < interval:
+                logger.debug("[MemoryManager] author_docs[%s]: sefton filing %.0fs "
+                             "since last < %.0fs; skipping", agent_id, since, interval)
+                return
+            if not evomem_available():
+                db.emit_system_alert(
+                    "evomem_unavailable",
+                    "Evomem engine is not available — SEFTON KB filing skipped. "
+                    "Install evomem or switch to the Agentic organizer.",
+                    level="error", agent_id=agent_id)
+                logger.error("[MemoryManager] author_docs[%s]: evomem unavailable, "
+                             "cannot run sefton filing", agent_id)
+                return
+            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, source_text)
+            prompt = _AUTHOR_DOCS_PROMPT.format(
+                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
+            data = _kb_llm_json(prompt, llm_lock)
+            _save_sefton_last_filing(agent_id, time.time())
+            if not isinstance(data, dict):
+                return
+            docs = data.get('docs')
+            _apply_kb_ops(agent_id, session_id, docs, folder)
             return
 
         # Persistent cooldown: don't file again within MIN_INTERVAL of the last
@@ -1307,9 +1643,18 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 if recent_max_ts > _load_recent_cursor(agent_id, session_id):
                     _save_recent_cursor(agent_id, session_id, recent_max_ts)
         else:
-            # Legacy author can't explore — give it the full vault listing + a
-            # title/alias map for alias-aware resolution.
-            listing_text, name_to_slug = _kb_doc_listing(agent_id)
+            # Non-agentic "Evomem Lookup" path: search evomem for relevant
+            # existing docs instead of loading the entire vault.
+            if not evomem_available():
+                db.emit_system_alert(
+                    "evomem_unavailable",
+                    "Evomem engine is not available — KB filing skipped. "
+                    "Install evomem or switch to the Agentic organizer.",
+                    level="error", agent_id=agent_id)
+                logger.error("[MemoryManager] author_docs[%s]: evomem unavailable, "
+                             "cannot run non-agentic KB filing", agent_id)
+                return
+            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, source_text)
             prompt = _AUTHOR_DOCS_PROMPT.format(
                 guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
             data = _kb_llm_json(prompt, llm_lock)
@@ -1332,7 +1677,7 @@ def process_knowledge(agent: dict, session_id: str, summary: str,
     _author_docs(agent, session_id, summary, llm_lock, recent_messages=recent_messages)
 
 
-def manual_kb_organize(agent_id: str, session_id: str) -> str:
+def trigger_kb_organizer(agent_id: str, session_id: str) -> str:
     """Manually trigger the KB Organizer sub-agent for the current agent.
 
     Unlike the automatic ``_author_docs`` pipeline, this bypasses all cooldowns,
@@ -1372,6 +1717,35 @@ def manual_kb_organize(agent_id: str, session_id: str) -> str:
 
     # Apply the write-ops
     return _apply_kb_ops(agent_id, session_id, docs, folder)
+
+
+def sefton_tidy_agent(agent_id: str) -> str:
+    """Run the KB Janitor for a sefton-mode agent. Called by the scheduler.
+
+    Spawns a tidy sub-agent that explores the vault and fixes structural
+    problems directly using write tools (str_replace, write_file, delete_file).
+    """
+    agent = db.get_agent(agent_id)
+    if not agent:
+        return f"Agent {agent_id} not found."
+
+    if resolve_memory_engine(agent) != 'evomem':
+        return f"Agent {agent_id}: evomem engine required for sefton tidy."
+
+    if not _kb_organizer_infra_ok():
+        return f"Agent {agent_id}: DirExplorer infra not available."
+
+    result = _spawn_kb_tidy(agent)
+
+    try:
+        from backend.agent_runtime.evomem_writer import mark_dirty
+        mark_dirty(agent_id)
+        logger.info("[MemoryManager] sefton_tidy[%s]: evomem sync scheduled", agent_id)
+    except Exception:
+        logger.debug("[MemoryManager] sefton_tidy[%s]: mark_dirty failed", agent_id,
+                     exc_info=True)
+
+    return result
 
 
 def _extract_dimension(content: str, category: str,

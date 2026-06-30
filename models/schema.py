@@ -542,7 +542,7 @@ class SchemaMixin:
             # Migration: per-agent memory settings. NULL = inherit global env
             # (EVONIC_MEMORY_ENGINE / EVOMEM_KB_ORGANIZER), preserving prior behavior.
             #   memory_engine     : '' | 'evomem' | 'fts5'
-            #   kb_organizer_mode : '' | 'on' | 'off' | 'legacy'
+            #   kb_organizer_mode : '' | 'agentic' | 'non-agentic' | 'sefton' | 'off'
             for col, defn in [
                 ("memory_engine", "TEXT DEFAULT NULL"),
                 ("kb_organizer_mode", "TEXT DEFAULT NULL"),
@@ -987,6 +987,19 @@ class SchemaMixin:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_index_agent ON session_index(agent_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_index_updated ON session_index(updated_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_index_external ON session_index(external_user_id)")
+
+            # ==================== System Alerts Table ====================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS system_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL UNIQUE,
+                    agent_id TEXT,
+                    message TEXT NOT NULL,
+                    level TEXT NOT NULL DEFAULT 'error',
+                    created_at REAL NOT NULL,
+                    dismissed_at REAL DEFAULT NULL
+                )
+            """)
 
             conn.commit()
 

@@ -82,3 +82,20 @@ def admin_health():
             'docker': _check_docker(),
         },
     })
+
+
+@health_bp.route('/api/system/alerts')
+def system_alerts():
+    if not session.get('authenticated'):
+        return jsonify({'error': 'Authentication required'}), 401
+    from models.db import db
+    return jsonify({'alerts': db.get_active_system_alerts()})
+
+
+@health_bp.route('/api/system/alerts/<category>/dismiss', methods=['POST'])
+def dismiss_system_alert(category):
+    if not session.get('authenticated'):
+        return jsonify({'error': 'Authentication required'}), 401
+    from models.db import db
+    dismissed = db.dismiss_system_alert(category)
+    return jsonify({'ok': dismissed})

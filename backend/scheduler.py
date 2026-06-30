@@ -74,6 +74,16 @@ class Scheduler:
             )
         except Exception as e:  # pragma: no cover - defensive guard
             log.warning("Failed to register attachments cleanup job: %s", e)
+        # Built-in: SEFTON nightly agentic tidy for all sefton-mode agents.
+        try:
+            self._scheduler.add_job(
+                self._sefton_tidy_all,
+                CronTrigger(hour=3, minute=0),
+                id='builtin:sefton_tidy',
+                replace_existing=True,
+            )
+        except Exception as e:  # pragma: no cover
+            log.warning("Failed to register sefton tidy job: %s", e)
         log.info("Started with %d jobs", len(self._scheduler.get_jobs()))
 
     def _cleanup_expired_attachments(self):
@@ -88,6 +98,28 @@ class Scheduler:
                 )
         except Exception as e:
             log.error("Attachments cleanup failed: %s", e, exc_info=True)
+
+    def _sefton_tidy_all(self):
+        """Nightly SEFTON tidy: run agentic organizer for all sefton-mode agents."""
+        try:
+            from models.db import db
+            from backend.agent_runtime.memory_manager import (
+                resolve_kb_organizer_mode, sefton_tidy_agent,
+            )
+            agents = db.get_agents()
+            sefton_agents = [a for a in agents
+                             if resolve_kb_organizer_mode(a) == 'sefton']
+            if not sefton_agents:
+                return
+            log.info("SEFTON tidy: %d agent(s) to process", len(sefton_agents))
+            for agent in sefton_agents:
+                try:
+                    result = sefton_tidy_agent(agent['id'])
+                    log.info("SEFTON tidy [%s]: %s", agent['id'], result)
+                except Exception as e:
+                    log.error("SEFTON tidy [%s] failed: %s", agent['id'], e)
+        except Exception as e:
+            log.error("SEFTON tidy failed: %s", e, exc_info=True)
 
     def shutdown(self):
         """Gracefully shut down the scheduler."""

@@ -1132,8 +1132,14 @@ def _register_builtins():
         channel_id: Optional[str],
         args: str,
     ) -> str:
-        from backend.agent_runtime.memory_manager import manual_kb_organize
-        return manual_kb_organize(agent_id, session_id)
+        from backend.agent_runtime.memory_manager import (
+            trigger_kb_organizer, resolve_kb_organizer_mode, sefton_tidy_agent,
+        )
+        from models.db import db
+        agent = db.get_agent(agent_id)
+        if agent and resolve_kb_organizer_mode(agent) == 'sefton':
+            return sefton_tidy_agent(agent_id)
+        return trigger_kb_organizer(agent_id, session_id)
 
     command_registry.register(
         "kb-organize",

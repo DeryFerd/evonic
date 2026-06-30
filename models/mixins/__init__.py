@@ -14,6 +14,7 @@ from models.mixins.safety_rules import SafetyRuleMixin
 from models.mixins.attachments import AttachmentsMixin
 from models.mixins.users import UserMixin
 from models.mixins.transfer_jobs import TransferJobMixin
+from models.mixins.system_alerts import SystemAlertMixin
 
 __all__ = [
     'EvaluationMixin',
@@ -32,4 +33,5 @@ __all__ = [
     'AttachmentsMixin',
     'UserMixin',
     'TransferJobMixin',
+    'SystemAlertMixin',
 ]

@@ -39,7 +39,7 @@ from backend.agent_runtime.evomem_client import (
 logger = logging.getLogger(__name__)
 
 # Debounce window (seconds) for coalescing a burst of writes into one sync.
-_SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "2"))
+_SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "5"))
 
 # Typed edge labels evomem can carry on a link (used to populate the `recall`
 # graph-traversal edge_type filter). The engine infers these from the sentence

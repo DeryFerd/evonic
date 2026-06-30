@@ -120,7 +120,7 @@ async def _ingest_non_photo_attachment(message, context, agent_id, session_id,
 
     file_id, original_filename, mime_type, size_bytes, file_type = non_photo
     cfg = db.get_agent_attachment_config(agent_id)
-    if not cfg['enabled'] or not cfg['supported']:
+    if not cfg['enabled']:
         await message.reply_text(
             "Attachments are not enabled for this assistant."
         )
@@ -233,7 +233,7 @@ async def _ingest_photo(message, context, agent_id, session_id, user_id,
 
     info_line = None
     cfg = db.get_agent_attachment_config(agent_id)
-    if cfg['enabled'] and cfg['supported']:
+    if cfg['enabled']:
         try:
             max_bytes = cfg['max_size_mb'] * 1024 * 1024
             if photo_size and photo_size > max_bytes:

@@ -24,14 +24,13 @@ def _make_agent(agent_id='att_agent', model_id=None,
     return agent_id
 
 
-def _make_model(model_id='m1', attachments_supported=1, is_default=0):
+def _make_model(model_id='m1', is_default=0):
     db.create_model({
         'id': model_id,
         'name': model_id,
         'type': 'openai',
         'provider': 'openai',
         'model_name': model_id,
-        'attachments_supported': attachments_supported,
         'is_default': is_default,
     })
     return model_id
@@ -123,23 +122,16 @@ def test_cleanup_expired_attachments(tmp_path):
 
 
 def test_get_agent_attachment_config_resolves_via_default_model():
-    _make_model('m_attach', attachments_supported=1)
-    _make_agent(agent_id='ag_a', model_id='m_attach',
-                attachments_enabled=1, max_size_mb=15)
+    _make_agent(agent_id='ag_a', attachments_enabled=1, max_size_mb=15)
     cfg = db.get_agent_attachment_config('ag_a')
     assert cfg['enabled'] is True
-    assert cfg['supported'] is True
     assert cfg['max_size_mb'] == 15
-    assert cfg['model_id'] == 'm_attach'
 
 
 def test_get_agent_attachment_config_falls_back_to_global_default():
-    _make_model('m_global', attachments_supported=0, is_default=1)
-    _make_agent(agent_id='ag_b', model_id=None, attachments_enabled=1)
+    _make_agent(agent_id='ag_b', attachments_enabled=1)
     cfg = db.get_agent_attachment_config('ag_b')
     assert cfg['enabled'] is True
-    assert cfg['supported'] is False  # global default has it off
-    assert cfg['model_id'] == 'm_global'
 
 
 def test_get_agent_attachment_config_caps_max_size_to_20():
@@ -150,7 +142,7 @@ def test_get_agent_attachment_config_caps_max_size_to_20():
 
 def test_get_agent_attachment_config_unknown_agent():
     cfg = db.get_agent_attachment_config('does_not_exist')
-    assert cfg == {'enabled': False, 'max_size_mb': 20, 'supported': False, 'model_id': None}
+    assert cfg == {'enabled': False, 'max_size_mb': 20}
 
 
 def test_delete_session_attachments_removes_rows_and_files(tmp_path, monkeypatch):

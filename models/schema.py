@@ -714,11 +714,6 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
-            # Migration: add attachments_supported column to llm_models if missing
-            try:
-                cursor.execute("ALTER TABLE llm_models ADD COLUMN attachments_supported BOOLEAN DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass
 
             # ==================== Attachments Table ====================
             cursor.execute("""

@@ -62,7 +62,7 @@ def _msg_with_photo(file_id='tg_photo_1', file_size=2048):
     )
 
 
-def _make_agent(agent_id='tg_agent', enabled=1, max_mb=20, supported=1):
+def _make_agent(agent_id='tg_agent', enabled=1, max_mb=20):
     db.create_agent({
         'id': agent_id, 'name': agent_id, 'system_prompt': '',
     })
@@ -70,7 +70,6 @@ def _make_agent(agent_id='tg_agent', enabled=1, max_mb=20, supported=1):
     db.create_model({
         'id': model_id, 'name': model_id, 'type': 'openai',
         'provider': 'openai', 'model_name': model_id,
-        'attachments_supported': supported,
     })
     with db._connect() as conn:
         conn.execute(
@@ -215,7 +214,7 @@ async def _run_attachment_branch(message, agent_id, session_id, user_id,
     if non_photo:
         file_id, original_filename, mime_type, size_bytes, file_type = non_photo
         cfg = db.get_agent_attachment_config(agent_id)
-        if not cfg['enabled'] or not cfg['supported']:
+        if not cfg['enabled']:
             await message.reply_text("Attachments are not enabled for this assistant.")
             return {'rejected': 'gated', 'replies': replied, 'text': text}
         max_bytes = cfg['max_size_mb'] * 1024 * 1024
@@ -260,7 +259,7 @@ def _aio_run(coro):
 
 def test_handler_branch_accepts_document(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_doc_ok', enabled=1, supported=1, max_mb=5)
+    _make_agent('tg_doc_ok', enabled=1, max_mb=5)
     msg = _msg_with_document(file_size=1024)
     ctx = _make_context_bot(b'BODY')
     out = _aio_run(_run_attachment_branch(
@@ -279,7 +278,7 @@ def test_handler_branch_accepts_document(tmp_path, monkeypatch):
 
 def test_handler_branch_rejects_when_disabled(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_doc_off', enabled=0, supported=1)
+    _make_agent('tg_doc_off', enabled=0)
     msg = _msg_with_document()
     ctx = _make_context_bot()
     out = _aio_run(_run_attachment_branch(
@@ -295,7 +294,7 @@ def test_handler_branch_rejects_when_disabled(tmp_path, monkeypatch):
 
 def test_handler_branch_rejects_oversize(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_doc_big', enabled=1, supported=1, max_mb=1)
+    _make_agent('tg_doc_big', enabled=1, max_mb=1)
     msg = _msg_with_document(file_size=5 * 1024 * 1024)
     ctx = _make_context_bot()
     out = _aio_run(_run_attachment_branch(
@@ -308,9 +307,9 @@ def test_handler_branch_rejects_oversize(tmp_path, monkeypatch):
     assert db.list_session_attachments('s1', 'tg_doc_big') == []
 
 
-def test_handler_branch_rejects_when_model_unsupported(tmp_path, monkeypatch):
+def test_handler_branch_rejects_when_disabled_alt(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_doc_nosup', enabled=1, supported=0)
+    _make_agent('tg_doc_nosup', enabled=0)
     msg = _msg_with_document()
     ctx = _make_context_bot()
     out = _aio_run(_run_attachment_branch(
@@ -334,11 +333,11 @@ def _make_photo_context(body: bytes):
 
 def test_photo_with_vision_and_attachments_emits_single_attached_line(
         tmp_path, monkeypatch):
-    """Photo + vision_enabled + attachments_enabled+supported must produce
+    """Photo + vision_enabled + attachments_enabled must produce
     exactly one `[Attached:` substring when the handler composes the final
     text — never two (the old dual-handling bug)."""
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_photo_dual', enabled=1, supported=1, max_mb=5)
+    _make_agent('tg_photo_dual', enabled=1, max_mb=5)
     _set_agent_vision('tg_photo_dual', 1)
     body = _make_jpeg_bytes()
     msg = _msg_with_photo(file_size=len(body))
@@ -371,7 +370,7 @@ def test_photo_with_vision_only_emits_no_attached_line(tmp_path, monkeypatch):
     produce an `image_url` but zero `[Attached:` lines (the old block would
     accidentally synthesize an extra one)."""
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_photo_vision_only', enabled=0, supported=1)
+    _make_agent('tg_photo_vision_only', enabled=0)
     _set_agent_vision('tg_photo_vision_only', 1)
     body = _make_jpeg_bytes()
     msg = _msg_with_photo(file_size=len(body))
@@ -396,7 +395,7 @@ def test_photo_with_attachments_only_emits_single_attached_line(
     """Photo + vision DISABLED + attachments enabled must persist the photo
     via the fallback download path and emit exactly one `[Attached:` line."""
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_photo_att_only', enabled=1, supported=1, max_mb=5)
+    _make_agent('tg_photo_att_only', enabled=1, max_mb=5)
     _set_agent_vision('tg_photo_att_only', 0)
     body = _make_jpeg_bytes()
     msg = _msg_with_photo(file_size=len(body))
@@ -419,7 +418,7 @@ def test_ingest_photo_short_circuits_for_text_only_message(monkeypatch, tmp_path
     image-document — the handler still calls it unconditionally in the new
     linear pipeline, and we lock in `(None, None)` as the contract."""
     monkeypatch.chdir(tmp_path)
-    _make_agent('tg_text_only', enabled=1, supported=1)
+    _make_agent('tg_text_only', enabled=1)
     _set_agent_vision('tg_text_only', 1)
     text_only_msg = SimpleNamespace(
         document=None, audio=None, voice=None, video=None,

@@ -176,7 +176,6 @@ def api_clone_model(model_id):
         "model_max_concurrent": source.get("model_max_concurrent", 1),
         "api_format": source.get("api_format", "openai"),
         "vision_supported": source.get("vision_supported", 0),
-        "attachments_supported": source.get("attachments_supported", 0),
     }
     db.create_model(clone_data)
     return jsonify({"success": True, "model_id": new_id})

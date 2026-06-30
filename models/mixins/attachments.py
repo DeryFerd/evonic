@@ -248,20 +248,18 @@ class AttachmentsMixin:
     def get_agent_attachment_config(self, agent_id: str) -> Dict[str, Any]:
         """Resolve the effective attachment configuration for an agent.
 
-        Returns dict: {enabled: bool, max_size_mb: int, supported: bool, model_id: Optional[str]}.
-        Resolves model via agents.model_id, falling back to the global default model.
+        Returns dict: {enabled: bool, max_size_mb: int}.
+        Checks only the agent-level attachments_enabled flag; models do not gate attachments.
         """
         result = {
             'enabled': False,
             'max_size_mb': 20,
-            'supported': False,
-            'model_id': None,
         }
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT attachments_enabled, attachment_max_size_mb, model_id "
+                "SELECT attachments_enabled, attachment_max_size_mb "
                 "FROM agents WHERE id = ?",
                 (agent_id,),
             )
@@ -276,22 +274,4 @@ class AttachmentsMixin:
             # Hard-cap to Telegram bot API limit
             if result['max_size_mb'] > 20:
                 result['max_size_mb'] = 20
-
-            model_id = agent_row['model_id']
-            model_row = None
-            if model_id:
-                cursor.execute(
-                    "SELECT id, attachments_supported FROM llm_models WHERE id = ?",
-                    (model_id,),
-                )
-                model_row = cursor.fetchone()
-            if not model_row:
-                cursor.execute(
-                    "SELECT id, attachments_supported FROM llm_models "
-                    "WHERE is_default = 1 LIMIT 1"
-                )
-                model_row = cursor.fetchone()
-            if model_row:
-                result['model_id'] = model_row['id']
-                result['supported'] = bool(model_row['attachments_supported'])
         return result

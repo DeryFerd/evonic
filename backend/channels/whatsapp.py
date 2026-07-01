@@ -166,55 +166,115 @@ class WhatsAppChannel(BaseChannel):
         _logger.info("WhatsApp channel %s starting (bridge port %s)", self.channel_id, self._bridge_port)
 
     def _start_bridge(self):
-        """Launch the Baileys sidecar (runs in background thread)."""
-        try:
-            # Ensure npm dependencies are installed
-            node_modules = os.path.join(_BRIDGE_DIR, 'node_modules')
-            if not os.path.isdir(node_modules):
-                _logger.info("Installing whatsapp-bridge npm dependencies...")
-                subprocess.run(
-                    ['npm', 'install'],
-                    cwd=_BRIDGE_DIR,
-                    check=True,
-                    capture_output=True,
+        """Launch the Baileys sidecar with auto-restart on unexpected exit.
+
+        The bridge subprocess (Node.js Express + Baileys) can crash transiently
+        during cold auto-start (e.g. auth state instability after forced kill).
+        This method retries up to MAX_RESTARTS times with exponential backoff,
+        then gives up and sets _running = False.
+        """
+        MAX_RESTARTS = 3
+        backoff = 2  # seconds, doubles each retry
+        node_modules_installed = os.path.isdir(os.path.join(_BRIDGE_DIR, 'node_modules'))
+        restart_count = 0
+
+        while restart_count <= MAX_RESTARTS:
+            try:
+                # Ensure npm dependencies are installed (only on first attempt)
+                if not node_modules_installed:
+                    _logger.info("Installing whatsapp-bridge npm dependencies...")
+                    subprocess.run(
+                        ['npm', 'install'],
+                        cwd=_BRIDGE_DIR,
+                        check=True,
+                        capture_output=True,
+                    )
+                    node_modules_installed = True
+
+                from config import PORT as EVONIC_PORT
+                session_dir = os.path.join('data', 'whatsapp-sessions', self.channel_id)
+                os.makedirs(session_dir, exist_ok=True)
+
+                callback_url = (
+                    f"http://127.0.0.1:{EVONIC_PORT}"
+                    f"/api/channels/whatsapp-bridge/{self.channel_id}/callback"
                 )
 
-            from config import PORT as EVONIC_PORT
-            session_dir = os.path.join('data', 'whatsapp-sessions', self.channel_id)
-            os.makedirs(session_dir, exist_ok=True)
+                env = {
+                    **os.environ,
+                    'PORT': str(self._bridge_port),
+                    'CALLBACK_URL': callback_url,
+                    'CALLBACK_SECRET': self._callback_secret,
+                    'AUTH_DIR': os.path.abspath(session_dir),
+                }
 
-            callback_url = (
-                f"http://127.0.0.1:{EVONIC_PORT}"
-                f"/api/channels/whatsapp-bridge/{self.channel_id}/callback"
-            )
+                self._process = subprocess.Popen(
+                    ['node', os.path.join(_BRIDGE_DIR, 'index.js')],
+                    env=env,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
 
-            env = {
-                **os.environ,
-                'PORT': str(self._bridge_port),
-                'CALLBACK_URL': callback_url,
-                'CALLBACK_SECRET': self._callback_secret,
-                'AUTH_DIR': os.path.abspath(session_dir),
-            }
-
-            self._process = subprocess.Popen(
-                ['node', os.path.join(_BRIDGE_DIR, 'index.js')],
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-            )
-            _logger.info("WhatsApp bridge started for channel %s on port %s", self.channel_id, self._bridge_port)
-
-            for line in self._process.stdout:
+                # Guard: if stop() was called during a retry sleep, kill the
+                # newly spawned process immediately to avoid orphan processes.
                 if not self._running:
-                    break
-                _logger.debug("[bridge] %s", line.decode().rstrip())
-            # If we exit the loop while still running, the bridge process died unexpectedly
-            if self._running:
-                self._running = False
-                _logger.warning("WhatsApp bridge process exited unexpectedly for channel %s (port %s)",
-                               self.channel_id, self._bridge_port)
-        except Exception as e:
-            _logger.error("WhatsApp bridge failed to start for channel %s: %s", self.channel_id, e)
+                    _logger.info("WhatsApp bridge for channel %s stopped during startup — cleaning up", self.channel_id)
+                    self._process.terminate()
+                    try:
+                        self._process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self._process.kill()
+                    self._process = None
+                    return
+
+                if restart_count == 0:
+                    _logger.info("WhatsApp bridge started for channel %s on port %s",
+                                 self.channel_id, self._bridge_port)
+                else:
+                    _logger.info("WhatsApp bridge restarted for channel %s (attempt %d/%d, port %s)",
+                                 self.channel_id, restart_count, MAX_RESTARTS, self._bridge_port)
+
+                # Consume stdout until the process dies or we're asked to stop
+                for line in self._process.stdout:
+                    if not self._running:
+                        break
+                    _logger.debug("[bridge] %s", line.decode().rstrip())
+
+                # If _running is False, this was a deliberate stop — exit cleanly
+                if not self._running:
+                    return
+
+                # Bridge exited while _running is still True — unexpected crash
+                restart_count += 1
+                if restart_count <= MAX_RESTARTS:
+                    _logger.warning(
+                        "WhatsApp bridge exited unexpectedly for channel %s (port %s) — "
+                        "restarting in %ds (%d/%d)",
+                        self.channel_id, self._bridge_port, backoff, restart_count, MAX_RESTARTS,
+                    )
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    self._running = False
+                    _logger.error(
+                        "WhatsApp bridge failed to stay alive after %d restarts for channel %s",
+                        MAX_RESTARTS, self.channel_id,
+                    )
+
+            except Exception as e:
+                _logger.error("WhatsApp bridge error for channel %s: %s", self.channel_id, e)
+                restart_count += 1
+                if restart_count <= MAX_RESTARTS:
+                    _logger.info("Retrying bridge startup for channel %s in %ds (%d/%d)",
+                                 self.channel_id, backoff, restart_count, MAX_RESTARTS)
+                    time.sleep(backoff)
+                    backoff *= 2
+                else:
+                    self._running = False
+                    _logger.error(
+                        "WhatsApp bridge failed to start after %d attempts for channel %s",
+                        MAX_RESTARTS + 1, self.channel_id,
+                    )
 
     def stop(self):
         if not self._running:
@@ -269,6 +329,7 @@ class WhatsAppChannel(BaseChannel):
 
         # In groups, only respond when @mentioned or when user replies to a bot message
         if is_group and not bot_mentioned and not quoted_is_bot:
+            _logger.debug("WhatsApp group message dropped (not mentioned): sender=%s text=%s", sender, text[:80] if text else "")
             return
 
         # Strip the @mention tag from the message text

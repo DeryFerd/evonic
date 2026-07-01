@@ -411,6 +411,13 @@ class WhatsAppChannel(BaseChannel):
         if result.get('buffered'):
             return
 
+        # Cancel any pending debounced typing timer so it doesn't fire
+        # after the response is sent (would show a phantom "typing" indicator).
+        with self._typing_lock:
+            pending_timer = self._typing_timer.pop(sender, None)
+            if pending_timer:
+                pending_timer.cancel()
+
         response = _strip_markdown(result.get('response') or '')
         if response and response != "(No response)":
             # Human-like typing delay relative to response length

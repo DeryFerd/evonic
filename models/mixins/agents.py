@@ -321,3 +321,62 @@ class AgentMixin:
             )
             row = cursor.fetchone()
             return row[0] if row else None
+
+    # ---- Pending tool-call approvals (for SSE snapshot on reconnect) ----
+
+    def store_pending_tool_approval(self, approval_id: str, session_id: str,
+                                     agent_id: str, tool_name: str,
+                                     tool_args: dict, approval_info: dict,
+                                     reasons: list, score: int = None,
+                                     source_agent_id: str = None,
+                                     source_agent_name: str = None):
+        """Persist a pending tool-call approval to the database so
+        reconnecting SSE clients can retrieve it via _build_snapshot()."""
+        import json
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO pending_tool_approvals
+                    (id, session_id, agent_id, tool_name, tool_args,
+                     approval_info, reasons, score,
+                     source_agent_id, source_agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                approval_id, session_id, agent_id, tool_name,
+                json.dumps(tool_args), json.dumps(approval_info),
+                json.dumps(reasons), score,
+                source_agent_id, source_agent_name,
+            ))
+            conn.commit()
+
+    def delete_pending_tool_approval(self, approval_id: str):
+        """Remove a resolved tool-call approval from the database."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_tool_approvals WHERE id = ?",
+                (approval_id,)
+            )
+            conn.commit()
+
+    def get_pending_tool_approvals(self) -> list:
+        """Return all pending tool-call approvals (for SSE snapshot)."""
+        import json
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT id, session_id, agent_id, tool_name, tool_args,
+                       approval_info, reasons, score,
+                       source_agent_id, source_agent_name,
+                       created_at
+                FROM pending_tool_approvals
+                ORDER BY created_at
+            """).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                for col in ('tool_args', 'approval_info', 'reasons'):
+                    try:
+                        d[col] = json.loads(d[col])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(d)
+            return results

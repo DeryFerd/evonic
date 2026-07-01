@@ -209,6 +209,27 @@ class CircuitBreaker:
 _connections: dict = {}  # key: connection_id -> RealtimeConnection
 _conn_lock = threading.Lock()
 
+# Heartbeat-aware web SSE delivery check: maximum age (seconds) of the
+# last heartbeat before a connection is considered disconnected.
+WEB_SSE_HEARTBEAT_MAX_AGE = 45  # 3 × HEARTBEAT_INTERVAL
+
+
+def has_active_web_sse(session_id: str) -> bool:
+    """Return True if any SSE connection for *session_id* has had a
+    heartbeat within WEB_SSE_HEARTBEAT_MAX_AGE seconds.
+
+    This is more reliable than has_web_listener() which only checks
+    listener registration, not actual delivery.
+    """
+    now = time.monotonic()
+    with _conn_lock:
+        for conn in _connections.values():
+            if conn.chat_session_id == session_id:
+                if (conn.last_heartbeat_time > 0 and
+                        (now - conn.last_heartbeat_time) < WEB_SSE_HEARTBEAT_MAX_AGE):
+                    return True
+    return False
+
 
 class RealtimeConnection:
     """Per-connection state for the unified SSE stream."""
@@ -232,6 +253,12 @@ class RealtimeConnection:
         # Per-channel pause buffers
         self._pause_buffers: dict[str, BoundedRing] = {}
         self.last_write_ok = True
+        # Reference to per-channel rings (set by api_realtime_stream)
+        # so api_realtime_resume can flush pause buffers back into them.
+        self.rings: dict[str, BoundedRing] | None = None
+        # Last heartbeat timestamp (monotonic). Updated by the generator.
+        # Used by has_active_web_listener() to verify delivery.
+        self.last_heartbeat_time: float = 0.0
 
     def stop(self):
         self._stop_event.set()
@@ -320,7 +347,7 @@ def _build_snapshot(channels: set, agent_id: str = None,
     if 'approval' in channels:
         from models.db import db
         try:
-            pending = db.get_pending_approvals()
+            pending = db.get_pending_tool_approvals()
             for app in (pending or []):
                 events.append(('approval_required', {
                     'approval_id': app.get('id', ''),
@@ -824,6 +851,10 @@ def api_realtime_stream():
     for ch in all_channels:
         breakers[ch] = CircuitBreaker(ch)
 
+    # Store rings ref on the connection so api_realtime_resume can flush
+    # pause buffers back into the rings after resume.
+    conn.rings = rings
+
     # Start producer threads (task isolation)
     producers = {}
     stop_event = conn._stop_event  # shared stop signal
@@ -925,6 +956,7 @@ def api_realtime_stream():
                     try:
                         yield "event: heartbeat\ndata: {}\n\n"
                         heartbeat_failures = 0
+                        conn.last_heartbeat_time = now
                     except (BrokenPipeError, OSError):
                         heartbeat_failures += 1
                         if heartbeat_failures >= HEARTBEAT_MAX_FAILURES:
@@ -1096,18 +1128,17 @@ def api_realtime_resume():
         for conn in list(_connections.values()):
             if conn.chat_session_id == session_id:
                 conn.resume()
-                # Flush pause buffers through the main SSE stream
-                # by draining them back into the rings
-                for ch in ('chat', 'workplace'):
-                    buf = conn._pause_buffers.get(ch)
-                    if buf:
-                        for _seq, item in buf.get_all():
-                            # Re-insert into main ring
-                            from backend.event_stream import event_stream
-                            # We don't have easy access to the rings from here,
-                            # but the next priority_round_robin will pick them up
-                            # if we just mark as resumed.
-                            pass
+                # Flush pause buffers — drain events that accumulated
+                # while paused and re-insert them into the per-channel
+                # rings so the generator yields them on the next pass.
+                if conn.rings:
+                    for ch in ('chat', 'workplace'):
+                        buf = conn._pause_buffers.get(ch)
+                        if buf:
+                            ring = conn.rings.get(ch)
+                            if ring:
+                                for _seq, item in buf.get_all():
+                                    ring.put(item)
     return Response(json.dumps({'ok': True}), mimetype='application/json')
 
 

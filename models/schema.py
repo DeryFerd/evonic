@@ -614,6 +614,25 @@ class SchemaMixin:
                 )
             """)
 
+            # Pending tool-call approvals (for snapshot on SSE reconnect)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_tool_approvals (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_args TEXT NOT NULL DEFAULT '{}',
+                    approval_info TEXT NOT NULL DEFAULT '{}',
+                    reasons TEXT NOT NULL DEFAULT '[]',
+                    score INTEGER,
+                    source_agent_id TEXT,
+                    source_agent_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_tool_approvals_session ON pending_tool_approvals(session_id)")
+
             # App-level settings (key-value store)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS app_settings (

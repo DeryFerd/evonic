@@ -1647,6 +1647,24 @@ def run_tool_loop(agent: Dict[str, Any],
                     safety_result=tool_result,
                 )
 
+                # Persist to DB so reconnecting SSE clients can retrieve
+                # the pending approval via _build_snapshot().
+                try:
+                    db.store_pending_tool_approval(
+                        approval_id=pending.approval_id,
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        tool_name=fn_name,
+                        tool_args=args,
+                        approval_info=tool_result.get('approval_info', {}),
+                        reasons=tool_result.get('reasons', []),
+                        score=tool_result.get('score'),
+                        source_agent_id=agent_id,
+                        source_agent_name=agent.get('name', agent_id),
+                    )
+                except Exception:
+                    pass  # Non-critical — snapshot will miss this approval but SSE still works
+
                 event_stream.emit('approval_required', {
                     'agent_id': agent_id, 'session_id': session_id,
                     'external_user_id': external_user_id, 'channel_id': channel_id,
@@ -1660,72 +1678,83 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
 
                 # Escalation: ensure a human can see the approval.
-                # For inter-agent sessions, the current session has no human viewer —
-                # always escalate to the agent's own human session or the super agent.
-                # For direct sessions, escalate only if no web/channel listener.
+                # We always fan-out to BOTH web SSE AND messaging channels,
+                # because has_web_listener() is unreliable — it only checks
+                # listener registration, not actual SSE delivery. If SSE
+                # disconnects and reconnects, the approval event may already
+                # be gone from the ring buffer. Web SSE delivers the approval
+                # modal in the browser; messaging channels deliver a fallback
+                # notification via Telegram/WhatsApp.
                 # List of (session_id, external_user_id, channel_id) that received
                 # approval_required — used to fan-out approval_resolved to all of them.
                 _escalation_targets: list = []
-                _is_inter_agent = bool(external_user_id and external_user_id.startswith('__agent__'))
                 try:
                     from backend.channels.registry import channel_manager
                     from backend.agent_runtime.notifier import _resolve_agent_target
-                    if _is_inter_agent:
-                        _needs_escalation = True
-                    else:
-                        _agent_has_channel = any(
-                            ch['id'] in channel_manager._active
-                            for ch in db.get_channels(agent_id)
+
+                    _approval_event_payload = {
+                        'agent_id': agent_id,
+                        'approval_id': pending.approval_id,
+                        'tool_name': fn_name,
+                        'tool_args': args,
+                        'approval_info': tool_result.get('approval_info', {}),
+                        'reasons': tool_result.get('reasons', []),
+                        'score': tool_result.get('score'),
+                        'source_agent_id': agent_id,
+                        'source_agent_name': agent.get('name', agent_id),
+                    }
+
+                    # Web UI: always emit to the agent's most-recent human
+                    # session so the approval modal appears in the browser.
+                    _human_session = db.get_latest_human_session(agent_id)
+                    _human_session_id = _human_session.get('id') if _human_session else None
+                    if _human_session_id:
+                        _web_uid = _human_session.get('external_user_id', '')
+                        _web_cid = _human_session.get('channel_id')
+                        event_stream.emit('approval_required', {
+                            **_approval_event_payload,
+                            'session_id': _human_session_id,
+                            'external_user_id': _web_uid,
+                            'channel_id': _web_cid,
+                        })
+                        _escalation_targets.append((_human_session_id, _web_uid, _web_cid))
+
+                    # Channel (Telegram/WhatsApp): always notify via the super
+                    # agent's messaging channel as a fallback. We no longer gate
+                    # this behind has_web_listener() because the registration
+                    # may exist while the SSE connection is not delivering.
+
+                    # Verify web SSE delivery with heartbeat-aware check.
+                    # has_web_listener() only confirms a callback is registered;
+                    # this confirms the SSE connection is actually sending heartbeats.
+                    _web_sse_active = False
+                    try:
+                        from routes.realtime import has_active_web_sse
+                        _web_sse_active = (
+                            has_active_web_sse(session_id) or
+                            (_human_session_id and has_active_web_sse(_human_session_id))
                         )
-                        _web_is_watching = event_stream.has_web_listener(session_id)
-                        _needs_escalation = not _agent_has_channel and not _web_is_watching
+                    except Exception:
+                        pass  # routes.realtime may not be importable in all contexts
 
-                    if _needs_escalation:
-                        _approval_event_payload = {
-                            'agent_id': agent_id,
-                            'approval_id': pending.approval_id,
-                            'tool_name': fn_name,
-                            'tool_args': args,
-                            'approval_info': tool_result.get('approval_info', {}),
-                            'reasons': tool_result.get('reasons', []),
-                            'score': tool_result.get('score'),
-                            'source_agent_id': agent_id,
-                            'source_agent_name': agent.get('name', agent_id),
-                        }
-
-                        # Web UI: emit to the agent's most-recent human session so the
-                        # approval modal appears in the browser (sessions.html handles this).
-                        _human_session = db.get_latest_human_session(agent_id)
-                        _human_session_id = _human_session.get('id') if _human_session else None
-                        if _human_session_id:
-                            _web_uid = _human_session.get('external_user_id', '')
-                            _web_cid = _human_session.get('channel_id')
+                    if not _web_sse_active:
+                        _logger.info(
+                            "approval %s: web SSE appears inactive for session %s "
+                            "(heartbeat not received within window) — relying on "
+                            "messaging channel fallback",
+                            pending.approval_id, session_id,
+                        )
+                    _super = db.get_super_agent()
+                    if _super and _super['id'] != agent_id:
+                        _su_uid, _su_cid = _resolve_agent_target(_super['id'])
+                        if _su_uid and _su_cid:
                             event_stream.emit('approval_required', {
                                 **_approval_event_payload,
-                                'session_id': _human_session_id,
-                                'external_user_id': _web_uid,
-                                'channel_id': _web_cid,
+                                'session_id': session_id,
+                                'external_user_id': _su_uid,
+                                'channel_id': _su_cid,
                             })
-                            _escalation_targets.append((_human_session_id, _web_uid, _web_cid))
-
-                        # Channel (Telegram / any active channel): always notify for
-                        # inter-agent sessions. For direct sessions, only if no web listener.
-                        _has_human_listener = bool(
-                            _human_session_id and event_stream.has_web_listener(_human_session_id)
-                        )
-                        _try_channel_escalation = _is_inter_agent or not _has_human_listener
-                        if _try_channel_escalation:
-                            _super = db.get_super_agent()
-                            if _super and _super['id'] != agent_id:
-                                _su_uid, _su_cid = _resolve_agent_target(_super['id'])
-                                if _su_uid and _su_cid:
-                                    event_stream.emit('approval_required', {
-                                        **_approval_event_payload,
-                                        'session_id': session_id,
-                                        'external_user_id': _su_uid,
-                                        'channel_id': _su_cid,
-                                    })
-                                    _escalation_targets.append((session_id, _su_uid, _su_cid))
+                            _escalation_targets.append((session_id, _su_uid, _su_cid))
                 except Exception:
                     pass  # Never block approval flow due to escalation failure
 
@@ -1766,6 +1795,10 @@ def run_tool_loop(agent: Dict[str, Any],
                         'timed_out': timed_out,
                     })
                 approval_registry.remove(pending.approval_id)
+                try:
+                    db.delete_pending_tool_approval(pending.approval_id)
+                except Exception:
+                    pass  # Non-critical — stale entry will age out on next create
 
                 if decision == 'approve':
                     # Re-execute bypassing safety check

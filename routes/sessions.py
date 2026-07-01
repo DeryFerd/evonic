@@ -22,6 +22,22 @@ sessions_bp = Blueprint('sessions', __name__)
 
 _IMAGE_MIMES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 
+
+def _human_size(size_bytes: int | None) -> str:
+    """Render a byte count as a human-friendly string."""
+    if size_bytes is None or size_bytes < 0:
+        return '0B'
+    units = ['B', 'KB', 'MB', 'GB']
+    n = float(size_bytes)
+    for unit in units:
+        if n < 1024 or unit == units[-1]:
+            if unit == 'B':
+                return f"{int(n)}{unit}"
+            return f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{int(size_bytes)}B"
+
+
 # Reuse text/pdf detection from read_attachment
 from backend.tools.read_attachment import (
     _is_textish, _is_pdf, _read_pdf_text, _TEXTISH_EXTS,
@@ -230,13 +246,19 @@ def api_session_reply(session_id):
         attachment_info = result['attachment_info']
         upload_meta = {'attachment_info': attachment_info}
 
-        # For non-image files, prepend extracted text to user message
-        if result['text_prefix']:
-            text = f"{result['text_prefix']}\n\n{text}" if text else result['text_prefix']
+        # Build [Attached: ... id=N] line so agents can use read_attachment(attachment_id=N)
+        att = result['attachment_info']
+        info_line = (
+            f"[Attached: {att['filename']} "
+            f"({att['mime_type']}, {_human_size(att['size_bytes'])}) "
+            f"id={att['attachment_id']} path={att['file_path']}]"
+        )
 
-        # Fallback display text when no user text provided
-        if not text:
-            text = '[Image]' if attachment_info.get('is_image') else f"[File: {attachment_info['filename']}]"
+        # Prepend info_line to text; for non-image files also prepend extracted content
+        if result['text_prefix']:
+            text = f"{info_line}\n\n{result['text_prefix']}\n\n{text}" if text else f"{info_line}\n\n{result['text_prefix']}"
+        else:
+            text = f"{info_line}\n\n{text}" if text else info_line
 
     if perspective == 'A':
         result = agent_runtime.send_as_user(session_id, text,

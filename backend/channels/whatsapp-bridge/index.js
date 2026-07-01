@@ -135,6 +135,12 @@ async function startBaileys() {
                 }
             }
 
+            // Debug: log message structure for group messages
+            if (isGroup) {
+                console.log('[whatsapp-bridge] GROUP MSG keys:', JSON.stringify(Object.keys(msg.message || {})));
+                console.log('[whatsapp-bridge] GROUP MSG from:', sender, 'text:', text?.substring(0, 100));
+            }
+
             // Extract reply/quoted context (contextInfo lives on whichever message type is present)
             const contextInfo = msg.message?.extendedTextMessage?.contextInfo
                 || msg.message?.imageMessage?.contextInfo
@@ -157,10 +163,20 @@ async function startBaileys() {
 
             // Check if bot is @mentioned
             const mentionedJids = contextInfo?.mentionedJid || [];
-            const botMentioned = mentionedJids.some(
+            let botMentioned = mentionedJids.some(
                 m => (botId && areJidsSameUser(m, botId))
                     || (botLid && areJidsSameUser(m, botLid))
             );
+            // Fallback: check text for @bot_number if contextInfo didn't have mentions
+            if (!botMentioned && isGroup && botId && text) {
+                const botPhone = botId.split(':')[0].split('@')[0];
+                if (botPhone && text.includes('@' + botPhone)) {
+                    botMentioned = true;
+                }
+            }
+            if (isGroup) {
+                console.log('[whatsapp-bridge] mentionedJids:', JSON.stringify(mentionedJids), 'botMentioned:', botMentioned, 'quotedIsBot:', quotedIsBot, 'botId:', botId, 'botLid:', botLid);
+            }
 
             postCallback({
                 from: sender, jid, message_id: messageId, text, image,

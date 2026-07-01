@@ -952,6 +952,10 @@ def _cache_key_valid(agent: Dict[str, Any], cache_entry: Dict[str, Any]) -> bool
     if get_evomem_db_mtime(eid) != cache_entry.get('evomem_mtime', 0.0):
         return False
 
+    # Check run_as_user — changing the execution user must invalidate the cache
+    if agent.get('run_as_user') != cache_entry.get('run_as_user'):
+        return False
+
     return True
 
 
@@ -995,6 +999,7 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
             'ctx_mtime': _get_mtime(__file__),
             'sandbox_enabled': agent.get('sandbox_enabled', 0),
             'vars_hash': vars_hash,
+            'run_as_user': agent.get('run_as_user'),
         }
 
     prompt = static_prompt
@@ -1038,6 +1043,11 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
         if not has_template_vars:
             prompt += (f"\n\nCurrent date/time: {now.strftime('%A')}, "
                        f"{now.strftime('%Y-%m-%d')}, {now.strftime('%H:%M:%S')} (WIB/UTC+7)")
+
+    # Run-as-user awareness: tell agent which user they execute as (no sudo needed).
+    run_as_user = agent.get('run_as_user')
+    if run_as_user and not agent.get('sandbox_enabled'):
+        prompt += f"\n\nYou are run as the **{run_as_user}** user."
 
     # Dynamic enabled-agent roster for super agents.
     # Injects a lightweight list of enabled agents (id, name, description) so the

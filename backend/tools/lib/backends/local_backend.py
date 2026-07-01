@@ -5,6 +5,7 @@ Used when sandbox_enabled=0 in agent_context. No container, no isolation.
 """
 
 import os
+import pwd
 import subprocess
 import time
 
@@ -101,6 +102,11 @@ class LocalBackend(ExecutionBackend):
     def run_bash(self, script: str, timeout: int, env: dict) -> dict:
         run_env = dict(os.environ)
         run_env.update(env)
+        if self._run_as_user is not None:
+            try:
+                run_env['HOME'] = pwd.getpwnam(self._run_as_user).pw_dir
+            except KeyError:
+                run_env['HOME'] = f'/home/{self._run_as_user}'
         t0 = time.time()
         cmd = ['sudo', '-E', '-u', self._run_as_user, 'bash', '-s'] if self._run_as_user is not None else ['bash', '-s']
         proc = subprocess.Popen(
@@ -149,6 +155,11 @@ class LocalBackend(ExecutionBackend):
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
         run_env = dict(os.environ)
         run_env.update(env)
+        if self._run_as_user is not None:
+            try:
+                run_env['HOME'] = pwd.getpwnam(self._run_as_user).pw_dir
+            except KeyError:
+                run_env['HOME'] = f'/home/{self._run_as_user}'
         existing = run_env.get('PYTHONPATH', '')
         run_env['PYTHONPATH'] = f"{_HELPERS_PARENT_DIR}{os.pathsep}{existing}".rstrip(os.pathsep)
         t0 = time.time()

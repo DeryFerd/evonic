@@ -20,6 +20,8 @@ let sock = null;
 let currentQR = null;
 let connectionStatus = 'disconnected'; // 'disconnected' | 'qr_pending' | 'connected'
 let isShuttingDown = false;
+let botId = '';   // PN-based JID (e.g. 628xxx:1@s.whatsapp.net)
+let botLid = '';  // LID-based JID (e.g. 123456:1@lid)
 
 async function startBaileys() {
     const baileys = await import('@whiskeysockets/baileys');
@@ -30,6 +32,7 @@ async function startBaileys() {
         fetchLatestBaileysVersion,
         makeCacheableSignalKeyStore,
         downloadMediaMessage,
+        areJidsSameUser,
     } = baileys;
     const makeInMemoryStore = baileys.makeInMemoryStore || null;
     const { Boom } = await import('@hapi/boom');
@@ -61,7 +64,9 @@ async function startBaileys() {
         if (connection === 'open') {
             currentQR = null;
             connectionStatus = 'connected';
-            console.log('[whatsapp-bridge] Connected to WhatsApp');
+            botId = sock.user?.id || '';
+            botLid = sock.user?.lid || '';
+            console.log('[whatsapp-bridge] Connected to WhatsApp (id=%s, lid=%s)', botId, botLid);
         }
 
         if (connection === 'close') {
@@ -89,10 +94,14 @@ async function startBaileys() {
             if (msg.key.fromMe) continue;
 
             const from = msg.key.remoteJid || '';
+            const isGroup = from.endsWith('@g.us');
 
-            // Use remoteJid as-is for replies (@lid JIDs are valid routable identifiers)
+            // In groups, remoteJid is the group; the actual sender is in participant
+            const participant = isGroup ? (msg.key.participant || '') : '';
             const jid = from;
-            const sender = from.includes('@') ? from.split('@')[0] : from;
+            const sender = isGroup
+                ? (participant.includes('@') ? participant.split('@')[0] : participant)
+                : (from.includes('@') ? from.split('@')[0] : from);
             const messageId = msg.key.id || '';
 
             // Extract text
@@ -126,17 +135,41 @@ async function startBaileys() {
                 }
             }
 
-            // Extract reply/quoted context
+            // Extract reply/quoted context (contextInfo lives on whichever message type is present)
+            const contextInfo = msg.message?.extendedTextMessage?.contextInfo
+                || msg.message?.imageMessage?.contextInfo
+                || msg.message?.videoMessage?.contextInfo
+                || msg.message?.audioMessage?.contextInfo;
             let quotedText = null;
-            const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            let quotedIsBot = false;
+            const quoted = contextInfo?.quotedMessage;
             if (quoted) {
                 quotedText =
                     quoted.conversation ||
                     quoted.extendedTextMessage?.text ||
                     null;
+                const quotedParticipant = contextInfo.participant || '';
+                if (quotedParticipant) {
+                    quotedIsBot = (botId && areJidsSameUser(quotedParticipant, botId))
+                        || (botLid && areJidsSameUser(quotedParticipant, botLid));
+                }
             }
 
-            postCallback({ from: sender, jid, message_id: messageId, text, image, quoted_text: quotedText });
+            // Check if bot is @mentioned
+            const mentionedJids = contextInfo?.mentionedJid || [];
+            const botMentioned = mentionedJids.some(
+                m => (botId && areJidsSameUser(m, botId))
+                    || (botLid && areJidsSameUser(m, botLid))
+            );
+
+            postCallback({
+                from: sender, jid, message_id: messageId, text, image,
+                quoted_text: quotedText,
+                is_group: isGroup,
+                bot_mentioned: botMentioned,
+                quoted_is_bot: quotedIsBot,
+                pushName: msg.pushName || '',
+            });
         }
     });
 }

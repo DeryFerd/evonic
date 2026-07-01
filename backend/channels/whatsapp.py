@@ -255,6 +255,10 @@ class WhatsAppChannel(BaseChannel):
 
         sender = payload.get('from', '')
         jid = payload.get('jid') or sender  # full WhatsApp JID for replies
+        is_group = payload.get('is_group', False)
+        bot_mentioned = payload.get('bot_mentioned', False)
+        quoted_is_bot = payload.get('quoted_is_bot', False)
+
         if sender and jid:
             self._jid_map[sender] = jid
         text = strip_system_tags(payload.get('text', ''))
@@ -262,6 +266,14 @@ class WhatsAppChannel(BaseChannel):
         audio_data = payload.get('audio')
         video_data = payload.get('video')
         quoted_text = payload.get('quoted_text')
+
+        # In groups, only respond when @mentioned or when user replies to a bot message
+        if is_group and not bot_mentioned and not quoted_is_bot:
+            return
+
+        # Strip the @mention tag from the message text
+        if bot_mentioned and text:
+            text = re.sub(r'@\d+', '', text).strip()
 
         # Allowlist check with pairing-code auto-approve for WhatsApp.
         user_name = payload.get('pushName') or payload.get('name') or sender
@@ -393,10 +405,11 @@ class WhatsAppChannel(BaseChannel):
         if not text and not image_url and not audio_url and not video_url:
             return
 
-        # Prepend reply context
+        # Prepend reply context with sender attribution
         final_text = text
         if quoted_text:
-            final_text = f"[Replying to: {quoted_text[:200]}]\n{text}"
+            label = "Replying to bot" if quoted_is_bot else "Replying to"
+            final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 
         session_id = db.get_or_create_session(self.agent_id, sender, self.channel_id)
         if not db.is_session_bot_enabled(session_id, agent_id=self.agent_id):

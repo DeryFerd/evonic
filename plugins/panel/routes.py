@@ -132,7 +132,8 @@ def create_blueprint():
         # Build the HTML
         html = _render_panel_html(agent_id, agent, actions)
 
-        response = bp.make_response(html)
+        from flask import make_response as flask_make_response
+        response = flask_make_response(html, 200)
         response.headers["Content-Type"] = "text/html; charset=utf-8"
         response.headers["ETag"] = etag
         response.headers["Cache-Control"] = "no-cache"

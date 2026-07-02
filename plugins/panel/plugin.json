@@ -1,0 +1,25 @@
+{
+  "id": "panel",
+  "name": "Agent Panel",
+  "version": "1.0.0",
+  "description": "Interactive UI panels with action buttons for agent detail pages. Supports script execution with live output and prompt-based agent interactions.",
+  "author": "Evonic",
+  "category": "system",
+  "enabled": true,
+  "agent_tabs": [
+    {
+      "id": "panel",
+      "label": "Panel",
+      "endpoint": "/plugin/panel/{agent_id}/render"
+    }
+  ],
+  "variables": [
+    {
+      "name": "MAX_SCRIPT_TIMEOUT",
+      "label": "Max Script Timeout (seconds)",
+      "type": "number",
+      "default": 60,
+      "description": "Maximum execution time in seconds for script-type panel actions."
+    }
+  ]
+}

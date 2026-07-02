@@ -927,6 +927,13 @@ def run_tool_loop(agent: Dict[str, Any],
                 # last-ditch attempt.  Keep system messages + last N
                 # conversation messages.  Better than losing the entire
                 # session context.
+                event_stream.emit('llm_retry', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'retry_count': 0, 'max_retries': 1,
+                    'error_type': 'context_compaction',
+                    'user_message': 'Compaction did not reduce enough. Trying fallback truncation...',
+                })
                 _sys_msgs = [m for m in messages if m.get('role') == 'system']
                 _conv_msgs = [m for m in messages if m.get('role') != 'system']
                 _keep_n = 6
@@ -944,8 +951,31 @@ def run_tool_loop(agent: Dict[str, Any],
                         "%d -> %d messages", session_id,
                         len(_sys_msgs) + len(_conv_msgs), len(_truncated))
                     continue
-                # Dumb truncation was a no-op (too few messages) — fall through
+                # Dumb truncation was a no-op (too few messages) — retry primary one more time
+                try:
+                    with llm_lock:
+                        result = llm.chat_completion(
+                            messages=messages,
+                            tools=tools if tools else None,
+                            temperature=None,
+                            enable_thinking=_enable_thinking_this_call,
+                            max_tokens=None,
+                            log_file=llm_log_path
+                        )
+                    if result.get('success'):
+                        continue
+                except Exception:
+                    pass
+                # Retry failed — fall through to fallback
 
+            if _compaction_attempted:
+                event_stream.emit('llm_retry', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'retry_count': 0, 'max_retries': 1,
+                    'error_type': 'context_compaction',
+                    'user_message': 'Primary model still unable to process after compaction. Switching to fallback model...',
+                })
             # ── Per-agent model fallback ──────────────────────────────────
             # After all retries to the primary model fail, attempt the
             # agent's configured fallback model (if any) before giving up.
@@ -963,6 +993,7 @@ def run_tool_loop(agent: Dict[str, Any],
                     'primary_error': error_type,
                     'fallback_model': _fallback_model.get('name'),
                     'restored_from_state': False,
+                    'user_message': 'Primary model failed. Switching to fallback model...',
                 })
                 try:
                     _fallback_config = _build_model_config(_fallback_model)

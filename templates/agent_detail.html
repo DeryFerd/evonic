@@ -4645,6 +4645,7 @@ async function sendChat() {
     input.style.height = 'auto';
     window._clearChatDraft();
     hideEditorTip();
+    if (file) clearChatFileInput();
 
     // Build optimistic metadata for image/file preview
     let optimisticMeta = null;
@@ -4656,6 +4657,7 @@ async function sendChat() {
     const displayText = msg || (file ? (file.type.startsWith('image/') ? '[Image]' : `[File: ${file.name}]`) : '');
 
     const $msgEl = chatUI.appendMessage('user', displayText, {metadata: optimisticMeta});
+    if (file) chatUI.markMessageUploading($msgEl);
     // Capture the user message wrapper for anchoring the thinking bubble
     const container = document.getElementById('chat-messages');
     const userWrappers = container ? container.querySelectorAll('[data-msg-role="user"]') : [];
@@ -4663,31 +4665,44 @@ async function sendChat() {
     chatUI.scrollToBottom();
     setChatBusy(true);
 
-    // Build fetch options based on whether we have a file
-    let fetchOpts;
-    if (file) {
-        const formData = new FormData();
-        formData.append('message', msg);
-        formData.append('user_id', 'web_test');
-        formData.append('file', file);
-        fetchOpts = { method: 'POST', body: formData };
-    } else {
-        fetchOpts = {
+    // Post chat message — uses XHR for file uploads (progress tracking), fetch otherwise
+    function postChat(url, signal) {
+        if (file) {
+            const formData = new FormData();
+            formData.append('message', msg);
+            formData.append('user_id', 'web_test');
+            formData.append('file', file);
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', url);
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) chatUI.updateUploadProgress($msgEl, Math.round(e.loaded / e.total * 100));
+                });
+                xhr.onload = function() {
+                    chatUI.markMessageUploadDone($msgEl);
+                    try { resolve(JSON.parse(xhr.responseText)); }
+                    catch(e) { reject(new Error('Invalid JSON response')); }
+                };
+                xhr.onerror = function() { chatUI.markMessageUploadDone($msgEl); reject(new Error('Network error')); };
+                if (signal) signal.addEventListener('abort', () => xhr.abort());
+                xhr.send(formData);
+            });
+        }
+        return fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({message: msg, user_id: 'web_test'}),
-        };
+            signal,
+        }).then(r => r.json());
     }
 
     // If an SSE stream is already active, the agent is mid-turn — inject the message
     if (chatUI.hasActiveStream()) {
         try {
-            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
-            const data = await res.json();
+            const data = await postChat(`/api/agents/${AGENT_ID}/chat`);
             if (data.injected) {
                 chatUI.markLastUserBubbleQueued();
                 setChatBusy(false);
-                if (file) clearChatFileInput();
                 return;
             }
             if (!data.success) {
@@ -4706,7 +4721,6 @@ async function sendChat() {
             chatUI.appendMessage('error', 'Network error: ' + e.message);
         }
         setChatBusy(false);
-        if (file) clearChatFileInput();
         setTimeout(refreshSessionState, 0);
         setTimeout(refreshAgentState, 1000);
         return;
@@ -4757,14 +4771,9 @@ async function sendChat() {
         );
     }
 
-    // Add signal to fetchOpts if this is a plain object (not FormData)
-    if (!file) fetchOpts.signal = signal;
-
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
-        const data = await res.json();
+        const data = await postChat(`/api/agents/${AGENT_ID}/chat`, signal);
         if (data.buffered) {
-            if (file) clearChatFileInput();
             pollForResponse(thinkingId);
             return;
         } else if (data.injected) {
@@ -4826,7 +4835,6 @@ async function sendChat() {
         chatUI.appendMessage('error', 'Network error: ' + e.message);
     }
     setChatBusy(false);
-    if (file) clearChatFileInput();
     // Refresh summary and agent state after response completes
     setTimeout(refreshSessionState, 0);
     setTimeout(refreshAgentState, 1000);

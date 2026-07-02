@@ -366,6 +366,32 @@ export class ChatUI {
         });
     }
 
+    // ── Public: upload progress indicators ──────────────────────────────────
+
+    markMessageUploading($msgEl) {
+        if (!$msgEl || !$msgEl.length) return;
+        if ($msgEl.find('.upload-indicator').length) return;
+        const isRight = $msgEl.hasClass('md:justify-end') || $msgEl.hasClass('justify-end');
+        const $indicator = $('<div class="upload-indicator flex items-center gap-1.5 mt-1 px-1">').addClass(isRight ? 'justify-end' : 'justify-start');
+        $indicator.html('<span class="tool-spinner" style="width:10px;height:10px;border-width:1.5px;border-color:rgba(255,255,255,0.3);border-top-color:rgba(255,255,255,0.9)"></span><span class="upload-indicator-text" style="font-size:10px;color:rgba(255,255,255,0.7)">Uploading…</span>');
+        $msgEl.find('div').first().append($indicator);
+    }
+
+    updateUploadProgress($msgEl, percent) {
+        if (!$msgEl || !$msgEl.length) return;
+        const $text = $msgEl.find('.upload-indicator-text');
+        if ($text.length) $text.text('Uploading… ' + percent + '%');
+    }
+
+    markMessageUploadDone($msgEl) {
+        if (!$msgEl || !$msgEl.length) return;
+        $msgEl.find('.upload-indicator').each(function() {
+            const $el = $(this);
+            $el.css('transition', 'opacity 0.5s').css('opacity', '0');
+            setTimeout(() => $el.remove(), 500);
+        });
+    }
+
     clearContainer() {
         this.clear();
     }

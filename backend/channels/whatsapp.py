@@ -336,65 +336,71 @@ class WhatsAppChannel(BaseChannel):
         if bot_mentioned and text:
             text = re.sub(r'@\d+', '', text).strip()
 
-        # Allowlist check with pairing-code auto-approve for WhatsApp.
-        user_name = payload.get('pushName') or payload.get('name') or sender
-
-        # Step 1: Fully approved user? (in allowlist AND has name set)
-        if db.is_user_allowed(self.channel_id, sender):
-            if db.needs_name(self.channel_id, sender):
-                # NAME COLLECTION MODE — every message is treated as a name attempt
-                name_candidate = text.strip() if text else ''
-                if name_candidate and len(name_candidate) <= 100:
-                    db.set_user_display_name(self.channel_id, sender, name_candidate)
-                    self._do_send(sender,
-                        "Thanks, %s! You're all set. How can I help you today?" % name_candidate)
-                elif text:
-                    self._do_send(sender,
-                        "That name is too long. Please share a shorter name (max 100 characters).")
-                else:
-                    self._do_send(sender,
-                        "Please tell me your name to continue (e.g. 'My name is Budi').")
+        # Allowlist check — groups use group ID, DMs use individual user ID
+        if is_group:
+            group_id = jid.split('@')[0] if '@' in jid else jid
+            if not db.is_user_allowed(self.channel_id, group_id):
+                _logger.debug("WhatsApp group not in allowlist: group=%s", group_id)
                 return
-            # User is fully approved — fall through to normal processing
         else:
-            # Step 2: User NOT in allowlist — try pairing-code auto-approve
-            from backend.channels.pairing import extract_pair_code, format_pair_code as fmt_code
-            raw_code = extract_pair_code(text) if text else None
-            if raw_code:
-                pending = db.get_pending_approval_by_code(raw_code)
-                if pending:
-                    if not pending.get('external_user_id'):
-                        db.update_pending_user_id(pending['id'], sender)
-                    approved_user = db.approve_pending_with_name_needed(pending['id'])
-                    if approved_user:
-                        if db.needs_name(self.channel_id, sender):
-                            self._do_send(sender,
-                                "✅ You're now approved! Welcome aboard.\n\n"
-                                "Before we chat, please tell me your name (e.g. 'My name is Budi').")
-                        else:
-                            self._do_send(sender,
-                                "✅ You're now approved! Welcome aboard. How can I help you today?")
-                    return
-                else:
-                    self._do_send(sender,
-                        "❌ That pairing code is invalid or has expired. "
-                        "Please ask the administrator for a new one.")
-                    return
-            else:
-                # No pairing code in message — check if pending approval already exists
-                existing = db.get_pending_approvals(self.channel_id)
-                already_pending = any(
-                    p.get('external_user_id') == sender for p in existing
-                )
-                if not already_pending:
-                    allowed, pair_code = self._check_allowlist(sender, user_name)
-                    if not allowed and pair_code:
+            user_name = payload.get('pushName') or payload.get('name') or sender
+
+            # Step 1: Fully approved user? (in allowlist AND has name set)
+            if db.is_user_allowed(self.channel_id, sender):
+                if db.needs_name(self.channel_id, sender):
+                    # NAME COLLECTION MODE — every message is treated as a name attempt
+                    name_candidate = text.strip() if text else ''
+                    if name_candidate and len(name_candidate) <= 100:
+                        db.set_user_display_name(self.channel_id, sender, name_candidate)
                         self._do_send(sender,
-                            "👋 You're not yet approved to chat here. "
-                            "Please ask the administrator for a pairing code, then send it in this chat.")
-                    # If open mode, user IS allowed — would have been caught above
-                # If already pending, stay silent (don't spam the user)
-                return
+                            "Thanks, %s! You're all set. How can I help you today?" % name_candidate)
+                    elif text:
+                        self._do_send(sender,
+                            "That name is too long. Please share a shorter name (max 100 characters).")
+                    else:
+                        self._do_send(sender,
+                            "Please tell me your name to continue (e.g. 'My name is Budi').")
+                    return
+                # User is fully approved — fall through to normal processing
+            else:
+                # Step 2: User NOT in allowlist — try pairing-code auto-approve
+                from backend.channels.pairing import extract_pair_code, format_pair_code as fmt_code
+                raw_code = extract_pair_code(text) if text else None
+                if raw_code:
+                    pending = db.get_pending_approval_by_code(raw_code)
+                    if pending:
+                        if not pending.get('external_user_id'):
+                            db.update_pending_user_id(pending['id'], sender)
+                        approved_user = db.approve_pending_with_name_needed(pending['id'])
+                        if approved_user:
+                            if db.needs_name(self.channel_id, sender):
+                                self._do_send(sender,
+                                    "✅ You're now approved! Welcome aboard.\n\n"
+                                    "Before we chat, please tell me your name (e.g. 'My name is Budi').")
+                            else:
+                                self._do_send(sender,
+                                    "✅ You're now approved! Welcome aboard. How can I help you today?")
+                        return
+                    else:
+                        self._do_send(sender,
+                            "❌ That pairing code is invalid or has expired. "
+                            "Please ask the administrator for a new one.")
+                        return
+                else:
+                    # No pairing code in message — check if pending approval already exists
+                    existing = db.get_pending_approvals(self.channel_id)
+                    already_pending = any(
+                        p.get('external_user_id') == sender for p in existing
+                    )
+                    if not already_pending:
+                        allowed, pair_code = self._check_allowlist(sender, user_name)
+                        if not allowed and pair_code:
+                            self._do_send(sender,
+                                "👋 You're not yet approved to chat here. "
+                                "Please ask the administrator for a pairing code, then send it in this chat.")
+                        # If open mode, user IS allowed — would have been caught above
+                    # If already pending, stay silent (don't spam the user)
+                    return
 
         image_url = None
         audio_url = None

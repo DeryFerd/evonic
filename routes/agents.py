@@ -9,7 +9,7 @@ import uuid
 import queue
 import logging
 from typing import Dict, Any, List, Optional
-from flask import Blueprint, render_template, jsonify, request, Response, session, stream_with_context
+from flask import Blueprint, render_template, jsonify, request, Response, session, stream_with_context, g
 from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
@@ -221,6 +221,7 @@ def agent_detail(agent_id):
                 is_remote_workplace = True
         if not is_remote_workplace and not os.path.isdir(ws):
             workspace_invalid = True
+    g.agent_id = agent_id
     return render_template('agent_detail.html', agent=agent,
                            DEFAULT_SUMMARIZE_PROMPT=DEFAULT_SUMMARIZE_PROMPT,
                            workspace_invalid=workspace_invalid,

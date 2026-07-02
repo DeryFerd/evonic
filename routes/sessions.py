@@ -191,12 +191,12 @@ def api_session_reply(session_id):
     # Support both JSON and multipart/form-data
     if request.content_type and request.content_type.startswith('multipart/form-data'):
         text = (request.form.get('text') or '').strip()
-        perspective = (request.form.get('perspective') or 'B').strip()
+        perspective = (request.form.get('perspective') or 'A').strip()
         file = request.files.get('file')
     else:
         data = request.get_json()
         text = (data.get('text') or '').strip()
-        perspective = (data.get('perspective') or 'B').strip()
+        perspective = (data.get('perspective') or 'A').strip()
         file = None
 
     if not text and not file:

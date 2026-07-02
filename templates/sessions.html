@@ -406,7 +406,7 @@ let _sseCompleted = false;  // true after SSE done fires, prevents duplicate tim
 let _pendingIntermediateResponse = null;  // queued intermediate response, shown when next thinking event starts
 let _pollThinkingId = null;  // active thinking bubble from incremental poll (persists across calls)
 let _pollInFlight = false;  // guard against concurrent pollNewMessages calls
-let _chatPerspective = 'B';  // 'B' (left) or 'A' (right) — controls which side your messages appear on
+let _chatPerspective = 'A';  // 'A' (right) or 'B' (left) — controls which side your messages appear on
 let _sessionsAbort = null;  // AbortController for the in-flight /api/sessions load; supersede on new call
 
 // ==================== Reasoning State (refresh recovery) ====================
@@ -498,7 +498,7 @@ const POLL_INTERVAL = 2000;       // poll chat every 2s
 const SIDEBAR_POLL_INTERVAL = 5000; // refresh sidebar every 5s
 
 const chatUI = new ChatUI($('#chat-messages'), {
-    perspective: 'B',
+    perspective: 'A',
     showTimestamps: true,
     userBubbleClass: 'bg-white text-gray-800 border border-gray-200 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100',
     assistantBubbleClass: 'bg-gray-200 text-gray-800 dark:bg-[#152A3A] border dark:border-[#1B394F] dark:text-gray-100',
@@ -1775,10 +1775,10 @@ async function loadSettingsState() {
     } catch(e) { /* ignore */ }
     // Load chat perspective from localStorage (migrate legacy 'bot'/'user' to 'B'/'A')
     const stored = localStorage.getItem('evonic_chat_perspective');
-    if (stored === 'A' || stored === 'user') {
-        _chatPerspective = 'A';
-    } else {
+    if (stored === 'B' || stored === 'agent') {
         _chatPerspective = 'B';
+    } else {
+        _chatPerspective = 'A';
     }
     document.getElementById('chat-perspective-toggle').checked = _chatPerspective === 'A';
     chatUI.setPerspective(_chatPerspective);
@@ -1921,10 +1921,10 @@ $(document).on('keydown', function (e) {
 // Load chat perspective from localStorage on page load
 (function initChatPerspective() {
     const stored = localStorage.getItem('evonic_chat_perspective');
-    if (stored === 'A' || stored === 'user') {
-        _chatPerspective = 'A';
-    } else {
+    if (stored === 'B' || stored === 'agent') {
         _chatPerspective = 'B';
+    } else {
+        _chatPerspective = 'A';
     }
     document.getElementById('chat-perspective-toggle').checked = _chatPerspective === 'A';
     chatUI.setPerspective(_chatPerspective);

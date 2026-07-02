@@ -39,7 +39,7 @@ realtime_bp = Blueprint('realtime', __name__)
 
 RING_SIZES = {
     'chat': 256,
-    'approval': 8,
+    'approvals': 8,
     'status': 32,
     'update': 16,
     'workplace': 16,
@@ -47,7 +47,7 @@ RING_SIZES = {
 
 RING_STRATEGIES = {
     'chat': 'drop_oldest',
-    'approval': 'drop_newest',   # last known state matters
+    'approvals': 'drop_newest',   # last known state matters
     'status': 'drop_oldest',
     'update': 'drop_oldest',
     'workplace': 'drop_oldest',
@@ -56,7 +56,7 @@ RING_STRATEGIES = {
 CHANNEL_PRIORITY = {
     'update': 0,     # highest — small, rare, must be fast
     'status': 0,
-    'approval': 1,   # user-facing modal
+    'approvals': 1,   # user-facing modal
     'chat': 2,       # high throughput, tolerable delay
     'workplace': 2,  # high throughput, tolerable delay
 }
@@ -344,7 +344,7 @@ def _build_snapshot(channels: set, agent_id: str = None,
         except Exception as e:
             log.warning("realtime snapshot: failed to get agent statuses: %s", e)
 
-    if 'approval' in channels:
+    if 'approvals' in channels or session_id:
         from models.db import db
         try:
             pending = db.get_pending_tool_approvals()
@@ -642,12 +642,12 @@ def _priority_round_robin(rings: dict, conn: RealtimeConnection) -> list:
             seq, (sse_name, payload) = item
             result.append((ch, seq, sse_name, payload))
 
-    # L1 channels (approval) — 1 event
-    if 'approval' in rings:
-        item = rings['approval'].get()
+    # L1 channels (approvals) — 1 event
+    if 'approvals' in rings:
+        item = rings['approvals'].get()
         if item:
             seq, (sse_name, payload) = item
-            result.append(('approval', seq, sse_name, payload))
+            result.append(('approvals', seq, sse_name, payload))
 
     # L2 channels (chat, workplace) — up to L2_WEIGHT events each
     for ch in ('chat', 'workplace'):
@@ -861,7 +861,7 @@ def api_realtime_stream():
 
     _PRODUCERS = {
         'status': (_producer_status, {}),
-        'approval': (_producer_approval, {}),
+        'approvals': (_producer_approval, {}),
         'update': (_producer_update, {}),
     }
 

@@ -1416,14 +1416,14 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 
 <!-- Drop File Confirmation Modal -->
 <div id="chat-drop-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-4">
-    <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[420px] shadow-xl">
-        <div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700">
+    <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[420px] shadow-xl flex flex-col" style="max-height:85vh">
+        <div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
             <h3 class="text-gray-800 dark:text-gray-100 font-semibold text-sm">Send File</h3>
             <button onclick="closeChatDropModal()" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
         </div>
-        <div class="p-5">
+        <div class="p-5 overflow-y-auto flex-1">
             <div class="flex flex-col items-center gap-3 mb-4">
-                <img id="chat-drop-preview-img" class="hidden max-w-full max-h-[240px] rounded-lg object-contain" alt="">
+                <img id="chat-drop-preview-img" class="hidden rounded-lg object-contain" style="max-width:100%;max-height:min(240px,40vh)" alt="">
                 <div id="chat-drop-preview-file" class="hidden flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-700 rounded-lg w-full">
                     <svg class="w-8 h-8 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zm-3 9h4v2h-4v-2zm0 3h4v2h-4v-2zm-2-3h1v2H8v-2zm0 3h1v2H8v-2z"/></svg>
                     <div class="min-w-0 flex-1">

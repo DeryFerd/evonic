@@ -463,7 +463,7 @@ class WhatsAppChannel(BaseChannel):
             elif not text:
                 text = '[Video]'
 
-        if not text and not image_url and not audio_url and not video_url:
+        if not text and not image_url and not audio_url and not video_url and not quoted_text:
             return
 
         # Prepend reply context with sender attribution

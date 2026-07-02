@@ -230,6 +230,10 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
         {% if agent.artifacts_enabled %}
         <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('artifacts')" data-tab="artifacts">Artifacts</button>
         {% endif %}
+{% for _tab in plugin_agent_tabs %}
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700"
+            onclick="showTab('{{ _tab.id }}')" data-tab="{{ _tab.id }}">{{ _tab.label }}</button>
+{% endfor %}
     </div>
 
     <!-- Settings Tab -->
@@ -846,6 +850,20 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
             </div>
         </div>
     </div>
+
+{% for _tab in plugin_agent_tabs %}
+    <div id="tab-{{ _tab.id }}" class="tab-content hidden flex-1 min-h-0 overflow-y-auto"
+        data-endpoint="{{ _tab.endpoint }}">
+        <div class="flex items-center justify-center py-12 text-gray-400" id="tab-{{ _tab.id }}-loading">
+            <svg class="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            Loading...
+        </div>
+        <div id="tab-{{ _tab.id }}-content"></div>
+    </div>
+{% endfor %}
 
     <!-- Chat Tab -->
     <div id="tab-chat" class="tab-content flex-1 min-h-0">
@@ -1713,6 +1731,11 @@ function showTab(name) {
     if (name === 'general') loadGeneralTabData();
     if (name === 'chat' && !chatLoaded) { loadChatHistory(); refreshSessionState(); }
 
+    const pluginTab = document.getElementById('tab-' + name);
+    if (pluginTab && pluginTab.dataset.endpoint && !pluginTab.dataset.loaded) {
+        loadPluginTab(name, pluginTab.dataset.endpoint);
+    }
+
     if (name === 'chat') {
         enterChatFullscreen();
         $('#chat-input').focus();
@@ -1721,6 +1744,46 @@ function showTab(name) {
     }
 
     location.hash = name;
+}
+
+const _pluginTabCache = new Map();
+
+function loadPluginTab(name, endpoint) {
+    const loadingEl = document.getElementById('tab-' + name + '-loading');
+    const contentEl = document.getElementById('tab-' + name + '-content');
+
+    // Show loading spinner
+    if (loadingEl) loadingEl.classList.remove('hidden');
+
+    // Check cache first
+    if (_pluginTabCache.has(name)) {
+        if (contentEl) contentEl.innerHTML = _pluginTabCache.get(name);
+        if (loadingEl) loadingEl.classList.add('hidden');
+        const tabEl = document.getElementById('tab-' + name);
+        if (tabEl) tabEl.dataset.loaded = '1';
+        return;
+    }
+
+    // Resolve {agent_id} placeholder in endpoint
+    const url = endpoint.replace('{agent_id}', AGENT_ID);
+
+    fetch(url)
+        .then(response => {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.text();
+        })
+        .then(html => {
+            _pluginTabCache.set(name, html);
+            if (contentEl) contentEl.innerHTML = html;
+            if (loadingEl) loadingEl.classList.add('hidden');
+            const tabEl = document.getElementById('tab-' + name);
+            if (tabEl) tabEl.dataset.loaded = '1';
+        })
+        .catch(err => {
+            console.error('Failed to load plugin tab "' + name + '":', err);
+            if (contentEl) contentEl.innerHTML = '<div class="flex items-center justify-center py-12 text-red-500 text-sm">Failed to load plugin content.</div>';
+            if (loadingEl) loadingEl.classList.add('hidden');
+        });
 }
 
 $(window).on('resize', function () {

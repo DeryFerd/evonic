@@ -58,6 +58,7 @@ class PluginManager:
         self._blueprints: Dict[str, Any] = {}  # plugin_id -> Blueprint
         self._dashboard_cards: Dict[str, List[Tuple[str, Callable]]] = {}  # plugin_id -> [(card_id, fn)]
         self._nav_cache: Optional[List[Dict[str, Any]]] = None  # memoized get_nav_items()
+        self._agent_tabs_cache: Dict[str, List[Dict]] = {}  # per-agent memoized get_agent_tabs()
         self._load_all()
 
     def _is_plugin_enabled(self, plugin_id: str) -> bool:
@@ -68,6 +69,7 @@ class PluginManager:
     def _load_all(self):
         """Load handlers from all enabled plugins at startup."""
         self._nav_cache = None
+        self._agent_tabs_cache.clear()
         self._handlers.clear()
         self._modules.clear()
         self._event_bridges.clear()
@@ -199,6 +201,7 @@ class PluginManager:
     def _unload_plugin(self, plugin_id: str):
         """Remove all handler registrations for a plugin."""
         self._nav_cache = None  # covers reload (install/enable/disable) and uninstall
+        self._agent_tabs_cache.clear()
         self._modules.pop(plugin_id, None)
         prefix = f'plugin_pkg_{plugin_id}_'
         for key in [k for k in sys.modules if k == prefix[:-1] or k.startswith(prefix)]:
@@ -386,6 +389,51 @@ class PluginManager:
                     })
         self._nav_cache = items
         return items
+
+    def get_agent_tabs(self, agent_id: str) -> List[Dict[str, Any]]:
+        """Return agent_detail tabs declared by enabled plugins for a specific agent.
+
+        Memoized per-agent: keyed by (agent_id, panel_config_mtime) so the
+        cache invalidates when the panel plugin's config for this agent
+        changes. Follows the same architecture as get_nav_items().
+        """
+        # Get panel plugin's per-agent config to use _updated_at as cache mtime
+        panel_config = self.get_agent_plugin_settings("panel", agent_id)
+        config_mtime = panel_config.get("_updated_at", 0)
+        cache_key = f"{agent_id}:{config_mtime}"
+
+        if cache_key in self._agent_tabs_cache:
+            return self._agent_tabs_cache[cache_key]
+
+        items = []
+        for plugin in self.list_plugins():
+            if not plugin['enabled']:
+                continue
+            for item in plugin.get('agent_tabs', []):
+                items.append({
+                    'id': item.get('id', ''),
+                    'label': item.get('label', ''),
+                    'endpoint': item.get('endpoint', ''),
+                    'plugin_id': plugin['id'],
+                })
+
+        self._agent_tabs_cache[cache_key] = items
+        return items
+
+    def invalidate_agent_tabs(self, agent_id: str = None):
+        """Clear agent_tabs cache per-agent or all.
+
+        Args:
+            agent_id: If provided, clear only cache entries for this agent.
+                      If None, clear all agent_tabs cache.
+        """
+        if agent_id is None:
+            self._agent_tabs_cache.clear()
+        else:
+            prefix = f"{agent_id}:"
+            keys_to_remove = [k for k in self._agent_tabs_cache if k.startswith(prefix)]
+            for k in keys_to_remove:
+                del self._agent_tabs_cache[k]
 
     def get_cli_commands(self) -> Dict[str, Any]:
         """Return CLI commands declared by all enabled plugins."""

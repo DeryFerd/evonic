@@ -35,6 +35,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import sqlite3
 import sys
 from collections import defaultdict
@@ -43,6 +44,32 @@ from typing import Any, Dict, List, Optional
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _DEFAULT_DB = os.path.join(_REPO_ROOT, "shared", "db", "session_archive.db")
 _DEFAULT_AGENTS = os.path.join(_REPO_ROOT, "agents")
+
+
+_SLASH_CMD_RE = re.compile(r'^/[\w-]+')
+
+
+def _filter_slash_commands(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Remove user messages that look like slash commands and their assistant responses.
+
+    Slash commands bypass the LLM and should never appear in training data.
+    Only filters messages where content starts with /command (matching the
+    parse_command() pattern in backend/slash_commands.py).
+    """
+    filtered: List[Dict[str, Any]] = []
+    skip_next_assistant = False
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content") or ""
+        if role == "user" and isinstance(content, str) and _SLASH_CMD_RE.match(content.strip()):
+            skip_next_assistant = True
+            continue
+        if skip_next_assistant and role == "assistant" and not msg.get("tool_calls"):
+            skip_next_assistant = False
+            continue
+        skip_next_assistant = False
+        filtered.append(msg)
+    return filtered
 
 
 def _loads(s: Any) -> Any:
@@ -97,7 +124,8 @@ def _tool_call_ids(msg: Dict[str, Any]) -> List[str]:
 
 
 def _build_turn_sample(records: List[Dict[str, Any]], meta: Dict[str, Any],
-                       include_reasoning: bool) -> Optional[Dict[str, Any]]:
+                       include_reasoning: bool,
+                       filter_slash: bool = True) -> Optional[Dict[str, Any]]:
     """Reconstruct one OpenAI chat-messages sample from a turn's ordered records.
 
     Each record: {request, response, turn_index, model, finish_reason, pt, ct}.
@@ -144,6 +172,11 @@ def _build_turn_sample(records: List[Dict[str, Any]], meta: Dict[str, Any],
         for m in messages:
             m.pop("reasoning_content", None)
 
+    if filter_slash:
+        messages = _filter_slash_commands(messages)
+        if not messages or not any(m.get("role") == "user" for m in messages):
+            return None
+
     pt = sum((r.get("pt") or 0) for r in parsed)
     ct = sum((r.get("ct") or 0) for r in parsed)
     return {
@@ -168,7 +201,8 @@ def _emit_turns(records_by_turn: Dict[Any, List[Dict[str, Any]]], turn_order: Li
         if len(recs) < args.min_calls:
             stats["skipped"] += 1
             continue
-        sample = _build_turn_sample(recs, base_meta, not args.no_reasoning)
+        sample = _build_turn_sample(recs, base_meta, not args.no_reasoning,
+                                    filter_slash=not args.keep_slash_commands)
         if sample is None:
             stats["skipped"] += 1
             continue
@@ -289,6 +323,8 @@ def main() -> int:
                     help="skip turns with fewer than N LLM calls")
     ap.add_argument("--no-reasoning", action="store_true",
                     help="strip reasoning_content (CoT) from assistant messages")
+    ap.add_argument("--keep-slash-commands", action="store_true",
+                    help="keep slash command messages (default: filter them out)")
     args = ap.parse_args()
 
     kinds = {k.strip() for k in args.kind.split(",") if k.strip()}

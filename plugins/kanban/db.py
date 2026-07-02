@@ -499,6 +499,22 @@ class KanbanDB:
             'total': total,
         }
 
+    def get_comment(self, comment_id: int) -> Optional[dict]:
+        """Get a single comment by ID, or None if not found."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM comments WHERE id = ?",
+                (comment_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def delete_comment(self, comment_id: int) -> bool:
+        """Delete a comment by ID. Returns True if deleted, False if not found."""
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+            return cursor.rowcount > 0
+
+
     # ─── Activity Log ──────────────────────────────────────────────────────────
 
     def add_activity(self, task_id: str, action: str, details: str = None) -> Optional[dict]:

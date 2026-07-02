@@ -1,0 +1,11 @@
+{
+  "id": "panel",
+  "name": "Agent Panel Builder",
+  "version": "1.0.0",
+  "description": "Gives agents tools to build interactive UI panels with action buttons on their detail page. Agents can add, update, remove, and list action buttons that trigger scripts or send prompts.",
+  "brief": "You can build an interactive UI panel on your agent detail page using the `panel` skill. This skill provides tools to manage action buttons: `panel_add_action`, `panel_update_action`, `panel_remove_action`, and `panel_list_actions`. Action buttons can run predefined bash scripts or send prompts to your agent session. Load it with `use_skill('panel')`.",
+  "author": "Evonic",
+  "tools_file": "tools.json",
+  "lazy_tools": true,
+  "default_enabled": true
+}

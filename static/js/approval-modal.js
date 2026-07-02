@@ -256,7 +256,29 @@ document.addEventListener('evonic:approval-resolved', function(e) {
         if (!_enabled) return;
         if (_sse) return;
 
-        // Use RealtimeClient if available
+        // Use shared RealtimeClient if available (consolidated singleton)
+        if (typeof getSharedRealtime !== 'undefined') {
+            var rt = getSharedRealtime();
+            if (!_realtimeHandlersBound) {
+                rt.on('approvals', 'approval_required', function(data) {
+                    if (!data.approval_id) return;
+                    _currentData = data;
+                    populateModal(data);
+                    openModal();
+                });
+                rt.on('approvals', 'approval_resolved', function(data) {
+                    if (_currentData && data.approval_id === _currentData.approval_id) {
+                        closeModal();
+                    }
+                });
+                _realtimeHandlersBound = true;
+            }
+            // Shared connection — lifecycle managed by getSharedRealtime()
+            _sse = { close: function() { /* shared */ } };
+            return;
+        }
+
+        // Fallback: standalone RealtimeClient
         if (typeof RealtimeClient !== 'undefined') {
             var rt = window._evApprovalRT = window._evApprovalRT || new RealtimeClient({
                 channels: 'approvals'

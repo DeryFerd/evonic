@@ -573,6 +573,20 @@ def inject_plugin_nav():
 
 
 @app.context_processor
+def inject_plugin_agent_tabs():
+    """Inject plugin-declared agent tabs for agent detail pages only.
+
+    Scoped via g.agent_id (set in routes/agents.py agent_detail() before
+    render). Returns empty list for non-agent pages (dashboard, settings,
+    login, etc.) to avoid unnecessary computation.
+    """
+    agent_id = getattr(_g, 'agent_id', None)
+    if agent_id:
+        return {'plugin_agent_tabs': plugin_manager.get_agent_tabs(agent_id)}
+    return {'plugin_agent_tabs': []}
+
+
+@app.context_processor
 def inject_version():
     return {'evonic_version': get_version()}
 

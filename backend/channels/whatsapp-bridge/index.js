@@ -158,6 +158,8 @@ async function startBaileys() {
                 if (quotedParticipant) {
                     quotedIsBot = (botId && areJidsSameUser(quotedParticipant, botId))
                         || (botLid && areJidsSameUser(quotedParticipant, botLid));
+                } else {
+                    console.log('[whatsapp-bridge] WARNING: quoted message without participant:', JSON.stringify(contextInfo));
                 }
             }
 

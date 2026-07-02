@@ -361,6 +361,37 @@ def create_blueprint():
         comments = kanban_db.get_comments(task_id)
         return jsonify({'comments': comments})
 
+    @bp.route('/api/kanban/comments/<int:comment_id>', methods=['DELETE'])
+    def kanban_api_delete_comment(comment_id):
+        comment = kanban_db.get_comment(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+
+        task = kanban_db.get(comment['task_id'])
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+
+        # Check write access on the parent task
+        is_allowed, error = _check_write_access(task)
+        if not is_allowed:
+            return jsonify({'error': error}), 403
+
+        # Only the comment author or super agent can delete
+        agent_id = _get_request_agent_id()
+        owner_name = _get_owner_name()
+        is_owner = (comment.get('author') == agent_id or comment.get('author') == owner_name)
+        if not is_owner and not (agent_id and _is_super_agent(agent_id)):
+            return jsonify({'error': 'You can only delete your own comments'}), 403
+
+        deleted = kanban_db.delete_comment(comment_id)
+        if not deleted:
+            return jsonify({'error': 'Failed to delete comment'}), 500
+
+        kanban_db.add_activity(comment['task_id'], 'comment_deleted',
+                               f'Comment by {comment.get("author", "unknown")} deleted')
+        return jsonify({'success': True})
+
+
     # ─── Activity Log ──────────────────────────────────────────────────────────
 
     @bp.route('/api/kanban/tasks/<int:task_id>/activity', methods=['GET'])

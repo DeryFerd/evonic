@@ -444,24 +444,29 @@ class WhatsAppChannel(BaseChannel):
         image_url = None
         audio_url = None
         video_url = None
+        image_bytes = None  # decoded original bytes, persisted as attachment below
 
         agent = db.get_agent(self.agent_id)
 
         if image_data:
+            try:
+                image_bytes = base64.b64decode(image_data['base64'])
+            except Exception as e:
+                _logger.error("WhatsApp image decode failed: %s", e)
             if agent and agent.get('vision_enabled'):
-                try:
-                    raw = base64.b64decode(image_data['base64'])
-                    from io import BytesIO
-                    from PIL import Image
-                    img = Image.open(BytesIO(raw))
-                    if img.mode in ('RGBA', 'LA', 'P'):
-                        img = img.convert('RGB')
-                    buf = BytesIO()
-                    img.save(buf, format='JPEG', quality=85)
-                    b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-                    image_url = f"data:image/jpeg;base64,{b64}"
-                except Exception as e:
-                    _logger.error("WhatsApp image conversion failed: %s", e)
+                if image_bytes:
+                    try:
+                        from io import BytesIO
+                        from PIL import Image
+                        img = Image.open(BytesIO(image_bytes))
+                        if img.mode in ('RGBA', 'LA', 'P'):
+                            img = img.convert('RGB')
+                        buf = BytesIO()
+                        img.save(buf, format='JPEG', quality=85)
+                        b64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+                        image_url = f"data:image/jpeg;base64,{b64}"
+                    except Exception as e:
+                        _logger.error("WhatsApp image conversion failed: %s", e)
             elif not text:
                 return
 
@@ -519,6 +524,16 @@ class WhatsAppChannel(BaseChannel):
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 
         session_id = db.get_or_create_session(self.agent_id, sender, self.channel_id)
+
+        # Persist the image to disk and build attachment_info — the in-memory
+        # data URL alone is invisible to the agent (images are never auto-fed
+        # to the LLM; the describe_image tool needs a file path on disk).
+        attachment_info = None
+        if image_bytes:
+            attachment_info = self._save_image_attachment(
+                session_id, sender, image_bytes,
+                image_data.get('mimetype') or 'image/jpeg')
+
         if not db.is_session_bot_enabled(session_id, agent_id=self.agent_id):
             _logger.info("WhatsApp message stored only — bot disabled for session %s (sender=%s)",
                          session_id, sender)
@@ -529,6 +544,7 @@ class WhatsAppChannel(BaseChannel):
         result = agent_runtime.handle_message(
             self.agent_id, sender, final_text, self.channel_id,
             image_url=image_url, audio_url=audio_url, video_url=video_url,
+            metadata={'attachment_info': attachment_info} if attachment_info else None,
         )
         if result.get('buffered'):
             _logger.info("WhatsApp message buffered for %s (session %s)", sender, session_id)
@@ -574,6 +590,63 @@ class WhatsAppChannel(BaseChannel):
             'external_user_id': sender,
             'message': response,
         })
+
+    def _save_image_attachment(self, session_id: str, external_user_id: str,
+                               image_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
+        """Persist an incoming image to disk and return attachment_info.
+
+        Mirrors Telegram's _ingest_photo(): honors the agent attachment config
+        (enabled + max size) and records the file via db.save_attachment().
+        Returns None when persistence is disabled, over-limit, or fails.
+        """
+        from models.db import db
+        try:
+            cfg = db.get_agent_attachment_config(self.agent_id)
+            if not cfg.get('enabled'):
+                return None
+            max_bytes = cfg.get('max_size_mb', 10) * 1024 * 1024
+            if len(image_bytes) > max_bytes:
+                _logger.info(
+                    "Skipping WhatsApp image attachment for agent %s: "
+                    "size %s exceeds %s bytes",
+                    self.agent_id, len(image_bytes), max_bytes)
+                return None
+            ext = {
+                'image/jpeg': '.jpg', 'image/png': '.png',
+                'image/webp': '.webp', 'image/gif': '.gif',
+            }.get(mime_type, '.jpg')
+            filename = f"{int(time.time())}_whatsapp{ext}"
+            target_dir = os.path.join('data', 'attachments', self.agent_id, session_id)
+            os.makedirs(target_dir, exist_ok=True)
+            file_path = os.path.join(target_dir, filename)
+            with open(file_path, 'wb') as f:
+                f.write(image_bytes)
+            attachment_id = db.save_attachment(
+                agent_id=self.agent_id,
+                session_id=session_id,
+                filename=filename,
+                file_path=file_path,
+                external_user_id=external_user_id,
+                channel_id=self.channel_id,
+                channel_type='whatsapp',
+                original_filename=filename,
+                mime_type=mime_type,
+                file_type='photo',
+                size_bytes=len(image_bytes),
+            )
+            _logger.info("WhatsApp image saved as attachment %s (%d bytes): %s",
+                         attachment_id, len(image_bytes), file_path)
+            return {
+                'attachment_id': attachment_id,
+                'filename': filename,
+                'mime_type': mime_type,
+                'size_bytes': len(image_bytes),
+                'is_image': True,
+                'file_path': file_path,
+            }
+        except Exception as e:
+            _logger.error("Failed to persist WhatsApp image attachment: %s", e, exc_info=True)
+            return None
 
     def send_typing(self, external_user_id: str, state: str = 'composing'):
         """Send composing/paused presence to the given user."""

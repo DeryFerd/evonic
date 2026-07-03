@@ -195,6 +195,72 @@ _TOOL_DEFS = [
                 "required": ["approval_id", "decision"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_sessions",
+            "description": (
+                "List external channel sessions for this agent. "
+                "Use this to discover valid session IDs for send_channel_message. "
+                "Returns sessions sorted by most recent activity first. "
+                "Excludes inter-agent sessions and web-only sessions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of sessions to return (default 20, max 50)."
+                    },
+                    "channel_type": {
+                        "type": "string",
+                        "description": "Filter by channel type (e.g. 'whatsapp', 'telegram', 'discord'). Omit for all."
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_channel_message",
+            "description": (
+                "Send a text message to a specific external channel session "
+                "(WhatsApp, Telegram, Discord). Use list_sessions first to find "
+                "valid session IDs. Supports session targeting (by session_id) "
+                "or channel targeting (by channel_id + user_id). "
+                "All sends are logged. Rate limited to 20 messages/min globally "
+                "with 2-second debounce between sends."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": (
+                            "Target session_id (e.g. 'sess_abc123') OR "
+                            "channel_id (e.g. 'ch_telegram_1'). "
+                            "If channel_id, user_id is required."
+                        )
+                    },
+                    "user_id": {
+                        "type": "string",
+                        "description": (
+                            "External user ID (required when target is a channel_id). "
+                            "Example: '628123456789@s.whatsapp.net' for WhatsApp, "
+                            "'123456789' for Telegram."
+                        )
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The message content to send."
+                    }
+                },
+                "required": ["target", "message"]
+            }
+        }
     }
 ]
 
@@ -848,12 +914,213 @@ def _on_final_answer(data: dict) -> None:
 # so it fires regardless of whether agent_messaging tools are loaded.
 
 
+# ==================== Channel Send Tools ====================
+
+
+def _exec_list_sessions(args: dict, agent_context: dict) -> dict:
+    """List external channel sessions for the calling agent."""
+    agent_id = agent_context.get('id', '')
+    limit = min(int(args.get('limit', 20)), 50)
+    channel_type = args.get('channel_type')
+
+    # Query session_index for this agent's sessions
+    try:
+        sessions, total = db.get_all_sessions(limit=limit + 100, offset=0, exclude_test=True)
+    except Exception as e:
+        _logger.error("list_sessions: failed to query sessions: %s", e)
+        return {'error': f'Failed to list sessions: {e}'}
+
+    # Filter to agent's own sessions, exclude inter-agent and web-only
+    results = []
+    for s in sessions:
+        if s.get('agent_id') != agent_id:
+            continue
+        ext = s.get('external_user_id', '')
+        # Skip inter-agent sessions
+        if ext.startswith('__agent__'):
+            continue
+        # Skip web-only sessions (no meaningful external delivery)
+        if not s.get('channel_id'):
+            continue
+        # Filter by channel type if specified
+        if channel_type and s.get('channel_type') != channel_type:
+            continue
+
+        results.append({
+            'session_id': s['id'],
+            'channel_type': s.get('channel_type') or '',
+            'channel_name': s.get('channel_name') or '',
+            'external_user_id': ext,
+            'updated_at': s.get('updated_at'),
+        })
+
+    # Sort by updated_at descending (most recent first)
+    results.sort(key=lambda x: x.get('updated_at') or '', reverse=True)
+
+    # Apply limit
+    results = results[:limit]
+
+    return {
+        'sessions': results,
+        'total': len(results),
+    }
+
+
+def _exec_send_channel_message(args: dict, agent_context: dict) -> dict:
+    """Send a text message to an external channel session."""
+    sender_id = agent_context.get('id', '')
+    target = args.get('target', '').strip()
+    message = args.get('message', '').strip()
+    user_id = args.get('user_id')
+
+    if not target:
+        return {'error': 'target is required.'}
+    if not message:
+        return {'error': 'message is required.'}
+
+    session_id = None
+    channel_id = None
+    external_user_id = None
+    channel_type = None
+
+    # ---- Resolve target ----
+    if not target.startswith('ch_'):
+        # Session targeting
+        session = db.get_session_with_details(target)
+        if not session:
+            return {'error': f'Session \'{target}\' not found.'}
+        # Ownership check
+        if session.get('agent_id') != sender_id:
+            _logger.warning(
+                "send_channel_message: agent '%s' tried to send to "
+                "session '%s' owned by agent '%s' — blocked.",
+                sender_id, target, session.get('agent_id'),
+            )
+            return {'error': 'You can only send to your own sessions.'}
+        # Channel check
+        if not session.get('channel_id'):
+            return {'error': 'Session has no associated channel (web-only sessions cannot receive external messages).'}
+        if session.get('channel_type') == 'web':
+            return {'error': 'Cannot send to web-only sessions.'}
+
+        session_id = target
+        channel_id = session['channel_id']
+        external_user_id = session['external_user_id']
+        channel_type = session.get('channel_type')
+    else:
+        # Channel targeting
+        if not user_id:
+            return {'error': 'user_id is required when targeting by channel_id.'}
+        external_user_id = user_id.strip()
+
+        channel = db.get_channel(target)
+        if not channel:
+            return {'error': f'Channel \'{target}\' not found.'}
+        # Ownership check
+        if channel.get('agent_id') != sender_id:
+            _logger.warning(
+                "send_channel_message: agent '%s' tried to use "
+                "channel '%s' owned by agent '%s' — blocked.",
+                sender_id, target, channel.get('agent_id'),
+            )
+            return {'error': 'You can only send via your own channels.'}
+        if channel.get('channel_type') == 'web':
+            return {'error': 'Cannot send via web channels.'}
+
+        channel_id = target
+        channel_type = channel.get('type')
+
+        # Get or create session
+        try:
+            session_id = db.get_or_create_session(
+                agent_id=sender_id,
+                external_user_id=external_user_id,
+                channel_id=channel_id,
+            )
+        except Exception as e:
+            _logger.error("send_channel_message: failed to get/create session: %s", e)
+            return {'error': f'Failed to resolve session: {e}'}
+
+    # ---- Safety checks ----
+    # Channel running check
+    from backend.channels.registry import channel_manager
+    instance = channel_manager.get_channel_instance(channel_id)
+    if not instance or not instance.is_running:
+        _logger.warning(
+            "send_channel_message: channel '%s' is not running for agent '%s'.",
+            channel_id, sender_id,
+        )
+        return {
+            'error': (
+                f'Channel \'{channel_id}\' is not currently running. '
+                'Cannot send messages to inactive channels.'
+            ),
+        }
+
+    # ---- Rate limit + debounce ----
+    from backend.tools.channel_send_guard import wait_for_send_slot
+    try:
+        wait_for_send_slot(sender_id)
+    except Exception as e:
+        _logger.error("send_channel_message: rate guard error: %s", e)
+        return {'error': f'Rate guard error: {e}'}
+
+    # ---- Send via channel ----
+    try:
+        instance.send_message(external_user_id, message)
+    except Exception as e:
+        _logger.error(
+            "send_channel_message: channel send failed for agent '%s' "
+            "session '%s' channel '%s': %s",
+            sender_id, session_id, channel_id, e,
+        )
+        return {
+            'error': f'Channel send failed: {e}',
+            'session_id': session_id,
+            'channel_type': channel_type,
+        }
+
+    # ---- Record in chat log ----
+    try:
+        db.add_chat_message(
+            session_id, 'assistant', message,
+            agent_id=sender_id,
+            metadata={'channel_send': True},
+        )
+        from models.chatlog import chatlog_manager
+        chatlog_manager.get(sender_id, session_id).append({
+            'type': 'final',
+            'session_id': session_id,
+            'content': message,
+            'metadata': {'channel_send': True},
+        })
+    except Exception as e:
+        _logger.warning("send_channel_message: chat log error: %s", e)
+
+    # ---- Log success ----
+    _logger.info(
+        "send_channel_message: agent '%s' sent to session '%s' "
+        "(channel: %s, type: %s, user: %s)",
+        sender_id, session_id, channel_id, channel_type, external_user_id,
+    )
+
+    return {
+        'success': True,
+        'message': 'Message sent successfully.',
+        'session_id': session_id,
+        'channel_type': channel_type,
+        'external_user_id': external_user_id,
+    }
+
+
 # ==================== Registry-style access ====================
 
 _EXECUTORS: Dict[str, Callable] = {
     'send_agent_message': _exec_send_agent_message,
     'escalate_to_user': _exec_escalate_to_user,
     'resolve_agent_approval': _exec_resolve_agent_approval,
+    'list_sessions': _exec_list_sessions,
+    'send_channel_message': _exec_send_channel_message,
 }
 
 

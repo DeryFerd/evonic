@@ -117,8 +117,12 @@ def _register_builtins():
     ) -> str:
         from models.db import db
         import os
+        import config
 
-        db.clear_session(session_id, agent_id)
+        # Optional `noa`/`noarchive` arg skips writing the session to the archive DB.
+        no_archive = bool({"noa", "noarchive"} & set(args.strip().lower().split()))
+
+        db.clear_session(session_id, agent_id, no_archive=no_archive)
 
         # Clear in-memory loaded skill state so skill badges disappear from session state UI
         from backend.agent_runtime import agent_runtime
@@ -163,6 +167,8 @@ def _register_builtins():
         except Exception:
             pass
 
+        if no_archive and config.SESSION_ARCHIVE:
+            return "History cleared without archive"
         return "History cleared."
 
     command_registry.register(

@@ -551,14 +551,8 @@ class WhatsAppChannel(BaseChannel):
             return
 
         # Cancel any pending debounced typing timer so it doesn't fire
-        # after the response is sent (would show a phantom "typing" indicator),
-        # and suppress late-arriving llm_thinking events from this turn for a
-        # few seconds (they are dispatched async and can outlive the turn).
-        with self._typing_lock:
-            pending_timer = self._typing_timer.pop(sender, None)
-            if pending_timer:
-                pending_timer.cancel()
-            self._typing_suppress_until[sender] = time.monotonic() + 5.0
+        # after the response is sent (would show a phantom "typing" indicator).
+        self._clear_typing(sender)
 
         response = _strip_markdown(result.get('response') or '')
         if response and response != "(No response)":
@@ -579,9 +573,9 @@ class WhatsAppChannel(BaseChannel):
 
             for chunk in _split_message(response):
                 self._do_send(sender, chunk)
-
-            # Explicitly clear the composing presence so no "typing…" lingers
-            # on the recipient's client after the final message.
+        else:
+            # No message will follow — actively clear any composing presence
+            # shown during the thinking phase.
             self.send_typing(sender, state='paused')
 
         event_stream.emit('message_sent', {
@@ -648,6 +642,16 @@ class WhatsAppChannel(BaseChannel):
             _logger.error("Failed to persist WhatsApp image attachment: %s", e, exc_info=True)
             return None
 
+    def _clear_typing(self, external_user_id: str):
+        """Cancel any pending typing debounce timer and suppress late
+        llm_thinking events (dispatched async, they can outlive the turn)
+        so no phantom composing fires around an outbound send."""
+        with self._typing_lock:
+            pending = self._typing_timer.pop(external_user_id, None)
+            if pending:
+                pending.cancel()
+            self._typing_suppress_until[external_user_id] = time.monotonic() + 10.0
+
     def send_typing(self, external_user_id: str, state: str = 'composing'):
         """Send composing/paused presence to the given user."""
         to = self._jid_map.get(external_user_id, external_user_id)
@@ -678,12 +682,17 @@ class WhatsAppChannel(BaseChannel):
         # Resolve full JID from map; fall back to external_user_id as-is
         to = self._jid_map.get(external_user_id, external_user_id)
         text = _strip_markdown(text)
+        # Every send path (direct, buffered worker, messaging tool) ends here —
+        # clear typing state so no phantom indicator survives the send.
+        self._clear_typing(external_user_id)
         for chunk in _split_message(text):
             try:
                 self._bridge_post('/send', {'to': to, 'text': chunk})
                 _logger.info("WhatsApp message sent to %s (channel %s)", external_user_id, self.channel_id)
             except Exception as e:
                 _logger.error("WhatsApp send failed to %s: %s", external_user_id, e)
+        # Actively clear any lingering composing presence on the recipient
+        self.send_typing(external_user_id, state='paused')
         from backend.event_stream import event_stream
         event_stream.emit('message_sent', {
             'channel_type': 'whatsapp',
@@ -719,6 +728,7 @@ class WhatsAppChannel(BaseChannel):
             caption = _strip_markdown(caption)
 
         # 5. Send via bridge
+        self._clear_typing(external_user_id)
         try:
             self._bridge_post('/send-file', {
                 'to': to,
@@ -731,6 +741,7 @@ class WhatsAppChannel(BaseChannel):
         except Exception as e:
             _logger.error("WhatsApp file send failed to %s: %s", external_user_id, e)
             return False
+        self.send_typing(external_user_id, state='paused')
 
         # 6. Emit event (consistent with _do_send)
         from backend.event_stream import event_stream

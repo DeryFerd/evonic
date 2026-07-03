@@ -20,7 +20,7 @@ def execute(agent: dict, args: dict) -> Any:
     if db.get_setting("plugin_enabled:mcp_client") != "1":
         return {"error": "MCP Client plugin is disabled. Enable it in Plugins settings."}
 
-    from backend.tools.lib.mcp_client import MCPError, content_to_text, mcp_manager
+    from ._mcp_lib import MCPError, content_to_text, mcp_manager
 
     server = args.get("server")
     server = server.strip() if isinstance(server, str) else ""

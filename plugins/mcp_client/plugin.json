@@ -6,6 +6,7 @@
   "author": "Evonic",
   "enabled": true,
   "events": [],
+  "tools_file": "tools.json",
   "variables": [
     {
       "name": "MCP_SERVERS",

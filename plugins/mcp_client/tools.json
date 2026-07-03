@@ -1,0 +1,60 @@
+[
+    {
+        "type": "function",
+        "name": "MCP List Tools",
+        "description": "List tools available on configured MCP servers.",
+        "function": {
+            "name": "mcp_list_tools",
+            "description": "List the tools exposed by external MCP servers configured on this platform (e.g. 'claude-code'). Returns each tool's name, description and JSON input schema. Call this before mcp_call to discover valid tool names and their expected arguments. Requires the MCP Client plugin to be enabled.",
+            "parameters": {
+                "properties": {
+                    "server": {
+                        "description": "Name of a configured MCP server (e.g. 'claude-code'). Omit to list tools from all configured servers.",
+                        "type": "string"
+                    }
+                },
+                "required": [],
+                "type": "object"
+            }
+        },
+        "mock_response": "{\"server\":\"claude-code\",\"tools\":[{\"name\":\"Bash\",\"description\":\"Run a shell command\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\"required\":[\"command\"]}}]}",
+        "mock_response_type": "json"
+    },
+    {
+        "type": "function",
+        "name": "MCP Call",
+        "description": "Call a tool on a configured MCP server.",
+        "function": {
+            "name": "mcp_call",
+            "description": "Invoke a tool on an external MCP server configured on this platform (e.g. run Claude Code's Bash tool via the 'claude-code' server). Call mcp_list_tools first to discover valid server names, tool names and each tool's input schema, then pass the tool's arguments as a JSON object. Requires the MCP Client plugin to be enabled.",
+            "parameters": {
+                "properties": {
+                    "server": {
+                        "description": "Name of a configured MCP server (e.g. 'claude-code'). Discover valid names via mcp_list_tools.",
+                        "type": "string"
+                    },
+                    "tool": {
+                        "description": "Name of the tool to invoke on the server (e.g. 'Bash'), exactly as returned by mcp_list_tools.",
+                        "type": "string"
+                    },
+                    "arguments": {
+                        "description": "Arguments for the tool as a JSON object, matching the tool's input_schema from mcp_list_tools.",
+                        "type": "object"
+                    },
+                    "timeout_sec": {
+                        "description": "Optional timeout in seconds for this call. Capped at the admin-configured maximum.",
+                        "type": "number"
+                    }
+                },
+                "required": [
+                    "server",
+                    "tool",
+                    "arguments"
+                ],
+                "type": "object"
+            }
+        },
+        "mock_response": "{\"result\":\"hello-from-mcp\",\"server\":\"claude-code\",\"tool\":\"Bash\"}",
+        "mock_response_type": "json"
+    }
+]

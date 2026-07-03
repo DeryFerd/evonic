@@ -1,14 +1,16 @@
 """
-mcp_client.py — minimal MCP (Model Context Protocol) client over stdio.
+_mcp_lib.py — minimal MCP (Model Context Protocol) client over stdio.
 
 Spawns and manages long-lived MCP server subprocesses (e.g. `claude mcp serve`)
 and speaks newline-delimited JSON-RPC 2.0 per the MCP stdio transport spec.
 Used by the mcp_list_tools / mcp_call agent tools; servers are configured via
 the `mcp_client` plugin's MCP_SERVERS variable.
 
-This module must stay under backend/tools/lib/ so the process-manager
-singleton survives tool-module hot reloads (backend/tools/<name>.py files are
-re-executed on mtime change, but normally-imported modules stay in sys.modules).
+The process-manager singleton survives both tool-entrypoint hot reloads and
+plugin reloads: this helper is imported relatively by the tool modules, so it
+lives in sys.modules as 'plugin_tools_mcp_client._mcp_lib' — a namespace the
+plugin loader does not evict (only 'plugin_pkg_*' modules are). Editing this
+file therefore requires an app restart to take effect.
 
 Concurrency model: fully synchronous, one in-flight request per server,
 guarded by a per-server lock. Processes are shared across agents, spawned

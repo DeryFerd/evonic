@@ -4,7 +4,7 @@ Lets Evonic agents call tools on external [MCP](https://modelcontextprotocol.io)
 
 ## How it works
 
-The plugin itself is configuration-only. The actual functionality lives in two agent tools:
+The plugin is fully self-contained: tool definitions live in `tools.json` (declared via `tools_file` in `plugin.json`) and their implementations under `backend/tools/`. It exposes two agent tools:
 
 - **`mcp_list_tools(server?)`** — list the tools (name, description, input schema) exposed by one or all configured servers.
 - **`mcp_call(server, tool, arguments, timeout_sec?)`** — invoke a tool on a server and return its text output.

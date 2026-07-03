@@ -282,7 +282,7 @@ def _handle_event(event: str, data: dict):
     # Get config
     agent_id = _get_config(agent_key)
     if not agent_id:
-        _log("info", "Event %s — %s not configured, skipping" % (event, agent_key))
+        #_log("info", "Event %s — %s not configured, skipping" % (event, agent_key))
         return
 
     # Evaluate custom filters (if configured)

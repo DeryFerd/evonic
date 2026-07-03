@@ -22,6 +22,14 @@ let connectionStatus = 'disconnected'; // 'disconnected' | 'qr_pending' | 'conne
 let isShuttingDown = false;
 let botId = '';   // PN-based JID (e.g. 628xxx:1@s.whatsapp.net)
 let botLid = '';  // LID-based JID (e.g. 123456:1@lid)
+let lastPushedStatus = '';
+
+function pushStatus() {
+    if (!CALLBACK_URL || isShuttingDown) return;
+    if (connectionStatus === lastPushedStatus) return;
+    lastPushedStatus = connectionStatus;
+    postCallback({ event: 'status', status: connectionStatus });
+}
 
 async function startBaileys() {
     const baileys = await import('@whiskeysockets/baileys');
@@ -77,13 +85,16 @@ async function startBaileys() {
             if (isShuttingDown) return;
 
             if (loggedOut) {
-                console.log('[whatsapp-bridge] Logged out — clearing session');
+                console.log('[whatsapp-bridge] Logged out — clearing session and restarting');
                 fs.default.rmSync(AUTH_DIR, { recursive: true, force: true });
+                setTimeout(startBaileys, 3000);
             } else {
                 console.log('[whatsapp-bridge] Disconnected, reconnecting...');
                 setTimeout(startBaileys, 3000);
             }
         }
+
+        pushStatus();
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {

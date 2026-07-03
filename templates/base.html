@@ -118,7 +118,7 @@
             <nav>
                 {% if session.get('authenticated') %}
                 <a href="/" class="{{ 'nav-active' if request.path == '/' else '' }}">Dashboard</a>
-                <a href="/agents" class="{{ 'nav-active' if request.path.startswith('/agents') else '' }}">Agents</a>
+                <a href="/agents" class="{{ 'nav-active' if request.path.startswith('/agents') else '' }}">Agents<span id="wa-disconnect-badge" class="hidden ml-1 text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium" title="WhatsApp channels not connected">0</span></a>
                 <a href="/sessions" class="{{ 'nav-active' if request.path.startswith('/sessions') else '' }}">Sessions</a>
                 <a href="/evaluate" class="{{ 'nav-active' if request.path.startswith('/evaluate') else '' }}">Evaluation</a>
                 {% endif %}
@@ -223,5 +223,41 @@
     <script src="{{ url_for('static', filename='js/evonic.js') }}?v=5" defer></script>
     <!-- Wrapped so the deferred agent-sidebar.js has defined initSidebar by DOMContentLoaded -->
     <script>document.addEventListener('DOMContentLoaded', function () { initSidebar(); });</script>
+    {% if session.get('authenticated') %}
+    <script>
+    // WhatsApp disconnect badge — derived from live bridge status, silent-fail
+    (function () {
+        function updateWABadge() {
+            fetch('/api/whatsapp/disconnected-count')
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data) return;
+                    var badge = document.getElementById('wa-disconnect-badge');
+                    if (!badge) return;
+                    if (data.count > 0) {
+                        badge.textContent = data.count;
+                        badge.classList.remove('hidden');
+                    } else {
+                        badge.classList.add('hidden');
+                    }
+                })
+                .catch(function () {});
+        }
+        window.updateWABadge = updateWABadge;
+        document.addEventListener('DOMContentLoaded', function () {
+            updateWABadge();
+            setInterval(updateWABadge, 60000); // fallback when SSE is unavailable
+            var tries = 0;
+            (function bindRT() {
+                if (window._evRealtime) {
+                    window._evRealtime.on('status', 'whatsapp_bridge_status', updateWABadge);
+                } else if (++tries < 10) {
+                    setTimeout(bindRT, 1000);
+                }
+            })();
+        });
+    })();
+    </script>
+    {% endif %}
 </body>
 </html>

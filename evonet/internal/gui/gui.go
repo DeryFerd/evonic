@@ -60,6 +60,12 @@ func RunGUI(store *config.Store) {
 	w := a.NewWindow("Evonet v" + version.Version)
 	w.Resize(fyne.NewSize(700, 420))
 
+	w.SetMainMenu(fyne.NewMainMenu(
+		fyne.NewMenu("Evonet",
+			fyne.NewMenuItem("About Evonet", func() { showAboutDialog(w) }),
+		),
+	))
+
 	root := container.NewStack()
 	w.SetContent(root)
 
@@ -377,8 +383,6 @@ func showAboutDialog(w fyne.Window) {
 
 	versionLabel := widget.NewLabelWithStyle("Version "+version.Version+" (GUI Mac)", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
 
-	separator := widget.NewSeparator()
-
 	creator := widget.NewLabelWithStyle("Created by Robin Syihab (@anvie)", fyne.TextAlignCenter, fyne.TextStyle{})
 
 	xLink := widget.NewHyperlink("X (Twitter): @anvie", xURL)
@@ -389,16 +393,17 @@ func showAboutDialog(w fyne.Window) {
 
 	content := container.NewVBox(
 		title,
-		separator,
+		widget.NewSeparator(),
 		desc,
 		versionLabel,
-		separator,
 		creator,
 		xLink,
 		ghLink,
 	)
 
-	dialog.ShowCustom("About Evonet", "Close", container.NewPadded(content), w)
+	d := dialog.NewCustom("About Evonet", "Close", container.NewPadded(content), w)
+	d.Resize(fyne.NewSize(420, 380))
+	d.Show()
 }
 
 // showPairingView renders the pairing form into root. On success the paired

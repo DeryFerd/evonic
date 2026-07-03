@@ -265,9 +265,20 @@ def api_list_tools():
     from evaluator.test_manager import test_manager
     from backend.skills_manager import skills_manager
     from backend.tools import tool_registry
+    from backend.tools.agent_messaging import get_agent_messaging_tool_defs
     # Built-in tools always appear first
     tools = tool_registry.get_builtin_tool_defs()
     tools += test_manager.list_tools()
+    # Append agent messaging tools (auto-loaded when agent_messaging_enabled)
+    for tool_def in get_agent_messaging_tool_defs():
+        func = tool_def.get('function', {})
+        tools.append({
+            'id': func.get('name', ''),
+            'name': func.get('name', ''),
+            'description': func.get('description', ''),
+            'function': func,
+            '_auto_loaded': True,
+        })
     # Append ALL skill tool definitions (no dedup — namespaced IDs disambiguate)
     for skill_def in skills_manager.get_all_skill_tool_defs():
         func = skill_def.get('function', {})

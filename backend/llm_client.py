@@ -383,6 +383,10 @@ class LLMClient:
             self.base_url and "anthropic.com" in self.base_url
         )
         is_anthropic = self.api_format == "anthropic"
+        # Cerebras is a strict OpenAI-compatible validator: it rejects the
+        # non-standard reasoning_content field on input messages (unlike
+        # OpenCode Go / MiniMax / DeepSeek, which require it round-tripped).
+        is_cerebras = bool(self.base_url and "cerebras.ai" in self.base_url)
         if is_anthropic:
             url = f"{self.base_url}/messages"
         elif is_ollama_fmt:
@@ -464,7 +468,12 @@ class LLMClient:
             for _msg in processed_messages
             if _msg.get("role") == "assistant"
         )
-        if self.thinking or _has_reasoning:
+        if is_cerebras:
+            # Cerebras rejects reasoning_content on input messages entirely —
+            # strip it regardless of thinking mode.
+            for _msg in processed_messages:
+                _msg.pop("reasoning_content", None)
+        elif self.thinking or _has_reasoning:
             # Ensure every assistant message has the field (some APIs require it
             # even on turns where the model produced no reasoning).
             for _msg in processed_messages:

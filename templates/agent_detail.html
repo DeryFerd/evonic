@@ -1867,6 +1867,14 @@ function toggleAdvanced() {
 // ==================== Agent Variables ====================
 let _agentVariables = [];
 
+// Keys managed by dedicated UI widgets (e.g. the injection-guard toggle), not
+// editable as free-form variable rows. Stored lowercase; the UI force-uppercases
+// user keys, so these must be excluded to avoid case-mismatched duplicates.
+const RESERVED_VAR_KEYS = ['injection_guard_enabled'];
+function isReservedVarKey(key) {
+    return RESERVED_VAR_KEYS.includes((key || '').trim().toLowerCase());
+}
+
 function addVariableRow(key = '', value = '', isSecret = false) {
     const list = document.getElementById('agent-variables-list');
     const row = document.createElement('div');
@@ -1896,8 +1904,14 @@ function collectVariables() {
         const key = row.querySelector('.var-key').value.trim().toUpperCase();
         const value = row.querySelector('.var-value').value;
         const isSecret = row.querySelector('.var-secret').checked;
-        if (key) vars.push({ key, value, is_secret: isSecret });
+        if (key && !isReservedVarKey(key)) vars.push({ key, value, is_secret: isSecret });
     });
+    // Always re-emit the toggle-managed injection guard flag (canonical lowercase,
+    // exactly once) so every save path preserves it without ever duplicating it.
+    const guardToggle = document.getElementById('agent-injection-guard');
+    if (guardToggle) {
+        vars.push({ key: 'injection_guard_enabled', value: guardToggle.checked ? '1' : '0', is_secret: false });
+    }
     return vars;
 }
 
@@ -1907,14 +1921,16 @@ async function loadVariables() {
     _agentVariables = data.variables || [];
     const list = document.getElementById('agent-variables-list');
     list.innerHTML = '';
-    _agentVariables.forEach(v => addVariableRow(v.key, v.value, v.is_secret));
+    _agentVariables
+        .filter(v => !isReservedVarKey(v.key))
+        .forEach(v => addVariableRow(v.key, v.value, v.is_secret));
     applyInjectionGuardState(_agentVariables);
 }
 
 // Sets the toggle from already-loaded variables — shares loadVariables()'s
 // fetch instead of issuing a second /variables request.
 function applyInjectionGuardState(vars) {
-    const enabledVar = vars.find(v => v.key === 'injection_guard_enabled');
+    const enabledVar = vars.find(v => (v.key || '').toLowerCase() === 'injection_guard_enabled');
     const toggle = document.getElementById('agent-injection-guard');
     if (toggle) {
         toggle.checked = !enabledVar || enabledVar.value !== '0';
@@ -2154,21 +2170,13 @@ async function saveAdvanced() {
     const data = await res.json();
     if (!data.success) { showToast("Failed to save advanced settings.", "error"); return; }
 
-    // Save injection guard state as agent variable — flush DOM state first
+    // Persist variables + injection guard flag. collectVariables() embeds the
+    // toggle state (canonical lowercase, once), so no manual merge is needed.
     try {
-        // Collect current DOM variables (includes any unsaved changes from inline edits)
-        const vars = collectVariables();
-        const enabled = document.getElementById('agent-injection-guard').checked ? '1' : '0';
-        const existingIdx = vars.findIndex(v => v.key === 'injection_guard_enabled');
-        if (existingIdx >= 0) {
-            vars[existingIdx].value = enabled;
-        } else {
-            vars.push({ key: 'injection_guard_enabled', value: enabled, is_secret: false });
-        }
         await fetch(`/api/agents/${AGENT_ID}/variables`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ variables: vars })
+            body: JSON.stringify({ variables: collectVariables() })
         });
     } catch (e) {
         console.error('Failed to save injection guard state:', e);

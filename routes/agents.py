@@ -14,7 +14,18 @@ from models.db import db
 from models.chatlog import chatlog_manager, _DISPLAY_TYPES
 from backend.audit_logger import audit
 from backend.tools import tool_registry
+from backend.tools.agent_messaging import get_agent_messaging_tool_defs
 from backend.tools.super_agent_tools import _sync_skill_tools
+
+# Agent messaging tool IDs (auto-loaded when agent_messaging_enabled)
+AGENT_MESSAGING_TOOL_IDS = frozenset({
+    'send_as_bot',
+    'send_agent_message',
+    'escalate_to_user',
+    'resolve_agent_approval',
+    'list_sessions',
+    'send_channel_message',
+})
 from backend.agent_runtime.evomem_client import get_graph_for_viz, get_engine
 from backend.agent_runtime.context import validate_kb_frontmatter
 
@@ -244,7 +255,13 @@ def api_get_agent(agent_id):
     if not agent:
         return jsonify({'error': 'Agent not found'}), 404
     agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))
-    agent['tools'] = db.get_agent_tools(agent_id)
+    agent_tools = db.get_agent_tools(agent_id)
+    # Include auto-loaded agent messaging tools when enabled
+    if agent.get('is_super') or agent.get('agent_messaging_enabled') != 0:
+        for tid in AGENT_MESSAGING_TOOL_IDS:
+            if tid not in agent_tools:
+                agent_tools = list(agent_tools) + [tid]
+    agent['tools'] = agent_tools
     agent['channels'] = db.get_channels(agent_id)
     # Detect orphaned tools (skill uninstalled)
     known_ids = set()
@@ -252,6 +269,8 @@ def api_get_agent(agent_id):
         known_ids.add(td.get('function', {}).get('name') or td.get('id', ''))
         if td.get('id'):
             known_ids.add(td['id'])
+    # Agent messaging tools are auto-loaded — don't flag them as missing
+    known_ids |= AGENT_MESSAGING_TOOL_IDS
     agent['missing_tools'] = [t for t in agent['tools'] if t not in known_ids]
     return jsonify(_sanitize_agent(agent))
 
@@ -462,6 +481,12 @@ def api_clone_agent(agent_id):
 @agents_bp.route('/api/agents/<agent_id>/tools', methods=['GET'])
 def api_get_agent_tools(agent_id):
     tool_ids = db.get_agent_tools(agent_id)
+    agent = db.get_agent(agent_id)
+    # Include auto-loaded agent messaging tools when enabled
+    if agent and (agent.get('is_super') or agent.get('agent_messaging_enabled') != 0):
+        for tid in AGENT_MESSAGING_TOOL_IDS:
+            if tid not in tool_ids:
+                tool_ids = list(tool_ids) + [tid]
     return jsonify({'tools': tool_ids})
 
 

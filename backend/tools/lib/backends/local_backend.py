@@ -305,11 +305,16 @@ class LocalBackend(ExecutionBackend):
                 return {'error': 'File contains non-UTF-8 characters.'}
             except Exception as e:
                 return {'error': str(e)}
+        # Content is base64-encoded with a __B64__ marker so it survives
+        # _sudo_subprocess's stdout.strip() + json.loads() untouched
+        # (JSON-looking files, leading/trailing whitespace, print's newline).
+        import base64
         code = (
-            "p=" + repr(path) + "; "
+            "import base64\n"
+            "p=" + repr(path) + "\n"
             "try:\n"
             " f=open(p,'r',encoding='utf-8',errors='replace')\n"
-            " print(f.read()); f.close()\n"
+            " print('__B64__'+base64.b64encode(f.read().encode('utf-8')).decode('ascii')); f.close()\n"
             "except PermissionError: print('__ERR__Permission denied')\n"
             "except IsADirectoryError: print('__ERR__Path is a directory')\n"
             "except UnicodeDecodeError: print('__ERR__Non-UTF-8 file')\n"
@@ -317,10 +322,12 @@ class LocalBackend(ExecutionBackend):
         )
         r = self._sudo_subprocess(code)
         if r.get('ok'):
-            content = r.get('result', '')
-            if isinstance(content, str) and content.startswith('__ERR__'):
-                return {'error': content[7:]}
-            return {'content': content}
+            result = r.get('result', '')
+            if isinstance(result, str) and result.startswith('__ERR__'):
+                return {'error': result[7:]}
+            if isinstance(result, str) and result.startswith('__B64__'):
+                return {'content': base64.b64decode(result[7:]).decode('utf-8', errors='replace')}
+            return {'error': 'Unexpected result format'}
         return {'error': r.get('error', 'Unknown error')}
 
     def write_file(self, path: str, content: str, create_dirs: bool = True) -> dict:
@@ -342,9 +349,10 @@ class LocalBackend(ExecutionBackend):
         import base64
         encoded = base64.b64encode(content.encode('utf-8')).decode('ascii')
         code = (
-            "import os, base64; p=" + repr(path) + "; "
-            "cd=" + repr(create_dirs) + "; "
-            "data=base64.b64decode(" + repr(encoded) + ").decode('utf-8'); "
+            "import os, base64\n"
+            "p=" + repr(path) + "\n"
+            "cd=" + repr(create_dirs) + "\n"
+            "data=base64.b64decode(" + repr(encoded) + ").decode('utf-8')\n"
             "try:\n"
             " if cd:\n"
             "  d=os.path.dirname(p)\n"
@@ -379,10 +387,11 @@ class LocalBackend(ExecutionBackend):
                 return {'error': str(e)}
         import base64
         code = (
-            "import base64; p=" + repr(path) + "; "
+            "import base64\n"
+            "p=" + repr(path) + "\n"
             "try:\n"
             " data=open(p,'rb').read()\n"
-            " print(base64.b64encode(data).decode('ascii'))\n"
+            " print('__B64__'+base64.b64encode(data).decode('ascii'))\n"
             "except PermissionError: print('__ERR__Permission denied')\n"
             "except FileNotFoundError: print('__ERR__File not found')\n"
             "except IsADirectoryError: print('__ERR__Path is a directory')\n"
@@ -394,7 +403,8 @@ class LocalBackend(ExecutionBackend):
             if isinstance(result, str):
                 if result.startswith('__ERR__'):
                     return {'error': result[7:]}
-                return {'bytes': base64.b64decode(result)}
+                if result.startswith('__B64__'):
+                    return {'bytes': base64.b64decode(result[7:])}
             return {'error': 'Unexpected result format'}
         return {'error': r.get('error', 'Unknown error')}
 
@@ -413,7 +423,8 @@ class LocalBackend(ExecutionBackend):
             except Exception as e:
                 return {'error': str(e)}
         code = (
-            "import os; p=" + repr(path) + "; "
+            "import os\n"
+            "p=" + repr(path) + "\n"
             "try:\n"
             " os.remove(p); print('__OK__')\n"
             "except FileNotFoundError: print('__ERR__File not found')\n"
@@ -448,9 +459,10 @@ class LocalBackend(ExecutionBackend):
         import base64
         encoded = base64.b64encode(data).decode('ascii')
         code = (
-            "import os, base64; p=" + repr(path) + "; "
-            "cd=" + repr(create_dirs) + "; "
-            "data=base64.b64decode(" + repr(encoded) + "); "
+            "import os, base64\n"
+            "p=" + repr(path) + "\n"
+            "cd=" + repr(create_dirs) + "\n"
+            "data=base64.b64decode(" + repr(encoded) + ")\n"
             "try:\n"
             " if cd:\n"
             "  d=os.path.dirname(p)\n"
@@ -477,7 +489,8 @@ class LocalBackend(ExecutionBackend):
             except Exception as e:
                 return {'error': str(e)}
         code = (
-            "import os; p=" + repr(path) + "; "
+            "import os\n"
+            "p=" + repr(path) + "\n"
             "try:\n"
             " os.makedirs(p,exist_ok=True); print('__OK__')\n"
             "except Exception as e: print('__ERR__'+str(e))"

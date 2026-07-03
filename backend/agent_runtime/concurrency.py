@@ -12,6 +12,32 @@ from typing import Dict, Optional
 _logger = logging.getLogger(__name__)
 
 
+# Thread-local handle to the model-gate held by the current turn on this thread.
+# Lets a blocking sub-agent tool (sync Explore) temporarily release it, avoiding a
+# self-deadlock where the parent holds the gate while waiting for a child that needs it.
+_tls = threading.local()
+
+
+@contextmanager
+def paused_model_gate():
+    """Temporarily release the current thread's held model-gate, re-acquiring on exit.
+
+    No-op when the current turn holds no model-gate (model_id was None, e.g. non-gated
+    model or explorer). Re-acquire in finally is normal contention, never a deadlock:
+    by the time the caller stops waiting, the child that needed the gate has already
+    acquired-run-released within the freed window.
+    """
+    gate = getattr(_tls, 'model_gate', None)
+    if gate is None:
+        yield
+        return
+    gate.release()
+    try:
+        yield
+    finally:
+        gate.acquire()
+
+
 class ConcurrencyGate:
     """A resizable semaphore. max_concurrent=0 means unlimited."""
 
@@ -169,9 +195,14 @@ class ConcurrencyManager:
         try:
             if model_gate is not None:
                 model_gate.acquire()
+            # Expose the held gate so a blocking sub-agent tool on this thread
+            # (sync Explore) can pause it via paused_model_gate().
+            _prev = getattr(_tls, 'model_gate', None)
+            _tls.model_gate = model_gate
             try:
                 yield
             finally:
+                _tls.model_gate = _prev
                 if model_gate is not None:
                     model_gate.release()
         finally:

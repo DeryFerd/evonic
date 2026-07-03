@@ -172,6 +172,7 @@ def execute(agent: dict, args: dict) -> dict:
         answer_data = {}
 
         from backend.event_stream import event_stream
+        from backend.agent_runtime.concurrency import paused_model_gate
 
         def _on_explorer_done(data):
             if data.get('agent_id') == explorer_id:
@@ -183,7 +184,11 @@ def execute(agent: dict, args: dict) -> dict:
         event_stream.on('final_answer', _on_explorer_done)
 
         try:
-            if not done.wait(timeout=timeout):
+            # Release our turn's model-gate while blocked so the explorer (which needs
+            # the same gate) can run — otherwise parent↔explorer deadlock until timeout.
+            with paused_model_gate():
+                finished = done.wait(timeout=timeout)
+            if not finished:
                 return {
                     'explorer_id': explorer_id,
                     'path': path,

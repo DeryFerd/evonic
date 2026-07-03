@@ -302,14 +302,14 @@ app.post('/send-buttons', async (req, res) => {
 });
 
 app.post('/typing', async (req, res) => {
-    const { to } = req.body || {};
+    const { to, state } = req.body || {};
     if (!to) return res.status(400).json({ error: 'to required' });
     if (!sock || connectionStatus !== 'connected') {
         return res.status(503).json({ error: 'Not connected to WhatsApp' });
     }
     const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`;
     try {
-        await sock.sendPresenceUpdate('composing', jid);
+        await sock.sendPresenceUpdate(state === 'paused' ? 'paused' : 'composing', jid);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });

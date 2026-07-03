@@ -65,6 +65,9 @@ class WhatsAppChannel(BaseChannel):
         # Debounce state for llm_thinking typing indicator
         self._typing_timer: Dict[str, threading.Timer] = {}
         self._typing_lock = threading.Lock()
+        # Per-user suppression deadline (monotonic) — blocks late llm_thinking
+        # events from re-scheduling typing right after a response was sent
+        self._typing_suppress_until: Dict[str, float] = {}
 
     @staticmethod
     def get_channel_type() -> str:
@@ -143,6 +146,11 @@ class WhatsAppChannel(BaseChannel):
                 return
             # Debounce: cancel any pending timer, fire after 3 s idle to avoid spamming
             with self._typing_lock:
+                # llm_thinking events are dispatched async (event_stream thread pool)
+                # and can arrive AFTER the response was sent — suppress those so
+                # they don't schedule a phantom typing indicator.
+                if time.monotonic() < self._typing_suppress_until.get(user_id, 0):
+                    return
                 existing = self._typing_timer.pop(user_id, None)
                 if existing:
                     existing.cancel()
@@ -150,6 +158,8 @@ class WhatsAppChannel(BaseChannel):
                 def _fire():
                     with self._typing_lock:
                         self._typing_timer.pop(user_id, None)
+                        if time.monotonic() < self._typing_suppress_until.get(user_id, 0):
+                            return
                     self.send_typing(user_id)
 
                 t = threading.Timer(3.0, _fire)
@@ -525,11 +535,14 @@ class WhatsAppChannel(BaseChannel):
             return
 
         # Cancel any pending debounced typing timer so it doesn't fire
-        # after the response is sent (would show a phantom "typing" indicator).
+        # after the response is sent (would show a phantom "typing" indicator),
+        # and suppress late-arriving llm_thinking events from this turn for a
+        # few seconds (they are dispatched async and can outlive the turn).
         with self._typing_lock:
             pending_timer = self._typing_timer.pop(sender, None)
             if pending_timer:
                 pending_timer.cancel()
+            self._typing_suppress_until[sender] = time.monotonic() + 5.0
 
         response = _strip_markdown(result.get('response') or '')
         if response and response != "(No response)":
@@ -551,6 +564,10 @@ class WhatsAppChannel(BaseChannel):
             for chunk in _split_message(response):
                 self._do_send(sender, chunk)
 
+            # Explicitly clear the composing presence so no "typing…" lingers
+            # on the recipient's client after the final message.
+            self.send_typing(sender, state='paused')
+
         event_stream.emit('message_sent', {
             'channel_type': 'whatsapp',
             'channel_id': self.channel_id,
@@ -558,11 +575,11 @@ class WhatsAppChannel(BaseChannel):
             'message': response,
         })
 
-    def send_typing(self, external_user_id: str):
-        """Send composing presence to the given user."""
+    def send_typing(self, external_user_id: str, state: str = 'composing'):
+        """Send composing/paused presence to the given user."""
         to = self._jid_map.get(external_user_id, external_user_id)
         try:
-            self._bridge_post('/typing', {'to': to})
+            self._bridge_post('/typing', {'to': to, 'state': state})
         except Exception as e:
             _logger.warning("WhatsApp typing indicator failed for %s: %s", external_user_id, e)
 

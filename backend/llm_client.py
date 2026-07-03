@@ -530,13 +530,6 @@ class LLMClient:
                 payload["temperature"] = effective_temperature
             if tools:
                 payload["tools"] = tools
-            if self.thinking and enable_thinking:
-                budget = (
-                    self.thinking_budget
-                    if self.thinking_budget > 0
-                    else max_tokens // 2
-                )
-                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         if is_anthropic:
             headers = {

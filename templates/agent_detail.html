@@ -901,7 +901,14 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                         </button>
                     </div>
                 </div>
-                <div class="relative flex-1 flex flex-col min-h-0">
+                <div id="chat-drop-zone" class="relative flex-1 flex flex-col min-h-0">
+                    <!-- Drop overlay -->
+                    <div id="chat-drop-overlay" class="hidden absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style="background:rgba(99,102,241,0.08)">
+                        <div class="border-2 border-dashed border-indigo-400 rounded-xl px-8 py-6 flex flex-col items-center gap-2 bg-white/80 dark:bg-gray-800/80">
+                            <svg class="w-8 h-8 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+                            <span class="text-sm font-medium text-indigo-600 dark:text-indigo-400">Drop file here</span>
+                        </div>
+                    </div>
                     <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 min-h-0" style="min-height: 300px;">
                         <!-- Messages rendered here -->
                     </div>
@@ -1403,6 +1410,34 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
         </div>
         <div class="flex justify-end p-5 border-t border-gray-200 dark:border-gray-700">
             <button onclick="closeQRModal()" class="px-4 py-2 border border-gray-300 rounded-md text-sm text-gray-600 hover:bg-gray-50 dark:text-gray-200 dark:hover:bg-gray-700">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Drop File Confirmation Modal -->
+<div id="chat-drop-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-4">
+    <div class="bg-white dark:bg-gray-800 rounded-xl w-[66%] max-w-[420px] shadow-xl flex flex-col" style="max-height:85vh">
+        <div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <h3 class="text-gray-800 dark:text-gray-100 font-semibold text-sm">Send File</h3>
+            <button onclick="closeChatDropModal()" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
+        </div>
+        <div class="p-5 overflow-y-auto flex-1">
+            <div class="flex flex-col items-center gap-3 mb-4">
+                <img id="chat-drop-preview-img" class="hidden rounded-lg object-contain" style="max-width:100%;max-height:min(240px,40vh)" alt="">
+                <div id="chat-drop-preview-file" class="hidden flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-700 rounded-lg w-full">
+                    <svg class="w-8 h-8 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zm-3 9h4v2h-4v-2zm0 3h4v2h-4v-2zm-2-3h1v2H8v-2zm0 3h1v2H8v-2z"/></svg>
+                    <div class="min-w-0 flex-1">
+                        <div id="chat-drop-filename" class="text-sm font-medium text-gray-700 dark:text-gray-200 truncate"></div>
+                        <div id="chat-drop-filesize" class="text-xs text-gray-400"></div>
+                    </div>
+                </div>
+            </div>
+            <input type="text" id="chat-drop-message" placeholder="Add a message (optional)..."
+                   class="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 mb-4">
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeChatDropModal()" class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm text-gray-600 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                <button onclick="submitChatDropModal()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">Send</button>
+            </div>
         </div>
     </div>
 </div>
@@ -4688,6 +4723,127 @@ function clearChatFileInput() {
     if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
 }
 
+// ==================== Drag & Drop File Upload ====================
+
+let _dragCounter = 0;
+let _droppedFile = null;
+
+function _formatFileSize(size) {
+    if (size < 1024) return `${size} B`;
+    if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / 1048576).toFixed(1)} MB`;
+}
+
+function _isFileAccepted(file) {
+    const accept = document.getElementById('chat-file-input').getAttribute('accept') || '';
+    const exts = accept.split(',').map(s => s.trim().toLowerCase());
+    if (exts.some(e => e === 'image/*') && file.type.startsWith('image/')) return true;
+    const fname = file.name.toLowerCase();
+    return exts.some(e => e.startsWith('.') && fname.endsWith(e));
+}
+
+(function initChatDropZone() {
+    const zone = document.getElementById('chat-drop-zone');
+    if (!zone) return;
+    const overlay = document.getElementById('chat-drop-overlay');
+
+    zone.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        _dragCounter++;
+        if (_dragCounter === 1) overlay.classList.remove('hidden');
+    });
+    zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+    });
+    zone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        _dragCounter--;
+        if (_dragCounter <= 0) { _dragCounter = 0; overlay.classList.add('hidden'); }
+    });
+    zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        _dragCounter = 0;
+        overlay.classList.add('hidden');
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        if (!_isFileAccepted(file)) {
+            if (typeof showToast === 'function') showToast('File type not supported', true);
+            return;
+        }
+        openChatDropModal(file);
+    });
+})();
+
+function openChatDropModal(file) {
+    _droppedFile = file;
+    const modal = document.getElementById('chat-drop-modal');
+    const previewImg = document.getElementById('chat-drop-preview-img');
+    const previewFile = document.getElementById('chat-drop-preview-file');
+    const msgInput = document.getElementById('chat-drop-message');
+
+    msgInput.value = '';
+
+    if (file.type.startsWith('image/')) {
+        previewImg.src = URL.createObjectURL(file);
+        previewImg.classList.remove('hidden');
+        previewFile.classList.add('hidden');
+    } else {
+        previewImg.classList.add('hidden');
+        previewFile.classList.remove('hidden');
+        document.getElementById('chat-drop-filename').textContent = file.name;
+        document.getElementById('chat-drop-filesize').textContent = _formatFileSize(file.size);
+    }
+    modal.classList.remove('hidden');
+    setTimeout(() => msgInput.focus(), 50);
+}
+
+function closeChatDropModal() {
+    const modal = document.getElementById('chat-drop-modal');
+    modal.classList.add('hidden');
+    const previewImg = document.getElementById('chat-drop-preview-img');
+    if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
+    _droppedFile = null;
+}
+
+function submitChatDropModal() {
+    if (!_droppedFile) return;
+    const msgInput = document.getElementById('chat-drop-message');
+    const chatInput = document.getElementById('chat-input');
+    const fileInput = document.getElementById('chat-file-input');
+
+    // Set message text if provided
+    if (msgInput.value.trim()) chatInput.value = msgInput.value.trim();
+
+    // Inject dropped file into the file input
+    const dt = new DataTransfer();
+    dt.items.add(_droppedFile);
+    fileInput.files = dt.files;
+
+    closeChatDropModal();
+    sendChat();
+}
+
+// Allow Enter to submit the drop modal
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    const modal = document.getElementById('chat-drop-modal');
+    if (modal && !modal.classList.contains('hidden')) {
+        e.preventDefault();
+        submitChatDropModal();
+    }
+});
+
+// Allow Escape to close the drop modal
+document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('chat-drop-modal');
+    if (modal && !modal.classList.contains('hidden')) {
+        e.preventDefault();
+        closeChatDropModal();
+    }
+});
+
 function stopChat() {
     _destroyCurrentTurn();
     if (chatPollTimer) {
@@ -4708,6 +4864,7 @@ async function sendChat() {
     input.style.height = 'auto';
     window._clearChatDraft();
     hideEditorTip();
+    if (file) clearChatFileInput();
 
     // Build optimistic metadata for image/file preview
     let optimisticMeta = null;
@@ -4719,6 +4876,7 @@ async function sendChat() {
     const displayText = msg || (file ? (file.type.startsWith('image/') ? '[Image]' : `[File: ${file.name}]`) : '');
 
     const $msgEl = chatUI.appendMessage('user', displayText, {metadata: optimisticMeta});
+    if (file) chatUI.markMessageUploading($msgEl);
     // Capture the user message wrapper for anchoring the thinking bubble
     const container = document.getElementById('chat-messages');
     const userWrappers = container ? container.querySelectorAll('[data-msg-role="user"]') : [];
@@ -4726,31 +4884,44 @@ async function sendChat() {
     chatUI.scrollToBottom();
     setChatBusy(true);
 
-    // Build fetch options based on whether we have a file
-    let fetchOpts;
-    if (file) {
-        const formData = new FormData();
-        formData.append('message', msg);
-        formData.append('user_id', 'web_test');
-        formData.append('file', file);
-        fetchOpts = { method: 'POST', body: formData };
-    } else {
-        fetchOpts = {
+    // Post chat message — uses XHR for file uploads (progress tracking), fetch otherwise
+    function postChat(url, signal) {
+        if (file) {
+            const formData = new FormData();
+            formData.append('message', msg);
+            formData.append('user_id', 'web_test');
+            formData.append('file', file);
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                xhr.open('POST', url);
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) chatUI.updateUploadProgress($msgEl, Math.round(e.loaded / e.total * 100));
+                });
+                xhr.onload = function() {
+                    chatUI.markMessageUploadDone($msgEl);
+                    try { resolve(JSON.parse(xhr.responseText)); }
+                    catch(e) { reject(new Error('Invalid JSON response')); }
+                };
+                xhr.onerror = function() { chatUI.markMessageUploadDone($msgEl); reject(new Error('Network error')); };
+                if (signal) signal.addEventListener('abort', () => xhr.abort());
+                xhr.send(formData);
+            });
+        }
+        return fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({message: msg, user_id: 'web_test'}),
-        };
+            signal,
+        }).then(r => r.json());
     }
 
     // If an SSE stream is already active, the agent is mid-turn — inject the message
     if (chatUI.hasActiveStream()) {
         try {
-            const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
-            const data = await res.json();
+            const data = await postChat(`/api/agents/${AGENT_ID}/chat`);
             if (data.injected) {
                 chatUI.markLastUserBubbleQueued();
                 setChatBusy(false);
-                if (file) clearChatFileInput();
                 return;
             }
             if (!data.success) {
@@ -4769,7 +4940,6 @@ async function sendChat() {
             chatUI.appendMessage('error', 'Network error: ' + e.message);
         }
         setChatBusy(false);
-        if (file) clearChatFileInput();
         setTimeout(refreshSessionState, 0);
         setTimeout(refreshAgentState, 1000);
         return;
@@ -4820,14 +4990,9 @@ async function sendChat() {
         );
     }
 
-    // Add signal to fetchOpts if this is a plain object (not FormData)
-    if (!file) fetchOpts.signal = signal;
-
     try {
-        const res = await fetch(`/api/agents/${AGENT_ID}/chat`, fetchOpts);
-        const data = await res.json();
+        const data = await postChat(`/api/agents/${AGENT_ID}/chat`, signal);
         if (data.buffered) {
-            if (file) clearChatFileInput();
             pollForResponse(thinkingId);
             return;
         } else if (data.injected) {
@@ -4889,7 +5054,6 @@ async function sendChat() {
         chatUI.appendMessage('error', 'Network error: ' + e.message);
     }
     setChatBusy(false);
-    if (file) clearChatFileInput();
     // Refresh summary and agent state after response completes
     setTimeout(refreshSessionState, 0);
     setTimeout(refreshAgentState, 1000);

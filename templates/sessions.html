@@ -1373,12 +1373,16 @@ async function doSendReply() {
     const $msgEl = chatUI.appendMessage(outRole, displayText, {metadata: optimisticMeta});
     // If the agent is mid-turn, mark message as queued with clock indicator
     if (_sseThinkingId) chatUI.markLastUserBubbleQueued($msgEl);
+    // Clear input and file preview immediately so the UI feels responsive
+    $input.val('');
+    if (file) clearFileInput();
     requestAnimationFrame(function () { chatUI.scrollToBottom(); });
     _pendingReplyText = null; // Will be set after we know the final text from backend
 
     let res;
     if (file) {
-        // Multipart upload
+        // Multipart upload with progress tracking
+        chatUI.markMessageUploading($msgEl);
         const formData = new FormData();
         formData.append('text', text);
         formData.append('perspective', _chatPerspective);
@@ -1389,7 +1393,17 @@ async function doSendReply() {
             data: formData,
             processData: false,
             contentType: false,
+            xhr: function() {
+                const xhr = new XMLHttpRequest();
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) {
+                        chatUI.updateUploadProgress($msgEl, Math.round(e.loaded / e.total * 100));
+                    }
+                });
+                return xhr;
+            },
         }).catch(err => ({ error: err.responseJSON?.error || 'Upload failed' }));
+        chatUI.markMessageUploadDone($msgEl);
     } else {
         // Existing JSON path
         _pendingReplyText = text;
@@ -1411,16 +1425,13 @@ async function doSendReply() {
     hideEditorTip();
     // Defensive: if the response indicates a UI clear (e.g. /clear command), clear the chat
     if (res.clear_ui) {
-        $input.val('');
         chatUI.clearContainer();
         _pendingReplyText = null;
-        clearFileInput();
         return;
     }
     // Slash command response — display immediately, then suppress duplicate renders.
     // Guard: if SSE already rendered it (race), skip to avoid double display.
     if (res.slash_command && res.response) {
-        $input.val('');
         const wasAtBottom = chatUI.isNearBottom(80);
         if (_pendingSlashResponse === null) {
             chatUI.appendMessage('assistant', res.response);
@@ -1428,13 +1439,11 @@ async function doSendReply() {
         }
         _pendingReplyText = null;
         _pendingSlashResponse = res.response;
-        if (file) { _pendingFileUpload = true; clearFileInput(); }
+        if (file) { _pendingFileUpload = true; }
         return;
     }
-    $input.val('');
     if (file) {
         _pendingFileUpload = true;
-        clearFileInput();
     }
 }
 

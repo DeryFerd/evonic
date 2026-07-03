@@ -869,6 +869,65 @@ class TestOnFinalAnswer(unittest.TestCase):
             "Forwarded metadata must carry original depth so A's context is correct",
         )
 
+    def test_skip_auto_forward_skips_notify(self):
+        """skip_auto_forward in metadata prevents forwarding (sync explore)."""
+        messages = [
+            {'metadata': {
+                'from_agent_id': 'agent_a',
+                'report_to_id': 'user_123',
+                'skip_auto_forward': True,
+            }},
+        ]
+        with mock.patch(
+            'backend.tools.agent_messaging.db.get_session_messages',
+            return_value=messages,
+        ), mock.patch(
+            'backend.agent_runtime.notifier.notify_agent',
+        ) as mock_notify:
+            self._call(self._build_data(answer='Sync result'))
+        mock_notify.assert_not_called()
+
+    def test_skip_auto_forward_false_still_forwards(self):
+        """skip_auto_forward=False does not prevent forwarding."""
+        messages = [
+            {'metadata': {
+                'from_agent_id': 'agent_a',
+                'report_to_id': 'user_123',
+                'skip_auto_forward': False,
+            }},
+        ]
+        target_agent = _make_target_agent(agent_id='agent_b', name='Agent B')
+        with mock.patch(
+            'backend.tools.agent_messaging.db.get_session_messages',
+            return_value=messages,
+        ), mock.patch(
+            'backend.tools.agent_messaging.db.get_agent',
+            return_value=target_agent,
+        ), mock.patch(
+            'backend.agent_runtime.notifier.notify_agent',
+        ) as mock_notify:
+            self._call(self._build_data(answer='Async result'))
+        mock_notify.assert_called_once()
+
+    def test_skip_auto_forward_fallback_path(self):
+        """skip_auto_forward is respected in the fallback metadata lookup path."""
+        fallback_meta = {
+            'from_agent_id': 'agent_a',
+            'report_to_id': 'user_123',
+            'skip_auto_forward': True,
+        }
+        with mock.patch(
+            'backend.tools.agent_messaging.db.get_session_messages',
+            return_value=[],
+        ), mock.patch(
+            'backend.tools.agent_messaging.db.get_latest_agent_request_metadata',
+            return_value=fallback_meta,
+        ), mock.patch(
+            'backend.agent_runtime.notifier.notify_agent',
+        ) as mock_notify:
+            self._call(self._build_data(answer='Sync via fallback'))
+        mock_notify.assert_not_called()
+
     def test_depth_defaults_to_zero_when_missing(self):
         """_on_final_answer defaults agent_message_depth to 0 if not in original metadata."""
         messages = [

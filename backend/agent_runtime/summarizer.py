@@ -192,6 +192,8 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
     last_summarized_entry = all_entries[cut_index - 1]
     new_last_ts = last_summarized_entry['ts']
 
+    entries_from_tail = False
+
     # When an existing summary covers up to last_message_ts and the cut-point
     # falls on or before that boundary (because cut_index counted already-summarized
     # entries), walk forward past the already-summarized region to find new entries
@@ -207,22 +209,43 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
             ]
             if fresh_entries:
                 new_last_ts = fresh_entries[-1]['ts']
+                entries_from_tail = False
             else:
-                print(f"[AgentRuntime] Summarize skipped: no new entries past last_message_ts={last_ts} (new_last_ts={new_last_ts})")
-                return False
+                # Pre-tail had no fresh entries, but the tail may have entries
+                # beyond the summary boundary.  Scan the tail region for entries
+                # with ts > last_ts so we can advance past the deadlock.
+                tail_fresh = [
+                    e for e in all_entries[cut_index:]
+                    if e['ts'] > last_ts
+                ]
+                if tail_fresh:
+                    new_last_ts = tail_fresh[-1]['ts']
+                    # Build entries_to_summarize from tail_fresh now so the
+                    # summarizer has something to fold in; flag to skip the
+                    # normal entries-building block below.
+                    entries_to_summarize = [
+                        e for e in tail_fresh
+                        if e.get('type') in summary_count_types
+                    ]
+                    existing_summary = summary_record['summary']
+                    entries_from_tail = True
+                else:
+                    print(f"[AgentRuntime] Summarize skipped: no new entries past last_message_ts={last_ts} (new_last_ts={new_last_ts})")
+                    return False
 
-    # Get entries to fold into summary
-    if summary_record and summary_record.get('last_message_ts'):
-        entries_to_summarize = chatlog.get_entries_between_ts(
-            summary_record['last_message_ts'],
-            new_last_ts,
-        )
-        entries_to_summarize = [e for e in entries_to_summarize
-                                 if e.get('type') in summary_count_types]
-        existing_summary = summary_record['summary']
-    else:
-        entries_to_summarize = all_entries[:cut_index]
-        existing_summary = None
+    # Get entries to fold into summary (skip if already built from tail)
+    if not entries_from_tail:
+        if summary_record and summary_record.get('last_message_ts'):
+            entries_to_summarize = chatlog.get_entries_between_ts(
+                summary_record['last_message_ts'],
+                new_last_ts,
+            )
+            entries_to_summarize = [e for e in entries_to_summarize
+                                     if e.get('type') in summary_count_types]
+            existing_summary = summary_record['summary']
+        else:
+            entries_to_summarize = all_entries[:cut_index]
+            existing_summary = None
 
     if not entries_to_summarize:
         # get_entries_between_ts may return empty when both bounds are equal

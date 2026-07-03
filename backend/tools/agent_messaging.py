@@ -756,6 +756,7 @@ def _on_final_answer(data: dict) -> None:
     original_depth = 0
     subagent_user_direct = False
     reply_to_id = None
+    skip_auto_forward = False
     for msg in reversed(messages):
         meta = msg.get('metadata') or {}
         if isinstance(meta, str):
@@ -771,6 +772,7 @@ def _on_final_answer(data: dict) -> None:
             original_depth = meta.get('agent_message_depth', 0)
             subagent_user_direct = meta.get('subagent_user_direct', False)
             reply_to_id = meta.get('reply_to_id')
+            skip_auto_forward = meta.get('skip_auto_forward', False)
             break
 
     if not report_to_id:
@@ -796,12 +798,21 @@ def _on_final_answer(data: dict) -> None:
             original_depth = latest_meta.get('agent_message_depth', 0)
             subagent_user_direct = latest_meta.get('subagent_user_direct', False)
             reply_to_id = latest_meta.get('reply_to_id')
+            skip_auto_forward = latest_meta.get('skip_auto_forward', False)
 
     if not report_to_id:
         _logger.warning(
             "Auto-forward skip: no report_to_id found for sender '%s' in session '%s' "
             "(searched %d messages + first-message fallback).",
             sender_id, session_id, len(messages),
+        )
+        return
+
+    if skip_auto_forward:
+        _logger.info(
+            "Auto-forward skip: skip_auto_forward set for '%s' in session '%s' "
+            "(sync explore — result already returned via tool output).",
+            agent_b_id, session_id,
         )
         return
 

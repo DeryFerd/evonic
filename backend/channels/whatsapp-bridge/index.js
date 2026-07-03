@@ -31,6 +31,16 @@ function pushStatus() {
     postCallback({ event: 'status', status: connectionStatus });
 }
 
+// Unwrap container messages (disappearing / view-once) to reach the real content.
+// Groups with disappearing messages enabled wrap every message in ephemeralMessage.
+function unwrapMessage(message) {
+    return message?.ephemeralMessage?.message
+        || message?.viewOnceMessage?.message
+        || message?.viewOnceMessageV2?.message
+        || message?.documentWithCaptionMessage?.message
+        || message;
+}
+
 async function startBaileys() {
     const baileys = await import('@whiskeysockets/baileys');
     const {
@@ -67,6 +77,7 @@ async function startBaileys() {
         if (qr) {
             currentQR = qr;
             connectionStatus = 'qr_pending';
+            console.log('[whatsapp-bridge] QR generated — waiting for scan');
         }
 
         if (connection === 'open') {
@@ -114,17 +125,18 @@ async function startBaileys() {
                 ? (participant.includes('@') ? participant.split('@')[0] : participant)
                 : (from.includes('@') ? from.split('@')[0] : from);
             const messageId = msg.key.id || '';
+            const content = unwrapMessage(msg.message);
 
             // Extract text
             const text =
-                msg.message?.conversation ||
-                msg.message?.extendedTextMessage?.text ||
-                msg.message?.imageMessage?.caption ||
-                msg.message?.videoMessage?.caption ||
+                content?.conversation ||
+                content?.extendedTextMessage?.text ||
+                content?.imageMessage?.caption ||
+                content?.videoMessage?.caption ||
                 '';
 
             // Extract button reply (approval flow)
-            const buttonReply = msg.message?.buttonsResponseMessage;
+            const buttonReply = content?.buttonsResponseMessage;
             if (buttonReply) {
                 const buttonId = buttonReply.selectedButtonId || '';
                 postCallback({ from: sender, jid, message_id: messageId, button_id: buttonId, text: '' });
@@ -133,10 +145,11 @@ async function startBaileys() {
 
             // Extract image if present
             let image = null;
-            if (msg.message?.imageMessage) {
+            if (content?.imageMessage) {
                 try {
+                    // downloadMediaMessage unwraps ephemeral/view-once internally
                     const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger });
-                    const mimetype = msg.message.imageMessage.mimetype || 'image/jpeg';
+                    const mimetype = content.imageMessage.mimetype || 'image/jpeg';
                     image = {
                         base64: buffer.toString('base64'),
                         mimetype,
@@ -146,17 +159,20 @@ async function startBaileys() {
                 }
             }
 
-            // Debug: log message structure for group messages
+            // Log every inbound message (early feature — verbose for monitoring)
+            console.log('[whatsapp-bridge] MSG id=%s from=%s jid=%s group=%s text_len=%d image=%s',
+                messageId, sender, jid, isGroup, text.length, !!image);
             if (isGroup) {
-                console.log('[whatsapp-bridge] GROUP MSG keys:', JSON.stringify(Object.keys(msg.message || {})));
+                console.log('[whatsapp-bridge] GROUP MSG keys:', JSON.stringify(Object.keys(msg.message || {})),
+                    'unwrapped:', JSON.stringify(Object.keys(content || {})));
                 console.log('[whatsapp-bridge] GROUP MSG from:', sender, 'text:', text?.substring(0, 100));
             }
 
             // Extract reply/quoted context (contextInfo lives on whichever message type is present)
-            const contextInfo = msg.message?.extendedTextMessage?.contextInfo
-                || msg.message?.imageMessage?.contextInfo
-                || msg.message?.videoMessage?.contextInfo
-                || msg.message?.audioMessage?.contextInfo;
+            const contextInfo = content?.extendedTextMessage?.contextInfo
+                || content?.imageMessage?.contextInfo
+                || content?.videoMessage?.contextInfo
+                || content?.audioMessage?.contextInfo;
             let quotedText = null;
             let quotedIsBot = false;
             const quoted = contextInfo?.quotedMessage;
@@ -180,10 +196,13 @@ async function startBaileys() {
                 m => (botId && areJidsSameUser(m, botId))
                     || (botLid && areJidsSameUser(m, botLid))
             );
-            // Fallback: check text for @bot_number if contextInfo didn't have mentions
-            if (!botMentioned && isGroup && botId && text) {
-                const botPhone = botId.split(':')[0].split('@')[0];
-                if (botPhone && text.includes('@' + botPhone)) {
+            // Fallback: check text for @bot_number if contextInfo didn't have mentions.
+            // In LID-addressed groups the mention text carries the LID digits, not the phone.
+            if (!botMentioned && isGroup && text) {
+                const botPhone = botId ? botId.split(':')[0].split('@')[0] : '';
+                const botLidDigits = botLid ? botLid.split(':')[0].split('@')[0] : '';
+                if ((botPhone && text.includes('@' + botPhone)) ||
+                    (botLidDigits && text.includes('@' + botLidDigits))) {
                     botMentioned = true;
                 }
             }

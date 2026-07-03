@@ -3905,6 +3905,95 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_warn(f"Channel integrations check failed: {e}"))
 
+    # ── 17b. WhatsApp Bridge Check ────────────────────────────
+    _section("17b. WhatsApp Bridge Check")
+    try:
+        from models.db import db as _wa_db
+
+        _wa_channels = []
+        for agent in _wa_db.get_agents():
+            for ch in _wa_db.get_channels(agent['id']):
+                if ch.get('type') == 'whatsapp' and ch.get('enabled'):
+                    _wa_channels.append((agent, ch))
+
+        if not _wa_channels:
+            _info("  No enabled WhatsApp channels — skipping")
+        else:
+            # node runtime
+            node_path = shutil.which('node')
+            if node_path:
+                try:
+                    node_ver = subprocess.check_output(
+                        ['node', '--version'], text=True, timeout=10).strip()
+                    results.append(_ok(f"node available ({node_ver})"))
+                except Exception:
+                    results.append(_ok("node available"))
+            else:
+                results.append(_fail("node not found in PATH — WhatsApp bridge cannot start"))
+
+            # bridge npm dependencies
+            _bridge_dir = os.path.join(ROOT, 'backend', 'channels', 'whatsapp-bridge')
+            if os.path.isdir(os.path.join(_bridge_dir, 'node_modules')):
+                results.append(_ok("whatsapp-bridge npm dependencies installed"))
+            else:
+                results.append(_warn(
+                    "whatsapp-bridge node_modules missing — will npm install on first start"))
+
+            import requests as _wa_requests
+            for agent, ch in _wa_channels:
+                label = f"{agent.get('name') or agent['id']} ({str(ch['id'])[:8]})"
+                cfg = ch.get('config') if isinstance(ch.get('config'), dict) else {}
+                port = int(cfg.get('bridge_port', 3001))
+
+                # Session / pairing state
+                creds_file = os.path.join(
+                    ROOT, 'data', 'whatsapp-sessions', ch['id'], 'creds.json')
+                if os.path.isfile(creds_file):
+                    try:
+                        with open(creds_file) as f:
+                            _creds = json.load(f)
+                        if (_creds.get('me') or {}).get('lid'):
+                            results.append(_ok(f"{label}: session paired (LID present)"))
+                        else:
+                            results.append(_warn(
+                                f"{label}: session paired but creds lack LID — group "
+                                f"@mentions may not be detected; re-scan QR to refresh"))
+                    except Exception:
+                        results.append(_warn(f"{label}: creds.json unreadable"))
+                else:
+                    results.append(_warn(f"{label}: no session — QR scan required"))
+
+                # Live bridge probe (works cross-process — bridge listens on 127.0.0.1)
+                try:
+                    _st = _wa_requests.get(
+                        f"http://127.0.0.1:{port}/status", timeout=3).json().get('status')
+                    if _st == 'connected':
+                        results.append(_ok(f"{label}: bridge connected (port {port})"))
+                    elif _st == 'qr_pending':
+                        results.append(_warn(
+                            f"{label}: bridge waiting for QR scan (port {port}) — "
+                            f"open the agent page and scan"))
+                    else:
+                        results.append(_warn(
+                            f"{label}: bridge running but disconnected (port {port})"))
+                except Exception:
+                    results.append(_warn(
+                        f"{label}: bridge not reachable on port {port} "
+                        f"(server not running, or channel failed to start)"))
+
+                # Group reachability in restricted mode
+                if cfg.get('mode') == 'restricted':
+                    _allowed = cfg.get('allowed_users') or []
+                    _has_group = any(
+                        '-' in str(u) or str(u).startswith('120')
+                        for u in _allowed)
+                    if not _has_group:
+                        results.append(_warn(
+                            f"{label}: restricted mode with no group ID in allowed_users "
+                            f"— group messages will be dropped silently"))
+    except Exception as e:
+        results.append(_warn(f"WhatsApp bridge check failed: {e}"))
+
 
     _section("Summary")
 

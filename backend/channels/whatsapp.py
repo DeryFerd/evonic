@@ -13,6 +13,8 @@ from typing import Dict, Any, Optional
 from backend.channels.base import BaseChannel, strip_system_tags
 
 _logger = logging.getLogger(__name__)
+# Bridge (Node/Baileys) stdout is routed to logs/baileys.log via EVONIC_LOG_ROUTES
+_bridge_logger = logging.getLogger('baileys')
 
 _BRIDGE_DIR = os.path.join(os.path.dirname(__file__), 'whatsapp-bridge')
 
@@ -242,7 +244,9 @@ class WhatsAppChannel(BaseChannel):
                 for line in self._process.stdout:
                     if not self._running:
                         break
-                    _logger.debug("[bridge] %s", line.decode().rstrip())
+                    # INFO so bridge activity is visible (early feature — verbose monitoring).
+                    # Routed to logs/baileys.log via the 'baileys' logger.
+                    _bridge_logger.info("[%s] %s", self.channel_id[:8], line.decode().rstrip())
 
                 # If _running is False, this was a deliberate stop — exit cleanly
                 if not self._running:
@@ -311,6 +315,7 @@ class WhatsAppChannel(BaseChannel):
         # Bridge status push — cache + broadcast, no message processing
         if payload.get('event') == 'status':
             status = payload.get('status') or 'disconnected'
+            _logger.info("WhatsApp bridge status for channel %s: %s", self.channel_id, status)
             self._last_bridge_status = status
             event_stream.emit('whatsapp_bridge_status', {
                 'agent_id': self.agent_id,
@@ -322,6 +327,7 @@ class WhatsAppChannel(BaseChannel):
         # Handle button reply (approval flow)
         button_id = payload.get('button_id', '')
         if button_id:
+            _logger.info("WhatsApp button reply: %s (channel %s)", button_id, self.channel_id)
             parts = button_id.split(':', 1)
             if len(parts) == 2 and parts[0] in ('approve', 'reject'):
                 from backend.agent_runtime.approval import approval_registry
@@ -342,9 +348,14 @@ class WhatsAppChannel(BaseChannel):
         video_data = payload.get('video')
         quoted_text = payload.get('quoted_text')
 
+        _logger.info(
+            "WhatsApp callback: sender=%s jid=%s group=%s mentioned=%s quoted_bot=%s text=%r",
+            sender, jid, is_group, bot_mentioned, quoted_is_bot,
+            (text[:60] if text else ''))
+
         # In groups, only respond when @mentioned or when user replies to a bot message
         if is_group and not bot_mentioned and not quoted_is_bot:
-            _logger.debug("WhatsApp group message dropped (not mentioned): sender=%s text=%s", sender, text[:80] if text else "")
+            _logger.info("WhatsApp group message dropped (not mentioned): sender=%s text=%s", sender, text[:80] if text else "")
             return
 
         # Strip the @mention tag from the message text
@@ -355,7 +366,7 @@ class WhatsAppChannel(BaseChannel):
         if is_group:
             group_id = jid.split('@')[0] if '@' in jid else jid
             if not db.is_user_allowed(self.channel_id, group_id):
-                _logger.debug("WhatsApp group not in allowlist: group=%s", group_id)
+                _logger.info("WhatsApp group not in allowlist: group=%s", group_id)
                 return
         else:
             user_name = payload.get('pushName') or payload.get('name') or sender
@@ -382,6 +393,7 @@ class WhatsAppChannel(BaseChannel):
                 from backend.channels.pairing import extract_pair_code, format_pair_code as fmt_code
                 raw_code = extract_pair_code(text) if text else None
                 if raw_code:
+                    _logger.info("WhatsApp pairing code received from %s (channel %s)", sender, self.channel_id)
                     pending = db.get_pending_approval_by_code(raw_code)
                     if pending:
                         if not pending.get('external_user_id'):
@@ -415,6 +427,8 @@ class WhatsAppChannel(BaseChannel):
                                 "Please ask the administrator for a pairing code, then send it in this chat.")
                         # If open mode, user IS allowed — would have been caught above
                     # If already pending, stay silent (don't spam the user)
+                    _logger.info("WhatsApp DM from unapproved user %s (pending=%s, channel %s)",
+                                 sender, already_pending, self.channel_id)
                     return
 
         image_url = None
@@ -485,6 +499,7 @@ class WhatsAppChannel(BaseChannel):
                 text = '[Video]'
 
         if not text and not image_url and not audio_url and not video_url and not quoted_text:
+            _logger.info("WhatsApp message dropped (no usable content): sender=%s", sender)
             return
 
         # Prepend reply context with sender attribution
@@ -495,6 +510,8 @@ class WhatsAppChannel(BaseChannel):
 
         session_id = db.get_or_create_session(self.agent_id, sender, self.channel_id)
         if not db.is_session_bot_enabled(session_id, agent_id=self.agent_id):
+            _logger.info("WhatsApp message stored only — bot disabled for session %s (sender=%s)",
+                         session_id, sender)
             db.add_chat_message(session_id, 'user', text or '[Image]', agent_id=self.agent_id)
             return
 
@@ -504,6 +521,7 @@ class WhatsAppChannel(BaseChannel):
             image_url=image_url, audio_url=audio_url, video_url=video_url,
         )
         if result.get('buffered'):
+            _logger.info("WhatsApp message buffered for %s (session %s)", sender, session_id)
             return
 
         # Cancel any pending debounced typing timer so it doesn't fire

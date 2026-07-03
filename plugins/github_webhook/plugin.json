@@ -1,7 +1,7 @@
 {
   "id": "github_webhook",
   "name": "GitHub Webhook",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Receive GitHub webhooks and notify agents for automated tasks per event type.",
   "author": "Evonic",
   "enabled": true,
@@ -123,6 +123,87 @@
       "group": "push",
       "groupLabel": "🔶 Push Events",
       "description": "JSON array of filters to apply before notifying. E.g. [{\"field\": \"ref\", \"match\": \"regex\", \"value\": \"^refs/heads/main$\"}]. Empty = fire always."
+    },
+    {
+      "name": "WORKFLOW_RUN_AGENT_ID",
+      "label": "Agent ID",
+      "type": "string",
+      "default": "",
+      "group": "workflow_run",
+      "groupLabel": "🛠️ Workflow Run Events",
+      "description": "Agent ID to notify on workflow_run events. Leave empty to ignore."
+    },
+    {
+      "name": "WORKFLOW_RUN_PROMPT",
+      "label": "Prompt Template",
+      "type": "textarea",
+      "default": "[Webhook-triggered task — execute immediately without planning or asking for approval.]\n\nA GitHub Actions workflow run has completed.\n\nDetails:\n- Workflow: {{workflow_name}}\n- Status: {{status}}\n- Conclusion: {{conclusion}}\n- Branch: {{head_branch}}\n- Commit: {{head_sha}}\n- Repository: {{repository}}\n- URL: {{html_url}}",
+      "group": "workflow_run",
+      "groupLabel": "🛠️ Workflow Run Events",
+      "description": "Prompt template for workflow_run events. Variables: {{workflow_name}}, {{status}}, {{conclusion}}, {{head_branch}}, {{head_sha}}, {{html_url}}, {{repository}}."
+    },
+    {
+      "name": "WORKFLOW_RUN_FILTERS",
+      "label": "Filters (JSON)",
+      "type": "textarea",
+      "default": "",
+      "group": "workflow_run",
+      "groupLabel": "🛠️ Workflow Run Events",
+      "description": "JSON array of filters to apply before notifying. E.g. [{\"field\": \"workflow_run.conclusion\", \"match\": \"equals\", \"value\": \"failure\"}]. Empty = fire always."
+    },
+    {
+      "name": "CHECK_SUITE_AGENT_ID",
+      "label": "Agent ID",
+      "type": "string",
+      "default": "",
+      "group": "check_suite",
+      "groupLabel": "✅ Check Suite Events",
+      "description": "Agent ID to notify on check_suite events. Leave empty to ignore."
+    },
+    {
+      "name": "CHECK_SUITE_PROMPT",
+      "label": "Prompt Template",
+      "type": "textarea",
+      "default": "[Webhook-triggered task — execute immediately without planning or asking for approval.]\n\nA GitHub check suite event has been received.\n\nDetails:\n- App: {{app_name}}\n- Status: {{status}}\n- Conclusion: {{conclusion}}\n- Branch: {{head_branch}}\n- Commit: {{head_sha}}\n- Repository: {{repository}}\n- URL: {{html_url}}",
+      "group": "check_suite",
+      "groupLabel": "✅ Check Suite Events",
+      "description": "Prompt template for check_suite events. Variables: {{app_name}}, {{status}}, {{conclusion}}, {{head_branch}}, {{head_sha}}, {{html_url}}, {{repository}}."
+    },
+    {
+      "name": "CHECK_SUITE_FILTERS",
+      "label": "Filters (JSON)",
+      "type": "textarea",
+      "default": "",
+      "group": "check_suite",
+      "groupLabel": "✅ Check Suite Events",
+      "description": "JSON array of filters to apply before notifying. E.g. [{\"field\": \"check_suite.conclusion\", \"match\": \"equals\", \"value\": \"failure\"}]. Empty = fire always."
+    },
+    {
+      "name": "STATUS_AGENT_ID",
+      "label": "Agent ID",
+      "type": "string",
+      "default": "",
+      "group": "status",
+      "groupLabel": "🔴 Commit Status Events",
+      "description": "Agent ID to notify on commit status events. Leave empty to ignore."
+    },
+    {
+      "name": "STATUS_PROMPT",
+      "label": "Prompt Template",
+      "type": "textarea",
+      "default": "[Webhook-triggered task — execute immediately without planning or asking for approval.]\n\nA commit status event has been received.\n\nDetails:\n- SHA: {{sha}}\n- State: {{state}}\n- Context: {{context}}\n- Description: {{description}}\n- Target URL: {{target_url}}\n- Repository: {{repository}}",
+      "group": "status",
+      "groupLabel": "🔴 Commit Status Events",
+      "description": "Prompt template for status events. Variables: {{sha}}, {{state}}, {{context}}, {{description}}, {{target_url}}, {{repository}}."
+    },
+    {
+      "name": "STATUS_FILTERS",
+      "label": "Filters (JSON)",
+      "type": "textarea",
+      "default": "",
+      "group": "status",
+      "groupLabel": "🔴 Commit Status Events",
+      "description": "JSON array of filters to apply before notifying. E.g. [{\"field\": \"state\", \"match\": \"equals\", \"value\": \"failure\"}]. Empty = fire always."
     }
   ]
 }

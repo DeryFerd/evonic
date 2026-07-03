@@ -74,6 +74,53 @@ Triggered when code is **pushed** to any branch in the repository.
 | `{{repository}}`   | Repository full name                         |
 | `{{compare}}`      | GitHub compare URL for the pushed commits    |
 
+---
+
+### Workflow Run (`workflow_run`)
+
+Triggered when a GitHub Actions workflow run completes (any status/conclusion).
+
+| Variable            | Description                                      |
+|---------------------|--------------------------------------------------|
+| `{{workflow_name}}`  | Name of the workflow (e.g. `CI`)                 |
+| `{{status}}`         | Run status (`completed`, `in_progress`, `queued`) |
+| `{{conclusion}}`     | Run conclusion (`success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`) |
+| `{{head_branch}}`    | Branch the workflow ran on                       |
+| `{{head_sha}}`       | Commit SHA the workflow ran on                   |
+| `{{html_url}}`       | URL to the workflow run on GitHub                |
+| `{{repository}}`     | Repository full name                             |
+
+---
+
+### Check Suite (`check_suite`)
+
+Triggered when a check suite is completed for a commit.
+
+| Variable          | Description                                      |
+|-------------------|--------------------------------------------------|
+| `{{app_name}}`     | Name of the GitHub App that created the suite    |
+| `{{status}}`       | Suite status (`completed`, `in_progress`, `queued`) |
+| `{{conclusion}}`   | Suite conclusion (`success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`) |
+| `{{head_branch}}`  | Branch the check suite ran on                    |
+| `{{head_sha}}`     | Commit SHA the check suite ran on                |
+| `{{html_url}}`     | URL to the check suite on GitHub                 |
+| `{{repository}}`   | Repository full name                             |
+
+---
+
+### Commit Status (`status`)
+
+Triggered when the status of a commit changes (e.g. a CI build passes or fails).
+
+| Variable          | Description                                      |
+|-------------------|--------------------------------------------------|
+| `{{sha}}`          | Commit SHA                                       |
+| `{{state}}`        | Status state (`success`, `failure`, `error`, `pending`) |
+| `{{context}}`      | Status context (e.g. `ci/github-actions`)        |
+| `{{description}}`  | Status description                               |
+| `{{target_url}}`   | URL to the detailed status (CI build page)       |
+| `{{repository}}`   | Repository full name                             |
+
 ## Input Filters
 
 By default, every matching event triggers the agent. You can add **input filters** to control exactly which webhook payloads get through. Each event type has its own filter field (JSON textarea).
@@ -121,6 +168,24 @@ All filters for an event type are **ANDed** — the event only fires if ALL filt
 
 ```json
 [{"field": "release.prerelease", "match": "equals", "value": "False"}]
+```
+
+#### Only trigger on failed workflow runs
+
+```json
+[{"field": "workflow_run.conclusion", "match": "equals", "value": "failure"}]
+```
+
+#### Only trigger on failed check suites
+
+```json
+[{"field": "check_suite.conclusion", "match": "equals", "value": "failure"}]
+```
+
+#### Only trigger on failed commit statuses
+
+```json
+[{"field": "state", "match": "equals", "value": "failure"}]
 ```
 
 ## Setup Guide
@@ -181,6 +246,9 @@ https://evonic.example.com/webhook/github_webhook/
    - **Pull requests** — triggers on open, close, edit
    - **Issues** — triggers on open, close, edit
    - **Pushes** — triggers on code push
+   - **Workflow runs** — triggers on workflow completion
+   - **Check suites** — triggers on check suite completion
+   - **Statuses** — triggers on commit status changes
 
 5. Ensure **Active** is checked
 6. Click **Add webhook**
@@ -202,6 +270,9 @@ You can manually test the webhook by triggering events in your repository:
 - **PR test**: Open or close a pull request
 - **Issue test**: Create or close an issue
 - **Push test**: Push a commit to any branch
+- **Workflow run test**: Trigger a GitHub Actions workflow
+- **Check suite test**: Create a check run via the GitHub API
+- **Status test**: Update a commit status via the GitHub API
 
 Check the Evonic server logs to confirm the webhook is processed:
 

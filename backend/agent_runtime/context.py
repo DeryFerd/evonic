@@ -5,7 +5,6 @@ Pure data preparation — no LLM calls, no threading.
 """
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -1267,6 +1266,10 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     if agent.get('vision_enabled', 1):
         assigned_ids.add('describe_image')
 
+    # Auto-assign transcribe_audio for audio-enabled agents.
+    if agent.get('audio_enabled'):
+        assigned_ids.add('transcribe_audio')
+
     if assigned_ids:
         seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
         for tool_def in tool_registry.get_all_tool_defs():
@@ -1441,10 +1444,9 @@ def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True)
     entry = {"role": msg['role']}
     _msg_meta = msg.get('metadata') if isinstance(msg.get('metadata'), dict) else {}
     msg_image = _msg_meta.get('image_url') if _msg_meta else None
-    msg_audio = _msg_meta.get('audio_url') if _msg_meta else None
     msg_video = _msg_meta.get('video_url') if _msg_meta else None
     # Images are NEVER auto-fed to the main LLM — always use the describe_image tool instead.
-    has_audio = msg_audio and agent.get('audio_enabled')
+    # Audio is likewise never auto-fed — agents listen via the transcribe_audio tool.
     has_video = msg_video and agent.get('video_enabled')
     has_image_attachment = msg_image is not None  # track for attachment note enhancement
 
@@ -1467,58 +1469,24 @@ def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True)
         else:
             size_str = f"{size_bytes} B"
         is_image = mime_type and mime_type.startswith("image/")
-        if is_image and has_image_attachment:
-            attachment_note = (
-                f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
-                f"\nFile path: {file_path}"
-            )
-            if has_describe_image:
-                attachment_note += "\nUse the `describe_image` tool to view and analyze this image."
-        else:
-            attachment_note = (
-                f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
-                f"\nFile path: {file_path}"
-            )
+        is_audio = mime_type and mime_type.startswith("audio/")
+        attachment_note = (
+            f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
+            f"\nFile path: {file_path}"
+        )
+        if is_image and has_image_attachment and has_describe_image:
+            attachment_note += "\nUse the `describe_image` tool to view and analyze this image."
+        if is_audio and agent.get('audio_enabled'):
+            attachment_note += "\nUse the `transcribe_audio` tool to listen to this audio."
 
-    if has_audio or has_video:
+    if has_video:
         parts = []
         text_content = msg.get('content', '')
         if attachment_note:
             text_content = text_content.rstrip() + attachment_note
         if text_content and text_content not in ('[Image]', '[Audio]', '[Video]'):
             parts.append({"type": "text", "text": text_content})
-        # NOTE: Images are never auto-fed — use describe_image tool instead.
-        if has_audio:
-            if msg_audio.startswith("data:"):
-                try:
-                    header, b64data = msg_audio.split(",", 1)
-                    fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                except (ValueError, IndexError):
-                    fmt, b64data = "wav", msg_audio
-
-                # Catch any OGG audio not converted at the channel level.
-                # Some code paths or legacy data may still reach here with
-                # format=ogg, which multimodal LLM APIs reject.
-                if fmt == "ogg":
-                    try:
-                        from backend.audio_utils import convert_ogg_to_wav
-                        raw = convert_ogg_to_wav(base64.b64decode(b64data))
-                        b64data = base64.b64encode(raw).decode('utf-8')
-                        fmt = "wav"
-                    except Exception as conv_err:
-                        _logger.error(
-                            "OGG->WAV conversion fallback failed: %s -- "
-                            "audio skipped for multimodal",
-                            conv_err,
-                        )
-                        fmt, b64data = "wav", ""  # empty data = skip audio
-
-                if b64data:
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-            else:
-                parts.append({"type": "input_audio", "input_audio": {"data": msg_audio, "format": "wav"}})
-        if has_video:
-            parts.append({"type": "video_url", "video_url": {"url": msg_video}})
+        parts.append({"type": "video_url", "video_url": {"url": msg_video}})
         if not parts or parts[0].get('type') != 'text':
             parts.insert(0, {"type": "text", "text": "What is in this media?"})
         entry['content'] = parts

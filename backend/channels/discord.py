@@ -29,7 +29,6 @@ _DISCORD_MAX_LEN = 1900
 # Non-boosted guild upload limit. Files larger than this are rejected.
 _DISCORD_MAX_FILE_BYTES = 8 * 1024 * 1024
 # Multimodal size guards (mirror Telegram channel).
-_AUDIO_MAX_BYTES = 10 * 1024 * 1024
 _VIDEO_MAX_BYTES = 20 * 1024 * 1024
 
 # Matches a bot mention (<@id> or <@!id>) so it can be stripped from guild text.
@@ -375,16 +374,16 @@ class DiscordChannel(BaseChannel):
         session_id = db.get_or_create_session(agent_id, user_id, channel_id)
 
         # Media / attachment ingestion.
-        image_url, audio_url, video_url, info_lines = await self._ingest_attachments(
+        image_url, video_url, info_lines = await self._ingest_attachments(
             message, agent_id, session_id, user_id, channel_id, db,
         )
         if info_lines:
             prefix = "\n".join(info_lines)
             text = prefix + (f"\n{text}" if text else '')
 
-        has_any_media = image_url or audio_url or video_url
+        has_any_media = image_url or video_url
         if has_any_media and not text:
-            text = '[Image]' if image_url else ('[Audio]' if audio_url else '[Video]')
+            text = '[Image]' if image_url else '[Video]'
         elif not text and not has_any_media:
             return
 
@@ -412,7 +411,7 @@ class DiscordChannel(BaseChannel):
         from backend.agent_runtime import agent_runtime
         result = agent_runtime.handle_message(
             agent_id, user_id, final_text, channel_id,
-            image_url=image_url, audio_url=audio_url, video_url=video_url,
+            image_url=image_url, video_url=video_url,
         )
         if result.get('buffered'):
             return  # response will be delivered by the buffering path
@@ -439,17 +438,19 @@ class DiscordChannel(BaseChannel):
 
     async def _ingest_attachments(self, message, agent_id, session_id, user_id,
                                   channel_id, db) -> Tuple[Optional[str], Optional[str],
-                                                           Optional[str], List[str]]:
+                                                           List[str]]:
         """Download Discord attachments: build multimodal data URLs and persist rows.
 
-        Returns ``(image_url, audio_url, video_url, info_lines)``.
+        Audio is attachment-only — agents listen to it via the transcribe_audio
+        tool instead of inline multimodal input.
+
+        Returns ``(image_url, video_url, info_lines)``.
         """
         attachments = list(getattr(message, 'attachments', []) or [])
         if not attachments:
-            return None, None, None, []
+            return None, None, []
 
         image_url = None
-        audio_url = None
         video_url = None
         info_lines: List[str] = []
 
@@ -470,11 +471,6 @@ class DiscordChannel(BaseChannel):
                 if is_image and agent and agent.get('vision_enabled') and image_url is None:
                     data = await att.read()
                     image_url = self._to_jpeg_data_url(data)
-                elif is_audio and agent and agent.get('audio_enabled') and audio_url is None:
-                    if not size_bytes or size_bytes <= _AUDIO_MAX_BYTES:
-                        data = await att.read()
-                        b64 = base64.b64encode(data).decode('utf-8')
-                        audio_url = f"data:{content_type or 'audio/mpeg'};base64,{b64}"
                 elif is_video and agent and agent.get('video_enabled') and video_url is None:
                     if not size_bytes or size_bytes <= _VIDEO_MAX_BYTES:
                         data = await att.read()
@@ -487,7 +483,7 @@ class DiscordChannel(BaseChannel):
                 )
 
             # Persist the attachment row when attachments are enabled and within size.
-            if not cfg['enabled'] or not cfg['supported']:
+            if not cfg['enabled']:
                 continue
             if size_bytes and size_bytes > max_bytes:
                 _logger.info(
@@ -522,18 +518,21 @@ class DiscordChannel(BaseChannel):
                     file_type=file_type,
                     size_bytes=real_size,
                 )
-                info_lines.append(
+                info_line = (
                     f"[Attached: {original_filename} "
                     f"({content_type or 'application/octet-stream'}, "
                     f"{_human_size(real_size)}) id={attachment_id} path={target_path}]"
                 )
+                if is_audio and agent and agent.get('audio_enabled'):
+                    info_line += "\nUse the `transcribe_audio` tool to listen to this audio."
+                info_lines.append(info_line)
             except Exception as e:
                 _logger.error(
                     "Discord channel %s: failed to persist attachment %s: %s",
                     channel_id, original_filename, e, exc_info=True,
                 )
 
-        return image_url, audio_url, video_url, info_lines
+        return image_url, video_url, info_lines
 
     @staticmethod
     def _to_jpeg_data_url(data: bytes) -> str:

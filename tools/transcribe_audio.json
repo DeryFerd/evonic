@@ -1,0 +1,29 @@
+{
+    "id": "transcribe_audio",
+    "name": "Transcribe Audio",
+    "description": "Transcribe or analyze an audio file using an audio-capable LLM.",
+    "function": {
+        "name": "transcribe_audio",
+        "description": "Listen to an audio file (e.g. a voice message attachment) using an audio-capable LLM. Returns a verbatim transcript by default, or answers a specific question about the audio. Use this to understand audio content without needing to feed the audio directly to the main LLM. Requires the agent to have audio_enabled=1.",
+        "parameters": {
+            "properties": {
+                "path": {
+                    "description": "Absolute or relative path to the audio file (.ogg, .oga, .opus, .mp3, .wav, .m4a, .aac, .flac, .webm).",
+                    "type": "string"
+                },
+                "query": {
+                    "description": "Optional specific question about the audio (e.g. 'What language is spoken?'). Write your question in English. If omitted, returns a verbatim transcript.",
+                    "type": "string"
+                }
+            },
+            "required": [
+                "path"
+            ],
+            "type": "object"
+        }
+    },
+    "mock_response": "{\"transcript\":\"This is a sample transcript from the mock response. In production, this would be the actual transcription of the audio content.\"}",
+    "mock_response_type": "json",
+    "created_at": "2026-07-03T21:00:00.000000",
+    "updated_at": "2026-07-03T21:00:00.000000"
+}

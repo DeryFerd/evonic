@@ -1580,15 +1580,17 @@ class AgentRuntime:
         _has_describe_image = False
 
         def _apply_multimodal(msg: dict) -> dict:
-            """Apply multimodal formatting for user messages with audio/video if agent supports it.
+            """Apply multimodal formatting for user messages with video if agent supports it.
 
             Images are NEVER auto-fed to the main LLM — images are always accessed via
-            the ``describe_image`` tool instead.
+            the ``describe_image`` tool instead. Audio is likewise never auto-fed —
+            agents listen to it via the ``transcribe_audio`` tool.
             """
             if msg.get('role') != 'user':
                 return msg
-            # Always pop _image_url but NEVER feed it to the LLM.
+            # Always pop _image_url/_audio_url but NEVER feed them to the LLM.
             msg.pop('_image_url', None)
+            msg.pop('_audio_url', None)
             # Append attachment_info note so agents see file path metadata.
             _att = msg.pop('attachment_info', None) or msg.get('attachment_info')
             if _att and isinstance(_att, dict):
@@ -1601,6 +1603,7 @@ class AgentRuntime:
                 mt = _att.get('mime_type', '')
                 sb = int(_att.get('size_bytes', 0) or 0)
                 is_img = bool(mt and mt.startswith('image/'))
+                is_audio = bool(mt and mt.startswith('audio/'))
                 if sb >= 1048576:
                     sz = f"{sb / 1048576:.1f} MB"
                 elif sb >= 1024:
@@ -1613,29 +1616,17 @@ class AgentRuntime:
                 )
                 if is_img and _has_describe_image:
                     note += "\nUse the `describe_image` tool to view and analyze this image."
+                if is_audio and agent.get('audio_enabled'):
+                    note += "\nUse the `transcribe_audio` tool to listen to this audio."
                 content = msg.get('content', '') or ''
                 msg['content'] = content.rstrip() + note
-            audio = msg.pop('_audio_url', None) if agent.get('audio_enabled') else msg.pop('_audio_url', None) and None
             video = msg.pop('_video_url', None) if agent.get('video_enabled') else msg.pop('_video_url', None) and None
-            if not audio and not video:
+            if not video:
                 return msg
             parts = []
             text_content = msg.get('content', '')
             if text_content and text_content not in ('[Image]', '[Audio]', '[Video]'):
                 parts.append({"type": "text", "text": text_content})
-            if audio:
-                # OpenAI-compatible input_audio format
-                # Extract base64 data and format from data URL
-                if audio.startswith("data:"):
-                    try:
-                        header, b64data = audio.split(",", 1)
-                        # e.g. data:audio/ogg;base64 → ogg
-                        fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                    except (ValueError, IndexError):
-                        fmt, b64data = "wav", audio
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-                else:
-                    parts.append({"type": "input_audio", "input_audio": {"data": audio, "format": "wav"}})
             if video:
                 parts.append({"type": "video_url", "video_url": {"url": video}})
             if not parts or parts[0].get('type') != 'text':
@@ -1674,9 +1665,6 @@ class AgentRuntime:
                     _img = _cur_meta.get('image_url')
                     if _img:
                         _cur_msg['_image_url'] = _img
-                    _aud = _cur_meta.get('audio_url')
-                    if _aud:
-                        _cur_msg['_audio_url'] = _aud
                     _vid = _cur_meta.get('video_url')
                     if _vid:
                         _cur_msg['_video_url'] = _vid
@@ -1865,6 +1853,10 @@ class AgentRuntime:
             if agent.get('vision_enabled', 1) and 'describe_image' not in assigned_tool_ids:
                 assigned_tool_ids.append('describe_image')
 
+            # Agents with audio_enabled automatically get transcribe_audio.
+            if agent.get('audio_enabled') and 'transcribe_audio' not in assigned_tool_ids:
+                assigned_tool_ids.append('transcribe_audio')
+
             # Resolve workspace: workplace config takes priority over agent.workspace.
             # For tunnel workplaces, never fall back to the agent's /workspace path —
             # Evonet runs on the remote device and has its own working directory.
@@ -1907,6 +1899,7 @@ class AgentRuntime:
                 'run_as_user': agent.get('run_as_user'),
                 'vision_model_id': agent.get('vision_model_id'),
                 'vision_enabled': agent.get('vision_enabled', 1),
+                'audio_enabled': agent.get('audio_enabled', 0),
                 'messaging_acl': agent.get('messaging_acl'),
                 'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
             }
@@ -2191,30 +2184,16 @@ class AgentRuntime:
         """
         entry = {"role": msg["role"]}
         _msg_meta = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
-        msg_image = _msg_meta.get("image_url") if _msg_meta else None
-        msg_audio = _msg_meta.get("audio_url") if _msg_meta else None
         msg_video = _msg_meta.get("video_url") if _msg_meta else None
         # Images are NEVER auto-fed — use describe_image tool instead.
-        has_audio = msg_audio and agent.get("audio_enabled")
+        # Audio is likewise never auto-fed — use transcribe_audio tool instead.
         has_video = msg_video and agent.get("video_enabled")
-        if has_audio or has_video:
+        if has_video:
             parts = []
             text_content = msg.get("content", "")
             if text_content and text_content not in ("[Image]", "[Audio]", "[Video]"):
                 parts.append({"type": "text", "text": text_content})
-            # NOTE: Images are never auto-fed — use describe_image tool instead.
-            if has_audio:
-                if msg_audio.startswith("data:"):
-                    try:
-                        header, b64data = msg_audio.split(",", 1)
-                        fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                    except (ValueError, IndexError):
-                        fmt, b64data = "wav", msg_audio
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-                else:
-                    parts.append({"type": "input_audio", "input_audio": {"data": msg_audio, "format": "wav"}})
-            if has_video:
-                parts.append({"type": "video_url", "video_url": {"url": msg_video}})
+            parts.append({"type": "video_url", "video_url": {"url": msg_video}})
             if not parts or parts[0].get("type") != "text":
                 parts.insert(0, {"type": "text", "text": "What is in this media?"})
             entry["content"] = parts

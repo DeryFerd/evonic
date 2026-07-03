@@ -442,9 +442,10 @@ class WhatsAppChannel(BaseChannel):
                     return
 
         image_url = None
-        audio_url = None
         video_url = None
         image_bytes = None  # decoded original bytes, persisted as attachment below
+        audio_bytes = None  # decoded original bytes, persisted as attachment below
+        audio_mime = None
 
         agent = db.get_agent(self.agent_id)
 
@@ -471,34 +472,14 @@ class WhatsAppChannel(BaseChannel):
                 return
 
         if audio_data:
-            if agent and agent.get('audio_enabled'):
-                try:
-                    raw = base64.b64decode(audio_data['base64'])
-                    mime = audio_data.get('mimetype', 'audio/ogg')
-
-                    # Convert OGG voice messages to WAV for multimodal LLM APIs
-                    # that only accept WAV or MP3 input_audio format.
-                    conversion_ok = True
-                    if 'ogg' in (mime or ''):
-                        try:
-                            from backend.audio_utils import convert_ogg_to_wav
-                            raw = convert_ogg_to_wav(raw)
-                            mime = 'audio/wav'
-                        except Exception as conv_err:
-                            _logger.error(
-                                "WhatsApp OGG→WAV conversion failed: %s — "
-                                "audio skipped for multimodal",
-                                conv_err,
-                            )
-                            audio_url = None
-                            conversion_ok = False
-
-                    if conversion_ok:
-                        b64 = base64.b64encode(raw).decode('utf-8')
-                        audio_url = f"data:{mime};base64,{b64}"
-                except Exception as e:
-                    _logger.error("WhatsApp audio conversion failed: %s", e)
-            elif not text:
+            # Audio is attachment-only — agents listen to it via the
+            # transcribe_audio tool instead of inline multimodal input.
+            try:
+                audio_bytes = base64.b64decode(audio_data['base64'])
+                audio_mime = audio_data.get('mimetype', 'audio/ogg')
+            except Exception as e:
+                _logger.error("WhatsApp audio decode failed: %s", e)
+            if not text:
                 text = '[Audio]'
 
         if video_data:
@@ -513,7 +494,7 @@ class WhatsAppChannel(BaseChannel):
             elif not text:
                 text = '[Video]'
 
-        if not text and not image_url and not audio_url and not video_url and not quoted_text:
+        if not text and not image_url and not video_url and not quoted_text:
             _logger.info("WhatsApp message dropped (no usable content): sender=%s", sender)
             return
 
@@ -533,6 +514,9 @@ class WhatsAppChannel(BaseChannel):
             attachment_info = self._save_image_attachment(
                 session_id, sender, image_bytes,
                 image_data.get('mimetype') or 'image/jpeg')
+        elif audio_bytes:
+            attachment_info = self._save_audio_attachment(
+                session_id, sender, audio_bytes, audio_mime or 'audio/ogg')
 
         if not db.is_session_bot_enabled(session_id, agent_id=self.agent_id):
             _logger.info("WhatsApp message stored only — bot disabled for session %s (sender=%s)",
@@ -543,7 +527,7 @@ class WhatsAppChannel(BaseChannel):
         _logger.info("WhatsApp message received from %s (channel %s)", sender, self.channel_id)
         result = agent_runtime.handle_message(
             self.agent_id, sender, final_text, self.channel_id,
-            image_url=image_url, audio_url=audio_url, video_url=video_url,
+            image_url=image_url, video_url=video_url,
             metadata={'attachment_info': attachment_info} if attachment_info else None,
         )
         if result.get('buffered'):
@@ -640,6 +624,64 @@ class WhatsAppChannel(BaseChannel):
             }
         except Exception as e:
             _logger.error("Failed to persist WhatsApp image attachment: %s", e, exc_info=True)
+            return None
+
+    def _save_audio_attachment(self, session_id: str, external_user_id: str,
+                               audio_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
+        """Persist an incoming voice/audio message to disk and return attachment_info.
+
+        Mirrors _save_image_attachment(): honors the agent attachment config
+        (enabled + max size) and records the file via db.save_attachment().
+        The agent listens to the file via the transcribe_audio tool.
+        Returns None when persistence is disabled, over-limit, or fails.
+        """
+        from models.db import db
+        try:
+            cfg = db.get_agent_attachment_config(self.agent_id)
+            if not cfg.get('enabled'):
+                return None
+            max_bytes = cfg.get('max_size_mb', 10) * 1024 * 1024
+            if len(audio_bytes) > max_bytes:
+                _logger.info(
+                    "Skipping WhatsApp audio attachment for agent %s: "
+                    "size %s exceeds %s bytes",
+                    self.agent_id, len(audio_bytes), max_bytes)
+                return None
+            ext = {
+                'audio/ogg': '.ogg', 'audio/ogg; codecs=opus': '.ogg',
+                'audio/mpeg': '.mp3', 'audio/mp4': '.m4a',
+                'audio/wav': '.wav', 'audio/webm': '.webm',
+            }.get(mime_type, '.ogg')
+            filename = f"{int(time.time())}_whatsapp_voice{ext}"
+            target_dir = os.path.join('data', 'attachments', self.agent_id, session_id)
+            os.makedirs(target_dir, exist_ok=True)
+            file_path = os.path.join(target_dir, filename)
+            with open(file_path, 'wb') as f:
+                f.write(audio_bytes)
+            attachment_id = db.save_attachment(
+                agent_id=self.agent_id,
+                session_id=session_id,
+                filename=filename,
+                file_path=file_path,
+                external_user_id=external_user_id,
+                channel_id=self.channel_id,
+                channel_type='whatsapp',
+                original_filename=filename,
+                mime_type=mime_type,
+                file_type='voice',
+                size_bytes=len(audio_bytes),
+            )
+            _logger.info("WhatsApp audio saved as attachment %s (%d bytes): %s",
+                         attachment_id, len(audio_bytes), file_path)
+            return {
+                'attachment_id': attachment_id,
+                'filename': filename,
+                'mime_type': mime_type,
+                'size_bytes': len(audio_bytes),
+                'file_path': file_path,
+            }
+        except Exception as e:
+            _logger.error("Failed to persist WhatsApp audio attachment: %s", e, exc_info=True)
             return None
 
     def _clear_typing(self, external_user_id: str):

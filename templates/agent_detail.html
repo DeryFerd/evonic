@@ -3299,6 +3299,7 @@ function renderToolsList() {
                     <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(t.name || t.id)}</span>
                     ${isBuiltin ? '<span class="text-xs bg-green-50 text-green-600 px-1.5 py-0.5 rounded">builtin</span>' : ''}
                     ${t._skill_id ? `<span class="text-xs bg-indigo-50 text-indigo-500 px-1.5 py-0.5 rounded">${escapeHtml(t._skill_id)}</span>` : ''}
+                    ${t._plugin_id ? `<span class="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">${escapeHtml(t._plugin_id)}</span>` : ''}
                 </div>
                 <p class="text-xs text-gray-400 font-mono mt-0.5">${safeId}</p>
                 <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(t.description || '')}</p>
@@ -3348,6 +3349,7 @@ function renderToolsList() {
                     </svg>
                     <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(t.name || t.id)}</span>
                     ${t._skill_id ? `<span class="text-xs bg-indigo-50 text-indigo-500 px-1.5 py-0.5 rounded">${escapeHtml(t._skill_id)}</span>` : ''}
+                    ${t._plugin_id ? `<span class="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">${escapeHtml(t._plugin_id)}</span>` : ''}
                 </div>
                 <p class="text-xs text-gray-400 font-mono mt-0.5">${safeId}</p>
                 <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(t.description || '')}</p>
@@ -3383,6 +3385,7 @@ function renderToolsList() {
                     </svg>
                     <span class="text-sm font-medium text-gray-800 dark:text-gray-200">${escapeHtml(t.name || t.id)}</span>
                     ${t._skill_id ? `<span class="text-xs bg-indigo-50 text-indigo-500 px-1.5 py-0.5 rounded">${escapeHtml(t._skill_id)}</span>` : ''}
+                    ${t._plugin_id ? `<span class="text-xs bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">${escapeHtml(t._plugin_id)}</span>` : ''}
                 </div>
                 <p class="text-xs text-gray-400 font-mono mt-0.5">${safeId}</p>
                 <p class="text-xs text-gray-500 mt-0.5">${escapeHtml(t.description || '')}</p>
@@ -3439,6 +3442,7 @@ function filterToolsList() {
                 tool ? (tool.name || tool.id) : toolId,
                 tool ? (tool.description || '') : '',
                 tool ? (tool._skill_id || '') : '',
+                tool ? (tool._plugin_id || '') : '',
                 toolId
             ].join(' ').toLowerCase();
             show = searchable.includes(query);
@@ -3707,10 +3711,13 @@ async function showToolDetail(toolId) {
         document.getElementById('tool-detail-id').textContent = tool.id;
         document.getElementById('tool-detail-desc').textContent = tool.description || 'No description';
 
-        // Skill / builtin badge
+        // Skill / plugin / builtin badge
         const skillBadge = document.getElementById('tool-detail-skill');
         if (tool._skill_id) {
             skillBadge.textContent = tool._skill_id;
+            skillBadge.classList.remove('hidden');
+        } else if (tool._plugin_id) {
+            skillBadge.textContent = tool._plugin_id;
             skillBadge.classList.remove('hidden');
         } else if (tool._builtin) {
             skillBadge.textContent = 'builtin';

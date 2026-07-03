@@ -11,6 +11,7 @@ import os
 import sys
 import glob
 import json
+import types
 import threading
 import importlib
 import importlib.util
@@ -122,14 +123,17 @@ class ToolRegistry:
             return tools
 
     def get_all_tool_defs(self) -> List[Dict[str, Any]]:
-        """Load tool definitions from both tools/ and enabled skills."""
+        """Load tool definitions from tools/, enabled skills, and enabled plugins."""
         from backend.skills_manager import skills_manager
+        from backend.plugin_manager import plugin_manager
         # get_tool_defs_from_json returns the live cached list — copy it, or
         # extend() below would grow the cache with skill defs on every call.
         all_defs = list(self.get_tool_defs_from_json())
         # Add skill tool definitions
         skill_defs = skills_manager.get_all_skill_tool_defs()
         all_defs.extend(skill_defs)
+        # Add plugin tool definitions (id: 'plugin:<plugin_id>:<fn_name>')
+        all_defs.extend(plugin_manager.get_all_plugin_tool_defs())
         return all_defs
 
     def get_mock_executor(self) -> Callable:
@@ -167,13 +171,18 @@ class ToolRegistry:
         """
         ctx = dict(agent_context)
 
-        # Build function_name -> skill_id mapping from assigned tool IDs
+        # Build function_name -> skill_id / plugin_id mappings from assigned tool IDs
         fn_to_skill: Dict[str, str] = {}
+        fn_to_plugin: Dict[str, str] = {}
         for tid in ctx.get('assigned_tool_ids', []):
             if tid.startswith('skill:'):
                 parts = tid.split(':', 2)  # skill:skill_id:fn_name
                 if len(parts) == 3:
                     fn_to_skill[parts[2]] = parts[1]
+            elif tid.startswith('plugin:'):
+                parts = tid.split(':', 2)  # plugin:plugin_id:fn_name
+                if len(parts) == 3:
+                    fn_to_plugin[parts[2]] = parts[1]
 
         def real_executor(function_name: str, arguments: dict) -> dict:
             # Authorization guard: tool must be in assigned_tool_ids
@@ -222,7 +231,9 @@ class ToolRegistry:
                         "blocked_by": "state",
                     }
             skill_id = fn_to_skill.get(function_name)
-            module = self._load_tool_module(function_name, skill_id=skill_id)
+            plugin_id = fn_to_plugin.get(function_name)
+            module = self._load_tool_module(function_name, skill_id=skill_id,
+                                            plugin_id=plugin_id)
             if module is None:
                 return {"error": f"No backend implementation for tool: {function_name}"}
             if not hasattr(module, 'execute'):
@@ -283,15 +294,18 @@ class ToolRegistry:
 
         return builtin_executor
 
-    def _load_tool_module(self, tool_name: str, skill_id: str = None):
-        """Load (or reload) a tool's Python module from backend/tools/ or skills/*/backend/tools/.
+    def _load_tool_module(self, tool_name: str, skill_id: str = None, plugin_id: str = None):
+        """Load (or reload) a tool's Python module from backend/tools/,
+        skills/*/backend/tools/, or plugins/*/backend/tools/.
 
         Args:
             tool_name: Function name of the tool.
             skill_id: If provided, prefer this skill's backend over others.
+            plugin_id: If provided, prefer this plugin's backend over others.
         """
         tool_path = os.path.join(TOOLS_DIR, f"{tool_name}.py")
         skill_backend_dir = None
+        plugin_owner = None  # plugin_id owning the resolved backend
 
         # If skill_id is specified, search that skill first
         if skill_id:
@@ -303,43 +317,101 @@ class ToolRegistry:
                 if skill_dir:
                     skill_backend_dir = os.path.join(skill_dir, 'backend')
             # Fall through to default search if not found in specified skill
+        elif plugin_id:
+            from backend.plugin_manager import plugin_manager
+            p_path, p_owner = plugin_manager.find_plugin_tool_backend(tool_name, plugin_id=plugin_id)
+            if p_path:
+                tool_path = p_path
+                plugin_owner = p_owner
+            # Fall through to default search if not found in specified plugin
 
         if not os.path.isfile(tool_path):
-            # Search in skills (no skill_id hint)
+            # Search in skills (no skill_id hint), then plugins (no plugin_id hint)
             from backend.skills_manager import skills_manager
-            tool_path = skills_manager.find_tool_backend_path(tool_name)
-            if tool_path is None:
-                return None
-            skill_dir = skills_manager.find_tool_skill_dir(tool_name)
-            if skill_dir:
-                skill_backend_dir = os.path.join(skill_dir, 'backend')
+            skill_path = skills_manager.find_tool_backend_path(tool_name)
+            if skill_path:
+                tool_path = skill_path
+                skill_dir = skills_manager.find_tool_skill_dir(tool_name)
+                if skill_dir:
+                    skill_backend_dir = os.path.join(skill_dir, 'backend')
+            else:
+                from backend.plugin_manager import plugin_manager
+                p_path, p_owner = plugin_manager.find_plugin_tool_backend(tool_name)
+                if p_path is None:
+                    return None
+                tool_path = p_path
+                plugin_owner = p_owner
 
         current_mtime = os.path.getmtime(tool_path)
-        cache_key = f"{tool_name}:{skill_id}" if skill_id else tool_name
+        if plugin_owner:
+            cache_key = f"{tool_name}:plugin:{plugin_owner}"
+        elif skill_id:
+            cache_key = f"{tool_name}:{skill_id}"
+        else:
+            cache_key = tool_name
         cached = self._module_cache.get(cache_key)
 
         if cached and cached['mtime'] == current_mtime and cached['path'] == tool_path:
             return cached['module']
 
-        # Temporarily add skill backend dir to sys.path for relative imports
-        added_path = False
-        if skill_backend_dir and skill_backend_dir not in sys.path:
-            sys.path.insert(0, skill_backend_dir)
-            added_path = True
+        if plugin_owner:
+            module = self._exec_plugin_tool_module(
+                plugin_owner, os.path.dirname(tool_path), tool_name, tool_path)
+        else:
+            # Temporarily add skill backend dir to sys.path for relative imports
+            added_path = False
+            if skill_backend_dir and skill_backend_dir not in sys.path:
+                sys.path.insert(0, skill_backend_dir)
+                added_path = True
 
-        try:
-            spec = importlib.util.spec_from_file_location(f"tools.{tool_name}", tool_path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-        finally:
-            if added_path:
-                sys.path.remove(skill_backend_dir)
+            try:
+                spec = importlib.util.spec_from_file_location(f"tools.{tool_name}", tool_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+            finally:
+                if added_path:
+                    sys.path.remove(skill_backend_dir)
 
         self._module_cache[cache_key] = {
             'module': module,
             'mtime': current_mtime,
             'path': tool_path
         }
+        return module
+
+    def _exec_plugin_tool_module(self, plugin_id: str, tools_dir: str,
+                                 tool_name: str, tool_path: str):
+        """Execute a plugin tool module inside a per-plugin namespace package.
+
+        Relative imports (from ._lib import x) resolve against the plugin's
+        own backend/tools/ dir and never collide across plugins (unlike the
+        skills path, whose hardcoded 'tools.<name>' spec shares one parent
+        package across all skills).
+
+        'plugin_tools_<id>' is deliberately NOT under the 'plugin_pkg_<id>'
+        prefix that _unload_plugin evicts: helper submodules holding
+        long-lived singletons (e.g. subprocess managers) survive
+        reload_plugin, which runs on every plugin config save. Tradeoff:
+        edits to helper modules need an app restart; tool entrypoint .py
+        files still hot-reload via mtime.
+        """
+        pkg_name = f'plugin_tools_{plugin_id}'
+        pkg = sys.modules.get(pkg_name)
+        if pkg is None:
+            pkg = types.ModuleType(pkg_name)
+            pkg.__package__ = pkg_name
+            sys.modules[pkg_name] = pkg
+        pkg.__path__ = [tools_dir]  # keep fresh across reinstalls
+
+        mod_name = f'{pkg_name}.{tool_name}'
+        spec = importlib.util.spec_from_file_location(mod_name, tool_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(mod_name, None)
+            raise
         return module
 
 

@@ -7,6 +7,7 @@ Extracted from plugin_manager.py as part of the refactor. Handles:
 - Event bridging, route registration, dashboard cards
 """
 
+import copy
 import logging
 import os
 import re
@@ -59,6 +60,9 @@ class PluginManager:
         self._dashboard_cards: Dict[str, List[Tuple[str, Callable]]] = {}  # plugin_id -> [(card_id, fn)]
         self._nav_cache: Optional[List[Dict[str, Any]]] = None  # memoized get_nav_items()
         self._agent_tabs_cache: Dict[str, List[Dict]] = {}  # per-agent memoized get_agent_tabs()
+        # Parsed-JSON cache keyed by path with mtime invalidation (tool-def
+        # files are read on every agent context build via get_all_plugin_tool_defs).
+        self._json_file_cache: Dict[str, tuple] = {}
         self._load_all()
 
     def _is_plugin_enabled(self, plugin_id: str) -> bool:
@@ -368,6 +372,81 @@ class PluginManager:
             except (json.JSONDecodeError, KeyError):
                 continue
         return plugins
+
+    # ── Plugin-provided agent tools ──
+
+    def _read_json_cached(self, path: str):
+        """Parse a JSON file, cached by mtime. Returns a deep copy so callers
+        can tag/mutate the result without polluting the cache.  Returns None
+        if the file is missing or unparseable.  Unlocked: a concurrent race
+        just parses the same file twice, which is harmless."""
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            self._json_file_cache.pop(path, None)
+            return None
+        cached = self._json_file_cache.get(path)
+        if cached is None or cached[0] != mtime:
+            try:
+                with open(path, encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                return None
+            cached = (mtime, data)
+            self._json_file_cache[path] = cached
+        return copy.deepcopy(cached[1])
+
+    def get_all_plugin_tool_defs(self) -> List[Dict[str, Any]]:
+        """Load tool definitions from all ENABLED plugins declaring tools_file.
+
+        Mirrors skills_manager.get_all_skill_tool_defs: the tools file is a
+        flat JSON array of function defs; each def is tagged with its plugin
+        origin and the namespaced ID 'plugin:<plugin_id>:<fn_name>'.
+        """
+        all_defs = []
+        for plugin in self.list_plugins():
+            if not plugin.get('enabled'):
+                continue
+            tools_file = plugin.get('tools_file', '')
+            if not tools_file:
+                continue
+            plugin_id = plugin.get('id', '')
+            plugin_dir = plugin.get('_dir', os.path.join(PLUGINS_DIR, plugin_id))
+            data = self._read_json_cached(os.path.join(plugin_dir, tools_file))
+            if not isinstance(data, list):
+                continue
+            for d in data:
+                if not isinstance(d, dict):
+                    continue
+                fn_name = d.get('function', {}).get('name', '')
+                if not fn_name:
+                    continue
+                d['id'] = f'plugin:{plugin_id}:{fn_name}'
+                d['_plugin_id'] = plugin_id
+                d['_plugin_dir'] = plugin_dir
+                all_defs.append(d)
+        return all_defs
+
+    def find_plugin_tool_backend(self, tool_name: str,
+                                 plugin_id: str = None) -> Tuple[Optional[str], Optional[str]]:
+        """Locate plugins/<id>/backend/tools/<tool_name>.py in enabled plugins.
+
+        Returns (path, plugin_id) of the first match, or (None, None).
+        If plugin_id is given, only that plugin is searched.
+        """
+        if not re.match(r'^[A-Za-z0-9_]+$', tool_name or ''):
+            return None, None
+        for plugin in self.list_plugins():
+            pid = plugin.get('id', '')
+            if plugin_id and pid != plugin_id:
+                continue
+            if not plugin.get('enabled'):
+                continue
+            plugin_dir = plugin.get('_dir', os.path.join(PLUGINS_DIR, pid))
+            tool_path = os.path.join(plugin_dir, 'backend', 'tools', f'{tool_name}.py')
+            if os.path.isfile(tool_path):
+                return tool_path, pid
+        return None, None
 
     def get_nav_items(self) -> List[Dict[str, Any]]:
         """Return nav items declared by all enabled plugins.

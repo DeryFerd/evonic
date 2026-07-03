@@ -289,6 +289,17 @@ def api_list_tools():
             'function': func,
             '_skill_id': skill_def.get('_skill_id', ''),
         })
+    # Append plugin tool definitions (namespaced: plugin:plugin_id:fn_name)
+    from backend.plugin_manager import plugin_manager
+    for plugin_def in plugin_manager.get_all_plugin_tool_defs():
+        func = plugin_def.get('function', {})
+        tools.append({
+            'id': plugin_def.get('id', ''),
+            'name': func.get('name', ''),
+            'description': func.get('description', ''),
+            'function': func,
+            '_plugin_id': plugin_def.get('_plugin_id', ''),
+        })
     return jsonify({'tools': tools})
 
 
@@ -310,6 +321,21 @@ def api_get_tool(tool_id):
                     'function': func,
                     '_skill_id': skill_def.get('_skill_id', ''),
                     'no_mock': skill_def.get('no_mock', False),
+                }
+                break
+    if not tool and tool_id.startswith('plugin:'):
+        # Look up plugin tool from plugin_manager
+        from backend.plugin_manager import plugin_manager
+        for plugin_def in plugin_manager.get_all_plugin_tool_defs():
+            if plugin_def.get('id') == tool_id:
+                func = plugin_def.get('function', {})
+                tool = {
+                    'id': plugin_def.get('id', ''),
+                    'name': func.get('name', ''),
+                    'description': func.get('description', ''),
+                    'function': func,
+                    '_plugin_id': plugin_def.get('_plugin_id', ''),
+                    'no_mock': plugin_def.get('no_mock', False),
                 }
                 break
     if not tool:
@@ -375,6 +401,18 @@ def api_get_tool_backend(tool_id):
             return jsonify({'error': 'Invalid skill tool ID'}), 400
         _, skill_id, fn_name = parts
         backend_path = skills_manager.find_tool_backend_path(fn_name, skill_id=skill_id)
+        if backend_path and os.path.isfile(backend_path):
+            with open(backend_path, 'r', encoding='utf-8') as f:
+                return jsonify({'code': f.read(), 'exists': True})
+        return jsonify({'code': '', 'exists': False})
+
+    if tool_id.startswith('plugin:'):
+        from backend.plugin_manager import plugin_manager
+        parts = tool_id.split(':', 2)
+        if len(parts) != 3:
+            return jsonify({'error': 'Invalid plugin tool ID'}), 400
+        _, plugin_id, fn_name = parts
+        backend_path, _pid = plugin_manager.find_plugin_tool_backend(fn_name, plugin_id=plugin_id)
         if backend_path and os.path.isfile(backend_path):
             with open(backend_path, 'r', encoding='utf-8') as f:
                 return jsonify({'code': f.read(), 'exists': True})

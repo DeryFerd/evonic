@@ -59,6 +59,10 @@ class TestRegistryCacheNotMutated:
         ))
         monkeypatch.setattr('backend.tools.registry.TOOL_DEFS_DIR', str(defs_dir))
         monkeypatch.setattr('backend.skills_manager.skills_manager', sm)
+        # Keep the test hermetic: real installed plugins may contribute defs
+        monkeypatch.setattr(
+            'backend.plugin_manager.plugin_manager.get_all_plugin_tool_defs',
+            lambda: [])
 
         registry = ToolRegistry()
         first = registry.get_all_tool_defs()

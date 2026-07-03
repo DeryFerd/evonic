@@ -56,6 +56,8 @@ class WhatsAppChannel(BaseChannel):
         self._llm_thinking_handler = None
         # Per-channel secret for authenticating sidecar → server callbacks
         self._callback_secret: str = secrets.token_urlsafe(32)
+        # Last status pushed by the bridge ('connected' | 'qr_pending' | 'disconnected')
+        self._last_bridge_status: Optional[str] = None
         # Maps external_user_id (bare number) → full WhatsApp JID for reliable replies
         self._jid_map: Dict[str, str] = {}
         # Debounce state for llm_thinking typing indicator
@@ -208,6 +210,8 @@ class WhatsAppChannel(BaseChannel):
                     'AUTH_DIR': os.path.abspath(session_dir),
                 }
 
+                # Reset cached status so probes reflect the new process until it pushes
+                self._last_bridge_status = None
                 self._process = subprocess.Popen(
                     ['node', os.path.join(_BRIDGE_DIR, 'index.js')],
                     env=env,
@@ -303,6 +307,17 @@ class WhatsAppChannel(BaseChannel):
         from backend.agent_runtime import agent_runtime
         from models.db import db
         from backend.event_stream import event_stream
+
+        # Bridge status push — cache + broadcast, no message processing
+        if payload.get('event') == 'status':
+            status = payload.get('status') or 'disconnected'
+            self._last_bridge_status = status
+            event_stream.emit('whatsapp_bridge_status', {
+                'agent_id': self.agent_id,
+                'channel_id': self.channel_id,
+                'status': status,
+            })
+            return
 
         # Handle button reply (approval flow)
         button_id = payload.get('button_id', '')
@@ -542,7 +557,9 @@ class WhatsAppChannel(BaseChannel):
             return {'status': 'disconnected', 'error': str(e)}
 
     def get_bridge_status(self) -> dict:
-        """Fetch bridge connection status."""
+        """Bridge connection status — cached from bridge pushes, HTTP probe fallback."""
+        if self._last_bridge_status is not None:
+            return {'status': self._last_bridge_status}
         try:
             resp = requests.get(f"http://127.0.0.1:{self._bridge_port}/status", timeout=5)
             return resp.json()

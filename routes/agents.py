@@ -1182,6 +1182,13 @@ def api_list_channels(agent_id):
     for ch in channels:
         ch['running'] = channel_manager.is_running(ch['id'])
         ch['is_primary'] = ch['id'] == primary_cid
+        if ch.get('type') == 'whatsapp' and ch['running']:
+            instance = channel_manager.get_channel_instance(ch['id'])
+            if instance:
+                try:
+                    ch['bridge_status'] = instance.get_bridge_status().get('status')
+                except Exception:
+                    ch['bridge_status'] = None
     return jsonify({'channels': channels})
 
 
@@ -1379,6 +1386,33 @@ def api_whatsapp_bridge_status(agent_id, channel_id):
     if not instance or instance.get_channel_type() != 'whatsapp':
         return jsonify({'status': 'not_running'})
     return jsonify(instance.get_bridge_status())
+
+
+@agents_bp.route('/api/whatsapp/disconnected-count', methods=['GET'])
+def api_whatsapp_disconnected_count():
+    """Count running WhatsApp channels whose bridge is not connected."""
+    from backend.channels.registry import channel_manager
+    affected = []
+    for agent in db.get_agents():
+        for ch in db.get_channels(agent['id']):
+            if ch.get('type') != 'whatsapp':
+                continue
+            if not channel_manager.is_running(ch['id']):
+                continue
+            instance = channel_manager.get_channel_instance(ch['id'])
+            if not instance:
+                continue
+            try:
+                status = instance.get_bridge_status().get('status')
+            except Exception:
+                continue
+            if status in ('disconnected', 'qr_pending'):
+                affected.append({
+                    'id': agent['id'],
+                    'name': agent.get('name') or agent['id'],
+                    'status': status,
+                })
+    return jsonify({'count': len(affected), 'agents': affected})
 
 
 @agents_bp.route('/api/channels/whatsapp-bridge/<channel_id>/callback', methods=['POST'])

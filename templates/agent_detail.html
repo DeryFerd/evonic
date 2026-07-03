@@ -186,6 +186,15 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
         </div>
     </div>
     {% endif %}
+    <div id="whatsapp-bridge-banner" class="hidden bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-700 rounded-lg px-4 py-3 mb-4 flex-shrink-0">
+        <div class="flex items-center gap-3">
+            <svg class="w-5 h-5 text-amber-500 dark:text-amber-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M10.29 3.86l-8.6 14.86A1 1 0 002.56 20h18.88a1 1 0 00.87-1.5l-8.6-14.86a1 1 0 00-1.74 0z"/>
+            </svg>
+            <p id="wa-bridge-banner-text" class="text-sm font-medium text-amber-800 dark:text-amber-300 flex-1">WhatsApp is not connected — messages will not be received.</p>
+            <button onclick="reconnectWhatsApp()" class="text-xs px-3 py-1 rounded bg-green-50 text-green-700 hover:bg-green-100 flex-shrink-0">Reconnect</button>
+        </div>
+    </div>
     <!-- Header -->
     <div class="flex items-center justify-between mb-4 flex-shrink-0">
         <div class="flex items-center gap-3">
@@ -3868,6 +3877,7 @@ async function loadChannels() {
     const data = await res.json();
     if (epoch !== window._agentEpoch) return; // agent switched mid-flight
     const channels = data.channels || [];
+    updateWABridgeBanner(channels);
     const list = document.getElementById('channels-list');
     const empty = document.getElementById('channels-empty');
     if (channels.length === 0) {
@@ -4033,6 +4043,56 @@ async function _pollQR() {
         // ignore poll errors
     }
 }
+
+// ---- WhatsApp bridge status banner ----
+let _waBannerChannelId = null;
+
+function updateWABridgeBanner(channels) {
+    const banner = document.getElementById('whatsapp-bridge-banner');
+    if (!banner) return;
+    const wa = (channels || []).find(c =>
+        c.type === 'whatsapp' && c.running && c.bridge_status && c.bridge_status !== 'connected');
+    if (wa) {
+        _waBannerChannelId = wa.id;
+        document.getElementById('wa-bridge-banner-text').textContent =
+            wa.bridge_status === 'qr_pending'
+                ? 'WhatsApp is waiting for a QR scan — messages will not be received.'
+                : 'WhatsApp is not connected — messages will not be received.';
+        banner.classList.remove('hidden');
+    } else {
+        _waBannerChannelId = null;
+        banner.classList.add('hidden');
+    }
+}
+
+function reconnectWhatsApp() {
+    if (_waBannerChannelId) openQRModal(_waBannerChannelId);
+}
+
+async function refreshWABridgeBanner() {
+    try {
+        const res = await fetch(`/api/agents/${AGENT_ID}/channels`);
+        if (!res.ok) return;
+        const data = await res.json();
+        updateWABridgeBanner(data.channels || []);
+    } catch (_) { /* silent — never break the page */ }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+    refreshWABridgeBanner();
+    setInterval(refreshWABridgeBanner, 60000); // fallback when SSE is unavailable
+    // Shared realtime client is created by agent-sidebar.js after this handler runs
+    let bindTries = 0;
+    (function bindWABridgeRT() {
+        if (window._evRealtime) {
+            window._evRealtime.on('status', 'whatsapp_bridge_status', function (payload) {
+                if (payload && payload.agent_id === AGENT_ID) refreshWABridgeBanner();
+            });
+        } else if (++bindTries < 10) {
+            setTimeout(bindWABridgeRT, 1000);
+        }
+    })();
+});
 
 async function toggleChannel(channelId, start) {
     const action = start ? 'start' : 'stop';

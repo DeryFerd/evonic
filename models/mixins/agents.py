@@ -87,6 +87,7 @@ class AgentMixin:
                    'agent_messaging_enabled', 'workplace_id',
                    'attachments_enabled', 'attachment_max_size_mb', 'artifacts_enabled',
                    'fallback_model_id', 'audio_enabled', 'video_enabled',
+                   'model_id',
                    'run_as_user', 'bash_exec_enabled', 'vision_model_id',
                    'inter_agent_clear_context', 'builtin_tools_enabled',
                    'messaging_acl', 'messaging_acl_mode',

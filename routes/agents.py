@@ -394,6 +394,8 @@ def api_update_agent(agent_id):
             else:
                 for tool_id in VISION_TOOLS:
                     db.remove_agent_tool(agent_id, tool_id)
+    if 'model_id' in data and data['model_id'] == '':
+        data['model_id'] = None  # empty string resets to global default
     db.update_agent(agent_id, data)
     agent = db.get_agent(agent_id)
     agent['system_prompt'] = _read_system_prompt(agent_id, fallback=agent.get('system_prompt', ''))

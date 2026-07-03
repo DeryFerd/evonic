@@ -4120,6 +4120,13 @@ document.addEventListener('DOMContentLoaded', function () {
             window._evRealtime.on('status', 'panel_updated', function (payload) {
                 if (payload && payload.agent_id === AGENT_ID) refreshPluginTab('panel');
             });
+            // Busy state pushed by the unified status stream — replaces the old
+            // 5s /busy poll. _chatBusy (this session's own turn) takes precedence.
+            window._evRealtime.on('status', 'agent_busy_changed', function (payload) {
+                if (payload && payload.agent_id === AGENT_ID && !_chatBusy) {
+                    updateBusyBadge(payload.busy);
+                }
+            });
         } else if (++bindTries < 10) {
             setTimeout(bindWABridgeRT, 1000);
         }
@@ -4648,21 +4655,23 @@ function setChatBusy(busy) {
     }
 }
 
-// Background poll for busy state set by external sessions (notifier, other channels)
+// One-shot busy-state resync (external sessions: notifier, other channels).
+// Live updates arrive via the shared status stream (agent_busy_changed); this
+// only fetches the current snapshot on load / after a soft agent switch.
 let _busyPolling = false;
-let _busyPollTimer = setInterval(async () => {
-    if (_chatBusy || _busyPolling) return; // skip if already busy or previous request still in-flight
+async function resyncBusyBadge() {
+    if (_chatBusy || _busyPolling) return; // skip if own turn is busy or a fetch is in-flight
     _busyPolling = true;
     try {
         const res = await fetch(`/api/agents/${AGENT_ID}/busy`);
         const data = await res.json();
-        updateBusyBadge(data.busy);
+        if (!_chatBusy) updateBusyBadge(data.busy);
     } catch (e) { /* ignore */ } finally { _busyPolling = false; }
-}, 5000);
+}
+resyncBusyBadge(); // initial state; the stream covers everything after this
 
 // Stop all polling on page unload to free HTTP connections during navigation
 window.addEventListener('beforeunload', () => {
-    if (_busyPollTimer) { clearInterval(_busyPollTimer); _busyPollTimer = null; }
     stopIdlePoll();
 });
 
@@ -6569,7 +6578,7 @@ window.softSwitchAgent = async function (newId, opts = {}) {
     if (window._saveChatDraft) window._saveChatDraft(); // persists under the OLD agent's key
     _destroyCurrentTurn();
     stopIdlePoll();
-    updateBusyBadge(false); // _busyPollTimer refreshes for the new agent within 5s
+    updateBusyBadge(false); // cleared now; resynced for the new agent below
     const gearDd = document.getElementById('gear-dropdown');
     if (gearDd) gearDd.classList.add('hidden');
     if (_qrPollInterval) closeQRModal();
@@ -6639,6 +6648,7 @@ window.softSwitchAgent = async function (newId, opts = {}) {
         history.pushState({agentId: newId}, '', '/agents/' + encodeURIComponent(newId) + '#chat');
     }
     window._softSwitched = true;
+    resyncBusyBadge(); // fetch the new agent's current busy state; live updates via stream
     showTab('chat'); // chatLoaded=false → loads new agent's history/session/state
     return true;
 };

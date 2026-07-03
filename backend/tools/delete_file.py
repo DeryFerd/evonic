@@ -46,6 +46,31 @@ def execute(agent, args: dict) -> dict:
                                agent_id, e)
         return {'result': 'success', 'deleted': display_path}
 
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.) instead of the host filesystem.
+    sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
+    has_workplace = bool((agent or {}).get('workplace_id'))
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
+        from backend.tools.lib.exec_backend import registry
+        session_id = (agent or {}).get('session_id') or 'default'
+        backend = registry.get_backend(session_id, agent)
+
+        # Resolve the file path relative to the agent's workspace before
+        # sending it to the execution backend.
+        target_path = resolve_workspace_path(agent, file_path, _WORKSPACE_ROOT)
+        # Convert host path to the backend's view (e.g. /workspace for Docker)
+        target_path = backend.resolve_path(target_path)
+
+        if not backend.file_exists(target_path):
+            return {'error': f"File not found: {display_path}"}
+
+        result = backend.delete_file(target_path)
+        if 'error' in result:
+            return {'error': result['error']}
+        return {'result': 'success', 'deleted': display_path}
+
     file_path = resolve_workspace_path(agent, file_path, _WORKSPACE_ROOT)
 
     if not os.path.isfile(file_path):

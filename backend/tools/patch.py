@@ -648,11 +648,13 @@ def execute(agent, args: dict) -> dict:
 
         return {'result': 'success', 'hunks_applied': result.get('hunks_applied', 0)}
 
-    # When sandbox is enabled or the agent has a workplace, route file I/O
-    # through the execution backend (Docker container, SSH remote, etc.).
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.).
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
-    if sandbox_enabled or has_workplace:
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
         from backend.tools.lib.exec_backend import registry
         session_id = (agent or {}).get('session_id') or 'default'
         backend = registry.get_backend(session_id, agent)

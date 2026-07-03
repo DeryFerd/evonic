@@ -722,6 +722,8 @@ class TelegramChannel(BaseChannel):
         _pending_approval_msgs: dict = {}  # approval_id -> (chat_id, message_id)
 
         def _on_approval_required(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             user_id = data.get('external_user_id')
@@ -765,6 +767,8 @@ class TelegramChannel(BaseChannel):
                 _logger.error("Failed to send approval prompt: %s", e)
 
         def _on_approval_resolved(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             approval_id = data.get('approval_id', '')

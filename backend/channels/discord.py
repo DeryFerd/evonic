@@ -651,6 +651,8 @@ class DiscordChannel(BaseChannel):
         _typing_last_sent: Dict[str, float] = {}
 
         def _on_approval_required(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             user_id = data.get('external_user_id')
@@ -686,6 +688,8 @@ class DiscordChannel(BaseChannel):
                 _logger.error("Failed to send Discord approval prompt: %s", e)
 
         def _on_approval_resolved(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             approval_id = data.get('approval_id', '')

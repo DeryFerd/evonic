@@ -94,6 +94,8 @@ class WhatsAppChannel(BaseChannel):
         from backend.event_stream import event_stream
 
         def _on_approval_required(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != self.channel_id:
                 return
             user_id = data.get('external_user_id')
@@ -120,6 +122,8 @@ class WhatsAppChannel(BaseChannel):
                 _logger.error("WhatsApp approval send failed: %s", e)
 
         def _on_approval_resolved(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != self.channel_id:
                 return
             user_id = data.get('external_user_id')

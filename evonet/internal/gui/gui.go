@@ -121,12 +121,14 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 
 	var client *ws.Client
 	var running bool
+	var gen int
 
 	startClient := func() {
 		cfg = store.ActiveConfig()
 		exec := executor.New(workDir(cfg), true) // GUI always verbose
 		client = ws.New(cfg, exec)
 		running = true
+		gen++
 		connectedText.Hide()
 		statusLabel.Show()
 		statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
@@ -134,14 +136,22 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 		toggleBtn.Importance = widget.DangerImportance
 		toggleBtn.Refresh()
 
+		myGen := gen
+		myClient := client
 		client.OnConnected = func() {
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				statusLabel.Hide()
 				connectedText.Show()
 			})
 		}
 		client.OnDisconnected = func() {
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				connectedText.Hide()
 				statusLabel.Show()
 				statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
@@ -150,8 +160,11 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 
 		go func() {
 			log.Printf("[evonet] Connecting to %s...", cfg.ServerURL)
-			client.Run()
+			myClient.Run()
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				running = false
 				connectedText.Hide()
 				statusLabel.Show()
@@ -183,8 +196,9 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 		startClient()
 	}
 
+	selectBox := container.NewGridWrap(fyne.NewSize(220, serverSelect.MinSize().Height), serverSelect)
 	topBar := container.NewBorder(nil, nil,
-		container.NewHBox(aboutBtn, serverSelect),
+		container.NewHBox(aboutBtn, selectBox),
 		container.NewHBox(serversBtn, clearBtn, toggleBtn),
 		container.NewStack(statusLabel, container.NewPadded(connectedText)),
 	)

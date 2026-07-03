@@ -213,38 +213,16 @@ def create_blueprint():
             else:
                 user_params = {}
 
-            # Security: reject if run_as_user is None
-            run_as_user = (agent.get("run_as_user") or "").strip()
-            if not run_as_user:
+            execution_id, err = start_script_execution(agent_id, agent, action, user_params)
+            if err == "no_run_as_user":
                 return jsonify({
                     "error": "Agent has no run_as_user configured. Script execution requires a run_as_user to be set."
                 }), 400
-
-            # Mutual exclusion: per-agent lock, non-blocking
-            lock = _get_agent_lock(agent_id)
-            if not lock.acquire(blocking=False):
+            if err == "busy":
                 return jsonify({
                     "error": "A script is already running for this agent",
                     "status": "busy",
                 }), 409
-
-            # Generate execution ID and buffer entry
-            execution_id = str(uuid.uuid4())
-            with _buffers_lock:
-                _execution_buffers[execution_id] = {
-                    "status": "running",
-                    "output_lines": [],
-                    "exit_code": None,
-                    "started_at": _now(),
-                }
-
-            # Offload to daemon thread
-            thread = threading.Thread(
-                target=_run_script,
-                args=(agent_id, action, user_params, execution_id, run_as_user, lock),
-                daemon=True,
-            )
-            thread.start()
 
             return jsonify({
                 "status": "queued",
@@ -299,22 +277,19 @@ def create_blueprint():
 # ---------------------------------------------------------------------------
 
 def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
-    """Build the full HTML page for the panel UI."""
+    """Build the panel UI as an HTML body fragment.
+
+    Returned fragment is injected into the Panel tab of agent_detail.html via
+    innerHTML (scripts are re-created by setPluginTabHTML so they execute).
+    Must NOT be a full document and must NOT load external scripts.
+    """
 
     actions_json = json.dumps(actions)
     agent_name = agent.get("name", agent_id)
 
-    # Escape for embedding in JS string
-    agent_name_escaped = agent_name.replace("\\", "\\\\").replace("'", "\\'")
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Panel — {_escape_html(agent_name)}</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<style>
+    html = f"""<style>
+  .panel-btn {{ color: #fff; font-weight: 500; padding: 0.75rem 1rem;
+                border-radius: 0.5rem; transition: background-color 0.15s; }}
   .btn-script {{ background-color: #4f46e5; }}
   .btn-script:hover {{ background-color: #4338ca; }}
   .btn-prompt {{ background-color: #059669; }}
@@ -322,11 +297,9 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   .btn-disabled {{ opacity: 0.5; cursor: not-allowed; }}
   #output {{ font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace; font-size: 13px; }}
 </style>
-</head>
-<body class="bg-gray-900 text-gray-100 min-h-screen">
 <div class="max-w-4xl mx-auto p-4 sm:p-6">
 
-  <h2 class="text-xl font-bold mb-4 text-white">
+  <h2 class="text-xl font-bold mb-4">
     Panel — <span class="text-indigo-400">{_escape_html(agent_name)}</span>
   </h2>
 
@@ -341,18 +314,18 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
         enabled = action.get("enabled", True)
 
         if atype == "script":
-            color_class = "bg-indigo-600 hover:bg-indigo-700"
+            color_class = "btn-script"
         else:
-            color_class = "bg-emerald-600 hover:bg-emerald-700"
+            color_class = "btn-prompt"
 
         disabled_attr = ""
         disabled_class = ""
         if not enabled:
             disabled_attr = "disabled"
-            disabled_class = " opacity-50 cursor-not-allowed"
+            disabled_class = " btn-disabled"
 
         html += f"""    <button
-      class="panel-btn {color_class} text-white font-medium py-3 px-4 rounded-lg transition-colors{disabled_class}"
+      class="panel-btn {color_class}{disabled_class}"
       data-action-id="{aid}"
       data-action-type="{atype}"
       data-label="{label}"
@@ -360,7 +333,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     >{label}</button>
 """
 
-    html += """  </div>
+    html += f"""  </div>
 
   <!-- Params Modal -->
   <div id="params-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
@@ -599,9 +572,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     return div.innerHTML;
   }}
 }})();
-</script>
-</body>
-</html>"""
+</script>"""
 
     return html
 
@@ -620,6 +591,42 @@ def _escape_html(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Script execution (daemon thread)
 # ---------------------------------------------------------------------------
+
+def start_script_execution(agent_id: str, agent: dict, action: dict,
+                           user_params: dict):
+    """Start a script action in a background daemon thread.
+
+    Returns (execution_id, err). err is None on success, or one of:
+    "no_run_as_user" — agent has no run_as_user configured;
+    "busy" — a script is already running for this agent.
+    """
+    run_as_user = (agent.get("run_as_user") or "").strip()
+    if not run_as_user:
+        return None, "no_run_as_user"
+
+    # Mutual exclusion: per-agent lock, non-blocking
+    lock = _get_agent_lock(agent_id)
+    if not lock.acquire(blocking=False):
+        return None, "busy"
+
+    execution_id = str(uuid.uuid4())
+    with _buffers_lock:
+        _execution_buffers[execution_id] = {
+            "status": "running",
+            "output_lines": [],
+            "exit_code": None,
+            "started_at": _now(),
+        }
+
+    thread = threading.Thread(
+        target=_run_script,
+        args=(agent_id, action, user_params, execution_id, run_as_user, lock),
+        daemon=True,
+    )
+    thread.start()
+
+    return execution_id, None
+
 
 def _run_script(agent_id: str, action: dict, user_params: dict,
                 execution_id: str, run_as_user: str, lock: threading.Lock):
@@ -753,26 +760,30 @@ def _run_script(agent_id: str, action: dict, user_params: dict,
 # Prompt sending
 # ---------------------------------------------------------------------------
 
-def _send_prompt_to_agent(agent_id: str, action: dict):
-    """Send a prompt action to the agent's main session."""
-    # This sends a user message to the agent's default session.
-    # The message is processed as if it came from the web UI.
-    try:
-        from models.db import db
-        from models.chat import chat_db
+def _send_prompt_to_agent(agent_id: str, action: dict, session_id: str = None,
+                          params: dict = None):
+    """Deliver a prompt action to the agent and trigger a turn (async)."""
+    content = action.get("content", "")
+    for key, value in (params or {}).items():
+        content = content.replace(f"{{{{{key}}}}}", str(value))
+    if not content:
+        return
 
-        # Get or create a default web session for this agent
-        session_id = chat_db.get_or_create_session(
-            agent_id=agent_id,
-            external_user_id="panel",
-            channel_id="web",
-        )
+    def _deliver():
+        from backend.agent_runtime.notifier import notify_agent
+        kwargs = dict(agent_id=agent_id, tag="Panel", message=content,
+                      dedup=False, trigger_llm=True)
+        if session_id:
+            kwargs["session_id"] = session_id
+        else:
+            kwargs["external_user_id"] = "panel"
+            kwargs["channel_id"] = None
+        notify_agent(**kwargs)
 
-        content = action.get("content", "")
-        if content:
-            db.add_chat_message(session_id, "user", content)
-    except Exception:
-        raise
+    # notify_agent(trigger_llm=True) blocks until the LLM turn completes —
+    # deliver from a daemon thread so callers (HTTP route, slash handler)
+    # return immediately.
+    threading.Thread(target=_deliver, daemon=True).start()
 
 
 def _parse_params(params):
@@ -788,3 +799,87 @@ def _parse_params(params):
     if isinstance(params, list):
         return params
     return None
+
+
+# ---------------------------------------------------------------------------
+# Slash command: /panel
+# ---------------------------------------------------------------------------
+# Registered here (not in a handler.py) so the slash handler shares this
+# module's in-memory execution state (_execution_buffers, per-agent locks)
+# with the Flask routes — plugin_lifecycle loads this file under a synthetic
+# package name, so importing plugins.panel.routes elsewhere would create a
+# second module instance with separate state.
+
+def _slug(s: str) -> str:
+    return re.sub(r"\s+", "-", (s or "").strip().lower())
+
+
+def _panel_slash_handler(session_id, agent_id, external_user_id, channel_id, args):
+    """Handle /panel (list actions) and /panel:<action> (execute) from chat."""
+    db = panel_db_factory(agent_id)
+    actions = [a for a in db.list_actions() if a.get("enabled")]
+
+    sub = (args or "").strip()
+    if not sub:
+        if not actions:
+            return "No panel actions configured for this agent."
+        lines = ["**Panel actions:**"]
+        for a in actions:
+            lines.append(f"- `/panel:{_slug(a['label'])}` — {a['label']} ({a['action_type']})")
+        return "\n".join(lines)
+
+    target = _slug(sub.split()[0])
+    action = next((a for a in actions if _slug(a["label"]) == target), None)
+    if not action:
+        return f"No panel action matching '{target}'. Use `/panel` to list actions."
+
+    if action["action_type"] == "prompt":
+        _send_prompt_to_agent(agent_id, action, session_id=session_id)
+        db.log_execution(action_id=action["id"], action_label=action["label"],
+                         action_type="prompt", params_used=None,
+                         result="Prompt sent via /panel", status="success")
+        return f"Panel action **{action['label']}** sent to agent."
+
+    # Script action
+    if _parse_params(action.get("params")):
+        return (f"Action **{action['label']}** requires parameters — "
+                f"run it from the Panel tab instead.")
+
+    from models.db import db as models_db
+    agent = models_db.get_agent(agent_id)
+    if not agent:
+        return f"Agent '{agent_id}' not found."
+
+    execution_id, err = start_script_execution(agent_id, agent, action, {})
+    if err == "no_run_as_user":
+        return (f"Cannot run **{action['label']}**: agent has no run_as_user "
+                "configured.")
+    if err == "busy":
+        return (f"Cannot run **{action['label']}**: a script is already "
+                "running for this agent.")
+
+    # Bounded wait so short scripts return their output right in chat;
+    # longer scripts keep running in the background thread.
+    deadline = time.time() + min(_get_max_timeout(), 30)
+    while time.time() < deadline:
+        with _buffers_lock:
+            buf = dict(_execution_buffers.get(execution_id) or {})
+        if buf.get("status") in ("completed", "error"):
+            output = "".join(buf.get("output_lines", []))[-2000:]
+            return (f"**{action['label']}** finished (exit {buf.get('exit_code')}):\n"
+                    f"```\n{output or '(no output)'}\n```")
+        time.sleep(0.5)
+    return (f"**{action['label']}** is still running in the background — "
+            "the result will be recorded in the panel execution log.")
+
+
+try:
+    from backend.slash_commands import command_registry
+    command_registry.register(
+        "panel",
+        _panel_slash_handler,
+        "Execute panel actions — /panel to list, /panel:<action> to run",
+    )
+except Exception as _e:
+    from backend.logging_config import get_logger
+    get_logger(__name__).error("Failed to register /panel slash command: %s", _e)

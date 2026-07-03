@@ -380,7 +380,7 @@ def _build_snapshot(channels: set, agent_id: str = None,
 
 def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
                      stop_event: threading.Event):
-    """Producer: listen to agent_busy_changed, turn_complete and whatsapp_bridge_status events."""
+    """Producer: listen to agent_busy_changed, turn_complete, whatsapp_bridge_status and panel_updated events."""
     from backend.event_stream import event_stream
 
     def busy_handler(data):
@@ -409,9 +409,15 @@ def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
             'status': data.get('status', ''),
         }))
 
+    def panel_handler(data):
+        ring.put(('panel_updated', {
+            'agent_id': data.get('agent_id', ''),
+        }))
+
     event_stream.on('agent_busy_changed', busy_handler)
     event_stream.on('turn_complete', turn_handler)
     event_stream.on('whatsapp_bridge_status', wa_bridge_handler)
+    event_stream.on('panel_updated', panel_handler)
 
     try:
         while not stop_event.is_set():
@@ -420,6 +426,7 @@ def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
         event_stream.off('agent_busy_changed', busy_handler)
         event_stream.off('turn_complete', turn_handler)
         event_stream.off('whatsapp_bridge_status', wa_bridge_handler)
+        event_stream.off('panel_updated', panel_handler)
 
 
 def _producer_approval(ring: BoundedRing, breaker: CircuitBreaker,

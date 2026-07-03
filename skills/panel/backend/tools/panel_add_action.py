@@ -95,6 +95,11 @@ def execute(agent: dict, args: dict) -> dict:
             params=params_str,
             sort_order=sort_order,
         )
+        try:
+            from backend.event_stream import event_stream
+            event_stream.emit('panel_updated', {'agent_id': agent_id})
+        except Exception:
+            pass
         return {"success": True, "action": action}
     except ValueError as e:
         return {"success": False, "error": str(e)}

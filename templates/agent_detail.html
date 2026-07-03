@@ -1792,6 +1792,28 @@ function showTab(name) {
 
 const _pluginTabCache = new Map();
 
+function setPluginTabHTML(contentEl, html) {
+    contentEl.innerHTML = html;
+    // Scripts inserted via innerHTML never execute — recreate them so they do.
+    contentEl.querySelectorAll('script').forEach(old => {
+        const s = document.createElement('script');
+        for (const a of old.attributes) s.setAttribute(a.name, a.value);
+        s.textContent = old.textContent;
+        old.replaceWith(s);
+    });
+}
+
+function refreshPluginTab(name) {
+    _pluginTabCache.delete(name);
+    const tabEl = document.getElementById('tab-' + name);
+    if (!tabEl || !tabEl.dataset.endpoint) return;
+    delete tabEl.dataset.loaded;
+    if (!tabEl.classList.contains('hidden')) {
+        loadPluginTab(name, tabEl.dataset.endpoint);
+    }
+    // else: showTab() re-fetches on next visit since dataset.loaded is unset
+}
+
 function loadPluginTab(name, endpoint) {
     const loadingEl = document.getElementById('tab-' + name + '-loading');
     const contentEl = document.getElementById('tab-' + name + '-content');
@@ -1801,7 +1823,7 @@ function loadPluginTab(name, endpoint) {
 
     // Check cache first
     if (_pluginTabCache.has(name)) {
-        if (contentEl) contentEl.innerHTML = _pluginTabCache.get(name);
+        if (contentEl) setPluginTabHTML(contentEl, _pluginTabCache.get(name));
         if (loadingEl) loadingEl.classList.add('hidden');
         const tabEl = document.getElementById('tab-' + name);
         if (tabEl) tabEl.dataset.loaded = '1';
@@ -1818,7 +1840,7 @@ function loadPluginTab(name, endpoint) {
         })
         .then(html => {
             _pluginTabCache.set(name, html);
-            if (contentEl) contentEl.innerHTML = html;
+            if (contentEl) setPluginTabHTML(contentEl, html);
             if (loadingEl) loadingEl.classList.add('hidden');
             const tabEl = document.getElementById('tab-' + name);
             if (tabEl) tabEl.dataset.loaded = '1';
@@ -4087,6 +4109,9 @@ document.addEventListener('DOMContentLoaded', function () {
         if (window._evRealtime) {
             window._evRealtime.on('status', 'whatsapp_bridge_status', function (payload) {
                 if (payload && payload.agent_id === AGENT_ID) refreshWABridgeBanner();
+            });
+            window._evRealtime.on('status', 'panel_updated', function (payload) {
+                if (payload && payload.agent_id === AGENT_ID) refreshPluginTab('panel');
             });
         } else if (++bindTries < 10) {
             setTimeout(bindWABridgeRT, 1000);

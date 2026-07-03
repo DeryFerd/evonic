@@ -66,13 +66,18 @@ def parse_command(message: str) -> Optional[Tuple[str, str]]:
     if not message or not message.startswith("/"):
         return None
 
-    # Match /command or /command args (hyphens allowed in command name)
-    match = re.match(r"^/([\w-]+)(?:\s+(.*))?$", message.strip(), re.DOTALL)
+    # Match /command, /command args, or /command:sub args (hyphens allowed
+    # in names; the :sub part becomes the first args token, e.g.
+    # "/panel:build foo" -> ("panel", "build foo"))
+    match = re.match(r"^/([\w-]+)(?::([\w-]+))?(?:\s+(.*))?$", message.strip(), re.DOTALL)
     if not match:
         return None
 
     cmd_name = match.group(1).lower()
-    args = match.group(2) or ""
+    sub = match.group(2)
+    args = match.group(3) or ""
+    if sub:
+        args = f"{sub} {args}".strip()
     return (cmd_name, args)
 
 

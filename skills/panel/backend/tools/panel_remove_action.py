@@ -54,6 +54,11 @@ def execute(agent: dict, args: dict) -> dict:
                 "success": False,
                 "error": f"Action with id {action_id} not found for agent '{agent_id}'.",
             }
+        try:
+            from backend.event_stream import event_stream
+            event_stream.emit('panel_updated', {'agent_id': agent_id})
+        except Exception:
+            pass
         return {"success": True, "action_id": action_id}
     except Exception as e:
         return {"success": False, "error": f"Failed to remove action: {e}"}

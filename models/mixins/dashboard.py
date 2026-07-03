@@ -141,9 +141,10 @@ class DashboardMixin:
             cursor = conn.cursor()
         try:
             cursor.execute("""
-                SELECT COALESCE(model_id, 'default') as model, COUNT(*) as agent_count
-                FROM agents
-                GROUP BY COALESCE(model_id, 'default')
+                SELECT COALESCE(m.name, a.model_id, 'default') as model, COUNT(*) as agent_count
+                FROM agents a
+                LEFT JOIN llm_models m ON m.id = a.model_id
+                GROUP BY COALESCE(m.name, a.model_id, 'default')
                 ORDER BY agent_count DESC
             """)
             return [dict(row) for row in cursor.fetchall()]

@@ -119,6 +119,21 @@ def execute(agent: dict, args: dict) -> dict:
         agent.get('channel_id', '') or '',
     )
 
+    sync = bool(skill_cfg.get('sync', False))
+
+    metadata = {
+        'agent_message': True,
+        'from_agent_id': parent_id,
+        'from_agent_name': parent_name,
+        'agent_message_depth': 1,
+        'subagent_spawn': True,
+        'injected_system_vars': injected_vars,
+        'report_to_id': report_to_id,
+        'report_to_channel_id': report_to_channel_id,
+    }
+    if sync:
+        metadata['skip_auto_forward'] = True
+
     result = notify_agent(
         agent_id=explorer_id,
         tag=f"AGENT/{parent_name}",
@@ -127,16 +142,7 @@ def execute(agent: dict, args: dict) -> dict:
         channel_id=None,
         dedup=False,
         trigger_llm=True,
-        metadata={
-            'agent_message': True,
-            'from_agent_id': parent_id,
-            'from_agent_name': parent_name,
-            'agent_message_depth': 1,
-            'subagent_spawn': True,
-            'injected_system_vars': injected_vars,
-            'report_to_id': report_to_id,
-            'report_to_channel_id': report_to_channel_id,
-        },
+        metadata=metadata,
     )
 
     session_id = result.get('session_id')
@@ -147,7 +153,6 @@ def execute(agent: dict, args: dict) -> dict:
     )
 
     # --- Sync mode: block until the explorer finishes and return findings directly ---
-    sync = bool(skill_cfg.get('sync', False))
     if sync:
         if not result.get('success'):
             return {

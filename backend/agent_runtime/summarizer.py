@@ -99,9 +99,11 @@ You MUST end the summary with a section titled exactly:
 
 In it, list EVERY specific named person, place, organization, venue, product, or brand the user mentioned — even casually, in passing, or as a personal anecdote (a café, a city, a district, a company, a tool). For each, give concrete details AND how it relates to other named entities (located in / works at / visited / owns / part of / uses …). Never drop a named entity as "small talk", and always carry this section forward when updating an existing summary.
 
+IMAGES: if any message contains an image — Markdown `![name](url)` or HTML `<img src="url">` — you MUST carry the image markdown VERBATIM (exact URL, unmodified) onto the line of the entity it depicts. Never summarize an image away as "photos were sent"; downstream systems extract these URLs from the summary to set document thumbnails.
+
 Format example:
 ## Entities & Relationships
-- Djournal Coffee — café in Grand Indonesia, Thamrin, Jakarta; User visited (has an outdoor smoking area)
+- Djournal Coffee — café in Grand Indonesia, Thamrin, Jakarta; User visited (has an outdoor smoking area); photo: ![djournal.jpg](/api/attachments/12/view)
 - Thamrin — district in Jakarta; located_in Jakarta
 - Jakarta — city in Indonesia; User's current location
 

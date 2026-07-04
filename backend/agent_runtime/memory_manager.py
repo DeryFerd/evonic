@@ -124,8 +124,8 @@ How to write a document:
   GOOD: `User jalan-jalan ke [[Jakarta]] makan di [[Ayam Bakar Taliwang Rinjani]] di [[Pesanggrahan]].`
   BAD:  a paragraph with no links, followed by a "Relations:" list of [[...]].
 - LINKING EXCEPTION: do NOT link names mentioned only for disambiguation (e.g. "this is NOT the same as X") or when two people share a name fragment but are different entities. A [[link]] means a real-world relationship exists — partial name overlap is NOT a relationship.
-- If the SOURCE mentions or includes relevant photos/images, embed them inline in the `body` using Markdown: `![brief description](image-url)`. Only include photos that are directly relevant to the document's subject — skip unrelated or generic images.
-- Set `thumbnail` to the subject's single best representative image/photo/logo URL (powers the doc card and graph node). Omit it when there's no good image.
+- IMAGES — MANDATORY to harvest: whenever the SOURCE shows an image for a subject — Markdown `![NAME](URL)` or HTML `<img src="URL" alt="NAME">` — you MUST emit a create/update op for that subject setting its `thumbnail` to that URL. Keep the URL VERBATIM (e.g. `/api/attachments/25/view` — do not rewrite it or drop the leading `/`). The alt/name text tells you which subject the image belongs to. Optionally ALSO embed it inline in the `body` as `![brief description](URL)`. Skip only generic/unrelated images.
+- `thumbnail` is the subject's single best representative image/photo/logo URL (powers the doc card and graph node). Set it on create, and on update when the doc has none yet; one URL only. Omit it only when there's no good image.
 - Choose a `type` for each document from: note, person, place, venue, event, organization, company, product, contact.
 - The user is always referred to as "User".
 
@@ -1558,9 +1558,17 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 logger.error("[MemoryManager] author_docs[%s]: evomem unavailable, "
                              "cannot run sefton filing", agent_id)
                 return
-            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, source_text)
+            # Feed the verbatim recent turns alongside the summary: the summary
+            # is LLM-compacted and loses things like image markdown
+            # (![name](url)), which filing needs to set doc thumbnails.
+            recent_text = _format_recent_messages(recent_messages)
+            feed_text = source_text
+            if recent_text:
+                feed_text = ("RECENT CONVERSATION (latest turns, verbatim):\n"
+                             + recent_text + "\n\nSUMMARY:\n" + source_text)
+            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, feed_text)
             prompt = _AUTHOR_DOCS_PROMPT.format(
-                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
+                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=feed_text)
             data = _kb_llm_json(prompt, llm_lock)
             _save_sefton_last_filing(agent_id, time.time())
             if not isinstance(data, dict):
@@ -1654,9 +1662,17 @@ def _author_docs(agent: dict, session_id: str, source_text: str,
                 logger.error("[MemoryManager] author_docs[%s]: evomem unavailable, "
                              "cannot run non-agentic KB filing", agent_id)
                 return
-            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, source_text)
+            # Feed the verbatim recent turns alongside the summary: the summary
+            # is LLM-compacted and loses things like image markdown
+            # (![name](url)), which filing needs to set doc thumbnails.
+            recent_text = _format_recent_messages(recent_messages)
+            feed_text = source_text
+            if recent_text:
+                feed_text = ("RECENT CONVERSATION (latest turns, verbatim):\n"
+                             + recent_text + "\n\nSUMMARY:\n" + source_text)
+            listing_text, name_to_slug = _kb_doc_lookup_evomem(agent_id, feed_text)
             prompt = _AUTHOR_DOCS_PROMPT.format(
-                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=source_text)
+                guidance=_DEFAULT_KB_GUIDANCE, existing=listing_text, source=feed_text)
             data = _kb_llm_json(prompt, llm_lock)
             # A filing run executed (LLM call made) — start the cooldown window.
             _save_organizer_last_run(agent_id, time.time())

@@ -721,7 +721,9 @@ footer {
     #chat-messages {
         /* Fill all space between header and input bar */
         flex: 1;
-        min-height: 0;
+        /* override the inline min-height:300px so the scroll container can shrink
+           inside a tight chat room instead of overflowing onto the input bar */
+        min-height: 0 !important;
         overflow-y: auto;
         max-height: none;
     }

@@ -1721,6 +1721,10 @@ function toggleChatFullscreenMode() {
         $('#chat-fs-collapse-icon').addClass('hidden');
         // Re-apply height sizing for the non-fullscreen state
         enterChatFullscreen();
+        // Refresh bridge banner because $header.show() above overrides the 'hidden'
+        // class on the WhatsApp banner with an inline display:block, making it
+        // visible even when no channel is disconnected.
+        refreshWABridgeBanner();
     }
 
     requestAnimationFrame(function () {

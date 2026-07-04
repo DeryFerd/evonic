@@ -19,7 +19,6 @@ from backend.tools.super_agent_tools import _sync_skill_tools
 
 # Agent messaging tool IDs (auto-loaded when agent_messaging_enabled)
 AGENT_MESSAGING_TOOL_IDS = frozenset({
-    'send_as_bot',
     'send_agent_message',
     'escalate_to_user',
     'resolve_agent_approval',

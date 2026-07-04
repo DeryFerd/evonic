@@ -11,7 +11,8 @@ Provides:
 Security:
 - Routes use /plugin/panel/ prefix (CSRF-exempt in app.py)
 - Requesting user must be authenticated (session-based)
-- Agent must have run_as_user set before script execution
+- Scripts run as the agent's run_as_user (via sudo), or as the system
+  default user (the server's own process user) when run_as_user is unset
 - Per-agent mutex prevents concurrent script execution
 """
 
@@ -214,10 +215,6 @@ def create_blueprint():
                 user_params = {}
 
             execution_id, err = start_script_execution(agent_id, agent, action, user_params)
-            if err == "no_run_as_user":
-                return jsonify({
-                    "error": "Agent has no run_as_user configured. Script execution requires a run_as_user to be set."
-                }), 400
             if err == "busy":
                 return jsonify({
                     "error": "A script is already running for this agent",
@@ -660,13 +657,13 @@ def start_script_execution(agent_id: str, agent: dict, action: dict,
                            user_params: dict):
     """Start a script action in a background daemon thread.
 
-    Returns (execution_id, err). err is None on success, or one of:
-    "no_run_as_user" — agent has no run_as_user configured;
+    Returns (execution_id, err). err is None on success, or:
     "busy" — a script is already running for this agent.
+
+    If the agent has no run_as_user configured, the script runs as the system
+    default user (the server's own process user), without sudo.
     """
     run_as_user = (agent.get("run_as_user") or "").strip()
-    if not run_as_user:
-        return None, "no_run_as_user"
 
     # Mutual exclusion: per-agent lock, non-blocking
     lock = _get_agent_lock(agent_id)
@@ -709,8 +706,15 @@ def _run_script(agent_id: str, action: dict, user_params: dict,
 
         max_timeout = _get_max_timeout()
 
-        # Build the command — run via sudo -u <run_as_user>
-        cmd = ["sudo", "-E", "-u", run_as_user, "bash", "-s"]
+        # Build the command. With a run_as_user, drop privileges via sudo.
+        # Without one, fall back to the system default user (the server's own
+        # process user) by running bash directly — no sudo.
+        if run_as_user:
+            cmd = ["sudo", "-E", "-u", run_as_user, "bash", "-s"]
+            env = {**os.environ, "HOME": f"/home/{run_as_user}"}
+        else:
+            cmd = ["bash", "-s"]
+            env = {**os.environ}
 
         proc = subprocess.Popen(
             cmd,
@@ -718,7 +722,7 @@ def _run_script(agent_id: str, action: dict, user_params: dict,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            env={**os.environ, "HOME": f"/home/{run_as_user}"},
+            env=env,
         )
 
         # Feed the script content
@@ -915,9 +919,6 @@ def _panel_slash_handler(session_id, agent_id, external_user_id, channel_id, arg
         return f"Agent '{agent_id}' not found."
 
     execution_id, err = start_script_execution(agent_id, agent, action, {})
-    if err == "no_run_as_user":
-        return (f"Cannot run **{action['label']}**: agent has no run_as_user "
-                "configured.")
     if err == "busy":
         return (f"Cannot run **{action['label']}**: a script is already "
                 "running for this agent.")

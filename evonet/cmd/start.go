@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/evonic/evonet/internal/config"
 	"github.com/evonic/evonet/internal/executor"
@@ -37,6 +39,16 @@ func RunStart(args []string) error {
 	workdir := effectiveWorkDir(cfg)
 	exec := executor.New(workdir, *verbose)
 	client := ws.New(cfg, exec)
+
+	// Handle SIGINT/SIGTERM so CTRL+C cleanly stops the client.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[evonet] Received %v, shutting down...", sig)
+		client.Stop()
+	}()
+
 	log.SetFlags(log.Ltime)
 	log.Printf("[evonet] Connecting to %s...", cfg.ServerURL)
 	return client.RunOnce()
@@ -68,6 +80,16 @@ func RunRun(args []string) error {
 	workdir := effectiveWorkDir(cfg)
 	exec := executor.New(workdir, *verbose)
 	client := ws.New(cfg, exec)
+
+	// Handle SIGINT/SIGTERM so CTRL+C cleanly stops the client.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[evonet] Received %v, shutting down...", sig)
+		client.Stop()
+	}()
+
 	log.SetFlags(log.Ltime)
 	log.Printf("[evonet] Starting (auto-reconnect)...")
 	client.Run()

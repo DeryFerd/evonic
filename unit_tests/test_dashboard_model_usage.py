@@ -40,6 +40,16 @@ class _FreshInstallDB(DashboardMixin):
                 model_id TEXT
             )"""
         )
+        self._conn.execute(
+            """CREATE TABLE llm_models (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL
+            )"""
+        )
+        self._conn.executemany(
+            "INSERT INTO llm_models (id, name) VALUES (?, ?)",
+            [('gpt-x', 'GPT-X')],
+        )
         self._conn.executemany(
             "INSERT INTO agents (id, name, model_id) VALUES (?, ?, ?)",
             [('a1', 'A1', 'gpt-x'), ('a2', 'A2', 'gpt-x'), ('a3', 'A3', None)],
@@ -75,7 +85,7 @@ class TestDashboardModelUsageFreshInstall(unittest.TestCase):
         # Must not raise OperationalError: no such column: model
         rows = self.db.get_model_usage()
         usage = {r['model']: r['agent_count'] for r in rows}
-        self.assertEqual(usage, {'gpt-x': 2, 'default': 1})
+        self.assertEqual(usage, {'GPT-X': 2, 'default': 1})
         # Response field name stays 'model' so the dashboard JS contract is intact.
         self.assertIn('model', rows[0])
 

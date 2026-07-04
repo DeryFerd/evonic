@@ -215,11 +215,21 @@ class BackendRegistry:
         workspace = (agent_context or {}).get('workspace') or None
 
         if sandbox_enabled:
-            from backend.tools.lib.backends.docker_backend import DockerBackend
+            try:
+                from config import SANDBOX_BACKEND
+            except ImportError:
+                SANDBOX_BACKEND = 'docker'
             agent_id = (agent_context or {}).get('agent_id', (agent_context or {}).get('id', ''))
             is_subagent = bool((agent_context or {}).get('is_subagent'))
-            backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace,
-                                    is_subagent=is_subagent)
+            if SANDBOX_BACKEND == 'bwrap':
+                from backend.tools.lib.backends.bwrap_backend import BwrapBackend
+                agent_name = (agent_context or {}).get('agent_name') or (agent_context or {}).get('name') or ''
+                backend = BwrapBackend(session_id, workspace=workspace, agent_id=agent_id,
+                                       agent_name=agent_name, is_subagent=is_subagent)
+            else:
+                from backend.tools.lib.backends.docker_backend import DockerBackend
+                backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace,
+                                        is_subagent=is_subagent)
         else:
             from backend.tools.lib.backends.local_backend import LocalBackend
             run_as_user = (agent_context or {}).get('run_as_user') or None

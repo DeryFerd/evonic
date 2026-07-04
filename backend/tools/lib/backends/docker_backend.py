@@ -418,7 +418,9 @@ class DockerBackend(ExecutionBackend):
             return '/workspace' + path[len(effective):]
         return path
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        # on_output (live streaming) is not supported for Docker exec; output is
+        # returned batched. Accepted for API compatibility.
         container_id, err = _get_or_create_container(self._session_id, agent_id=self._agent_id, workspace=self._workspace)
         if err:
             return {'error': err}

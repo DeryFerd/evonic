@@ -34,8 +34,8 @@ class LocalWorkplaceBackend(ExecutionBackend):
         )
         return self._inner
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
-        return self._get_inner().run_bash(script, timeout, env)
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        return self._get_inner().run_bash(script, timeout, env, on_output=on_output)
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
         return self._get_inner().run_python(code, timeout, env)

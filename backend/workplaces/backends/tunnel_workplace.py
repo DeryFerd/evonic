@@ -185,7 +185,9 @@ class TunnelWorkplaceBackend(ExecutionBackend):
     # ExecutionBackend interface
     # -------------------------------------------------------------------------
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        # on_output (live streaming) is not supported over the Evonet relay;
+        # output is returned batched. Accepted for API compatibility.
         params = {'script': script, 'timeout': timeout, 'env': env or {}}
         if self._workspace:
             params['cwd'] = self._workspace

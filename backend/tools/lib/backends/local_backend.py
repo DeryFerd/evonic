@@ -4,8 +4,10 @@ LocalBackend — runs bash and Python directly on the host via subprocess.
 Used when sandbox_enabled=0 in agent_context. No container, no isolation.
 """
 
+import codecs
 import os
 import pwd
+import select
 import subprocess
 import time
 
@@ -99,7 +101,7 @@ class LocalBackend(ExecutionBackend):
                         proc.wait(timeout=2)
                     return None, None, 'timeout'
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
         run_env = dict(os.environ)
         run_env.update(env)
         if self._run_as_user is not None:
@@ -109,6 +111,8 @@ class LocalBackend(ExecutionBackend):
                 run_env['HOME'] = f'/home/{self._run_as_user}'
         t0 = time.time()
         cmd = ['sudo', '-E', '-u', self._run_as_user, 'bash', '-s'] if self._run_as_user is not None else ['bash', '-s']
+        if on_output is not None:
+            return self._run_bash_streaming(cmd, script, timeout, run_env, t0, on_output)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -148,6 +152,116 @@ class LocalBackend(ExecutionBackend):
         return {
             'stdout': truncate(stdout, _MAX_OUTPUT_BYTES),
             'stderr': truncate(stderr, _MAX_OUTPUT_BYTES),
+            'exit_code': proc.returncode,
+            'execution_time': elapsed,
+        }
+
+    def _run_bash_streaming(self, cmd, script, timeout, run_env, t0, on_output) -> dict:
+        """Run bash streaming combined stdout+stderr to on_output as it arrives.
+
+        Uses select() + os.read() so the timeout is enforced even while the
+        process is silent, and partial (newline-less) output is emitted without
+        blocking. Returns the same dict shape as run_bash, with the full
+        captured output in 'stdout' (stderr is merged into stdout while
+        streaming).
+        """
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cwd=self._cwd(), env=run_env, start_new_session=True,
+        )
+        process_tracker.register(self._session_id, proc, proc.pid, kill_method='killpg')
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        chunks = []
+        emitted = 0
+        timed_out = False
+
+        def _push(data: bytes):
+            nonlocal emitted
+            text = decoder.decode(data)
+            if not text:
+                return
+            chunks.append(text)
+            if emitted < _MAX_OUTPUT_BYTES:
+                on_output(text)
+                emitted += len(text)
+
+        try:
+            try:
+                proc.stdin.write(script.encode('utf-8'))
+                proc.stdin.close()
+            except Exception:
+                pass
+
+            deadline = t0 + timeout
+            fd = proc.stdout.fileno()
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    rlist, _, _ = select.select([fd], [], [], min(0.5, remaining))
+                except (ValueError, OSError):
+                    break
+                if rlist:
+                    try:
+                        data = os.read(fd, 65536)
+                    except OSError:
+                        break
+                    if data == b'':
+                        break  # EOF
+                    _push(data)
+                elif proc.poll() is not None:
+                    break
+            # Final drain (EOF or exit): read whatever remains without blocking.
+            while True:
+                try:
+                    rlist, _, _ = select.select([fd], [], [], 0)
+                except (ValueError, OSError):
+                    break
+                if not rlist:
+                    break
+                try:
+                    data = os.read(fd, 65536)
+                except OSError:
+                    break
+                if data == b'':
+                    break
+                _push(data)
+        finally:
+            if timed_out:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            else:
+                try:
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+            process_tracker.unregister(self._session_id)
+
+        elapsed = round(time.time() - t0, 3)
+        output = truncate(''.join(chunks), _MAX_OUTPUT_BYTES)
+        if timed_out:
+            return {
+                'error': f'Execution timed out after {timeout}s',
+                'exit_code': -1,
+                'stdout': output,
+                'stderr': '',
+                'execution_time': elapsed,
+            }
+        return {
+            'stdout': output,
+            'stderr': '',
             'exit_code': proc.returncode,
             'execution_time': elapsed,
         }

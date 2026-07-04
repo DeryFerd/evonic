@@ -814,29 +814,49 @@ def _run_script(agent_id: str, agent: dict, action: dict, user_params: dict,
             "sandbox_enabled": 0,
         }
         backend = registry.get_backend(f"panel-{agent_id}", exec_ctx)
-        result = backend.run_bash(content, timeout=max_timeout, env={})
 
-        # Combine stdout + stderr (or the backend's error message) into a single
-        # output blob for the terminal and the log.
-        parts = []
-        if result.get("stdout"):
-            parts.append(result["stdout"])
-        if result.get("stderr"):
-            parts.append(result["stderr"])
-        if result.get("error"):
-            parts.append(f"\n[{result['error']}]\n")
-        output = "".join(parts)
+        # Stream output live into the buffer as it arrives. Backends that can't
+        # stream (Docker / tunnel) never invoke this — handled below.
+        streamed = {"v": False}
+
+        def _on_output(chunk):
+            streamed["v"] = True
+            with _buffers_lock:
+                b = _execution_buffers.get(execution_id)
+                if b:
+                    b["output_lines"].append(chunk)
+
+        result = backend.run_bash(content, timeout=max_timeout, env={},
+                                  on_output=_on_output)
 
         exit_code = result.get("exit_code")
         status = "completed" if exit_code == 0 else "error"
+        err_msg = result.get("error")
 
         with _buffers_lock:
             buf = _execution_buffers.get(execution_id)
             if buf:
-                if output:
-                    buf["output_lines"].append(output)
+                # Non-streaming backends: append their buffered output now.
+                if not streamed["v"]:
+                    if result.get("stdout"):
+                        buf["output_lines"].append(result["stdout"])
+                    if result.get("stderr"):
+                        buf["output_lines"].append(result["stderr"])
+                # Backend error (timeout / connection lost) is never streamed.
+                if err_msg:
+                    buf["output_lines"].append(f"\n[{err_msg}]\n")
                 buf["status"] = status
                 buf["exit_code"] = exit_code
+
+        # Full output for the SQLite log (always present in the result dict).
+        log_parts = []
+        if result.get("stdout"):
+            log_parts.append(result["stdout"])
+        if result.get("stderr"):
+            log_parts.append(result["stderr"])
+        if err_msg:
+            log_parts.append(f"\n[{err_msg}]\n")
+        log_text = "".join(log_parts)
 
         # Log to SQLite
         try:
@@ -846,7 +866,7 @@ def _run_script(agent_id: str, agent: dict, action: dict, user_params: dict,
                 action_label=action["label"],
                 action_type="script",
                 params_used=json.dumps(user_params) if user_params else None,
-                result=output[-20000:],
+                result=log_text[-20000:],
                 status=status,
             )
         except Exception:

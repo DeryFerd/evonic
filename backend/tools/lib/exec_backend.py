@@ -86,8 +86,15 @@ class ExecutionBackend(ABC):
     """Base class for all execution backends."""
 
     @abstractmethod
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
-        """Execute a bash script. Returns {stdout, stderr, exit_code, execution_time}."""
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        """Execute a bash script. Returns {stdout, stderr, exit_code, execution_time}.
+
+        on_output: optional Callable[[str], None] invoked with incremental
+        output chunks as they arrive (live streaming). The return value is
+        unchanged — the full buffered output is still returned for logging and
+        backward compatibility. Backends that cannot stream ignore it and
+        return batched output as before.
+        """
 
     @abstractmethod
     def run_python(self, code: str, timeout: int, env: dict) -> dict:

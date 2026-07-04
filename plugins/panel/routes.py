@@ -22,7 +22,6 @@ import re
 import threading
 import time
 import uuid
-import subprocess
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session
@@ -424,12 +423,101 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   const termBody = document.getElementById('pnl-term-body');
   const badge = document.getElementById('pnl-badge');
 
-  function termAppend(text, cls) {
+  function termShow() {
     if (termFresh) { termBody.innerHTML = ''; termFresh = false; }
+  }
+
+  function termAppend(text, cls) {
+    termShow();
     const span = document.createElement('span');
     if (cls) span.className = cls;
     span.textContent = text;
     termBody.appendChild(span);
+    termBody.scrollTop = termBody.scrollHeight;
+  }
+
+  // ── ANSI (SGR) color rendering ────────────────────────────────────
+  const ANSI_16 = [
+    '#1e293b','#f87171','#34d399','#fbbf24','#60a5fa','#c084fc','#22d3ee','#e5e7eb',
+    '#94a3b8','#fca5a5','#86efac','#fde047','#93c5fd','#d8b4fe','#67e8f9','#ffffff'
+  ];
+  let ansi = null;
+  function ansiReset() { ansi = { fg:null, bg:null, bold:false, dim:false, italic:false, underline:false, inverse:false }; }
+  ansiReset();
+
+  function ansiStyle() {
+    let fg = ansi.fg, bg = ansi.bg;
+    if (ansi.inverse) { const t = fg || '#e2e8f0'; fg = bg || '#0f172a'; bg = t; }
+    let s = '';
+    if (fg) s += 'color:' + fg + ';';
+    if (bg) s += 'background:' + bg + ';';
+    if (ansi.bold) s += 'font-weight:700;';
+    if (ansi.dim) s += 'opacity:.7;';
+    if (ansi.italic) s += 'font-style:italic;';
+    if (ansi.underline) s += 'text-decoration:underline;';
+    return s;
+  }
+
+  function xterm256(n) {
+    n = n | 0;
+    if (n < 16) return ANSI_16[n];
+    if (n >= 232) { const v = 8 + (n - 232) * 10; return 'rgb(' + v + ',' + v + ',' + v + ')'; }
+    n -= 16;
+    const conv = function(x) { return x === 0 ? 0 : 55 + x * 40; };
+    return 'rgb(' + conv(Math.floor(n / 36)) + ',' + conv(Math.floor((n % 36) / 6)) + ',' + conv(n % 6) + ')';
+  }
+
+  function ansiApplySgr(codes) {
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) ansiReset();
+      else if (c === 1) ansi.bold = true;
+      else if (c === 2) ansi.dim = true;
+      else if (c === 3) ansi.italic = true;
+      else if (c === 4) ansi.underline = true;
+      else if (c === 7) ansi.inverse = true;
+      else if (c === 22) { ansi.bold = false; ansi.dim = false; }
+      else if (c === 23) ansi.italic = false;
+      else if (c === 24) ansi.underline = false;
+      else if (c === 27) ansi.inverse = false;
+      else if (c === 39) ansi.fg = null;
+      else if (c === 49) ansi.bg = null;
+      else if (c >= 30 && c <= 37) ansi.fg = ANSI_16[c - 30];
+      else if (c >= 90 && c <= 97) ansi.fg = ANSI_16[c - 90 + 8];
+      else if (c >= 40 && c <= 47) ansi.bg = ANSI_16[c - 40];
+      else if (c >= 100 && c <= 107) ansi.bg = ANSI_16[c - 100 + 8];
+      else if (c === 38 || c === 48) {
+        const isFg = c === 38, mode = codes[i + 1];
+        if (mode === 5) { const col = xterm256(codes[i + 2]); if (isFg) ansi.fg = col; else ansi.bg = col; i += 2; }
+        else if (mode === 2) { const col = 'rgb(' + (codes[i+2]||0) + ',' + (codes[i+3]||0) + ',' + (codes[i+4]||0) + ')'; if (isFg) ansi.fg = col; else ansi.bg = col; i += 4; }
+      }
+    }
+  }
+
+  const ANSI_RE = /\\x1b\\[([0-9;]*)([A-Za-z])/g;
+  function ansiAppend(text) {
+    termShow();
+    ANSI_RE.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let last = 0, m;
+    const emit = function(str) {
+      if (!str) return;
+      const span = document.createElement('span');
+      const st = ansiStyle();
+      if (st) span.setAttribute('style', st);
+      span.textContent = str;
+      frag.appendChild(span);
+    };
+    while ((m = ANSI_RE.exec(text)) !== null) {
+      emit(text.slice(last, m.index));
+      last = ANSI_RE.lastIndex;
+      if (m[2] === 'm') {
+        const codes = m[1] === '' ? [0] : m[1].split(';').map(function(x) { return parseInt(x, 10) || 0; });
+        ansiApplySgr(codes);
+      }
+    }
+    emit(text.slice(last));
+    termBody.appendChild(frag);
     termBody.scrollTop = termBody.scrollHeight;
   }
 
@@ -468,6 +556,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     clearBtn.addEventListener('click', function() {
       termBody.innerHTML = '<span class="pnl-muted"># Ready — click a button to run it.</span>';
       termFresh = true;
+      ansiReset();
       setBadge('idle', 'idle');
     });
   }
@@ -544,6 +633,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     const label = action ? action.label : ('action ' + actionId);
 
     setButtonsDisabled(true);
+    ansiReset();
     termAppend('\\n$ ' + label + '\\n', 'pnl-cmd');
     setBadge('running', 'running');
 
@@ -607,7 +697,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
         const data = await resp.json();
 
         if (data.output_lines && data.output_lines.length > seenLines) {
-          termAppend(data.output_lines.slice(seenLines).join(''));
+          ansiAppend(data.output_lines.slice(seenLines).join(''));
           seenLines = data.output_lines.length;
         }
 
@@ -660,11 +750,11 @@ def start_script_execution(agent_id: str, agent: dict, action: dict,
     Returns (execution_id, err). err is None on success, or:
     "busy" — a script is already running for this agent.
 
-    If the agent has no run_as_user configured, the script runs as the system
-    default user (the server's own process user), without sudo.
+    The script runs in the agent's environment via the shared execution
+    backend: its workplace (local host, remote SSH, or tunnel) when one is
+    assigned, otherwise the local host — using run_as_user when set, or the
+    system default user (the server's own process user) when unset.
     """
-    run_as_user = (agent.get("run_as_user") or "").strip()
-
     # Mutual exclusion: per-agent lock, non-blocking
     lock = _get_agent_lock(agent_id)
     if not lock.acquire(blocking=False):
@@ -681,7 +771,7 @@ def start_script_execution(agent_id: str, agent: dict, action: dict,
 
     thread = threading.Thread(
         target=_run_script,
-        args=(agent_id, action, user_params, execution_id, run_as_user, lock),
+        args=(agent_id, agent, action, user_params, execution_id, lock),
         daemon=True,
     )
     thread.start()
@@ -689,13 +779,16 @@ def start_script_execution(agent_id: str, agent: dict, action: dict,
     return execution_id, None
 
 
-def _run_script(agent_id: str, action: dict, user_params: dict,
-                execution_id: str, run_as_user: str, lock: threading.Lock):
+def _run_script(agent_id: str, agent: dict, action: dict, user_params: dict,
+                execution_id: str, lock: threading.Lock):
     """
     Execute a script action in a background daemon thread.
 
-    Captures stdout/stderr line-by-line and stores in the in-memory buffer.
-    Logs the result to SQLite upon completion.
+    Runs the script through the shared execution backend so it lands in the
+    agent's environment — its workplace (local host, remote SSH, or tunnel)
+    when assigned, otherwise the local host (honoring run_as_user). The backend
+    returns buffered output, which is stored in the in-memory buffer for polling
+    and logged to SQLite upon completion.
     """
     try:
         content = action.get("content", "")
@@ -706,95 +799,42 @@ def _run_script(agent_id: str, action: dict, user_params: dict,
 
         max_timeout = _get_max_timeout()
 
-        # Build the command. With a run_as_user, drop privileges via sudo.
-        # Without one, fall back to the system default user (the server's own
-        # process user) by running bash directly — no sudo.
-        if run_as_user:
-            cmd = ["sudo", "-E", "-u", run_as_user, "bash", "-s"]
-            env = {**os.environ, "HOME": f"/home/{run_as_user}"}
-        else:
-            cmd = ["bash", "-s"]
-            env = {**os.environ}
+        # Resolve the execution backend from the agent's environment. When a
+        # workplace is assigned this dispatches to local / remote-SSH / tunnel
+        # automatically; otherwise it runs on the local host, honoring
+        # run_as_user. Panel is an ops surface, so we never route to an
+        # ephemeral Docker sandbox (sandbox_enabled=0).
+        from backend.tools.lib.exec_backend import registry
+        exec_ctx = {
+            "id": agent_id,
+            "agent_id": agent_id,
+            "workplace_id": agent.get("workplace_id"),
+            "workspace": agent.get("workspace"),
+            "run_as_user": (agent.get("run_as_user") or "").strip() or None,
+            "sandbox_enabled": 0,
+        }
+        backend = registry.get_backend(f"panel-{agent_id}", exec_ctx)
+        result = backend.run_bash(content, timeout=max_timeout, env={})
 
-        proc = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            env=env,
-        )
+        # Combine stdout + stderr (or the backend's error message) into a single
+        # output blob for the terminal and the log.
+        parts = []
+        if result.get("stdout"):
+            parts.append(result["stdout"])
+        if result.get("stderr"):
+            parts.append(result["stderr"])
+        if result.get("error"):
+            parts.append(f"\n[{result['error']}]\n")
+        output = "".join(parts)
 
-        # Feed the script content
-        proc.stdin.write(content)
-        proc.stdin.close()
-
-        # Read output line-by-line with timeout
-        start_time = time.time()
-        output_lines = []
-
-        try:
-            while True:
-                elapsed = time.time() - start_time
-                if elapsed >= max_timeout:
-                    proc.kill()
-                    output_lines.append(f"\n[Script terminated after {max_timeout}s timeout]\n")
-                    break
-
-                # Use a short timeout so we can check the overall timeout
-                line = None
-                try:
-                    line = proc.stdout.readline()
-                except Exception:
-                    break
-
-                if not line:
-                    # Check if process has finished
-                    if proc.poll() is not None:
-                        break
-                    # No output yet, wait a bit
-                    time.sleep(0.05)
-                    continue
-
-                output_lines.append(line)
-
-                # Update the in-memory buffer for polling
-                with _buffers_lock:
-                    buf = _execution_buffers.get(execution_id)
-                    if buf:
-                        buf["output_lines"].append(line)
-
-        except Exception:
-            pass
-
-        # Wait for process to finish (with remaining timeout)
-        try:
-            remaining = max_timeout - (time.time() - start_time)
-            if remaining > 0:
-                proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            output_lines.append("\n[Script terminated after timeout]\n")
-
-        exit_code = proc.returncode
-
-        # Read any remaining output
-        try:
-            for line in proc.stdout:
-                output_lines.append(line)
-                with _buffers_lock:
-                    buf = _execution_buffers.get(execution_id)
-                    if buf:
-                        buf["output_lines"].append(line)
-        except Exception:
-            pass
-
-        # Update buffer status
+        exit_code = result.get("exit_code")
         status = "completed" if exit_code == 0 else "error"
+
         with _buffers_lock:
             buf = _execution_buffers.get(execution_id)
             if buf:
+                if output:
+                    buf["output_lines"].append(output)
                 buf["status"] = status
                 buf["exit_code"] = exit_code
 
@@ -806,7 +846,7 @@ def _run_script(agent_id: str, action: dict, user_params: dict,
                 action_label=action["label"],
                 action_type="script",
                 params_used=json.dumps(user_params) if user_params else None,
-                result="".join(output_lines[-500:]),  # Last 500 lines
+                result=output[-20000:],
                 status=status,
             )
         except Exception:

@@ -387,7 +387,7 @@ def run_setup(
             os.environ["SECRET_KEY"] = _key
 
         # 1. Create model in DB as default
-        model_id = f"setup_{provider}"
+        model_id = db.generate_model_id(provider, model_name)
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
             model_api_format = "ollama"
@@ -581,7 +581,6 @@ def run_reconfigure(
 
     try:
         # 1. Update or create model in DB as default
-        model_id = f"setup_{provider}"
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
             model_api_format = "ollama"
@@ -590,7 +589,6 @@ def run_reconfigure(
             model_api_format = provider_cfg.get("api_format", "openai")
             model_type = provider_cfg["type"]
         model_data = {
-            "id": model_id,
             "name": f"{provider_cfg['label']} ({model_name})",
             "type": model_type,
             "provider": provider,
@@ -601,10 +599,13 @@ def run_reconfigure(
             "enabled": 1,
             "api_format": model_api_format,
         }
-        existing_model = db.get_model_by_id(model_id)
+        # Look up by new-format id first, then the legacy setup_<provider> id
+        existing_model = db.get_model_by_id(
+            f"{provider}/{model_name}"
+        ) or db.get_model_by_id(f"setup_{provider}")
         if existing_model:
             # Update preserves the user's manual thinking toggle
-            db.update_model(model_id, model_data)
+            db.update_model(existing_model["id"], model_data)
         else:
             model_data["thinking"] = 1 if provider_cfg.get("default_thinking") else 0
             db.create_model(model_data)

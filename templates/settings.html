@@ -2755,7 +2755,7 @@ block content %}
         try {
             let response;
             if (modelId) {
-                response = await fetch("/api/models/" + modelId, {
+                response = await fetch("/api/models/" + encodeURIComponent(modelId), {
                     method: "PUT",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify(modelData),
@@ -2784,7 +2784,7 @@ block content %}
     async function setDefaultModel(modelId) {
         try {
             const response = await fetch(
-                "/api/models/" + modelId + "/set-default",
+                "/api/models/" + encodeURIComponent(modelId) + "/set-default",
                 {
                     method: "POST",
                 },
@@ -2804,7 +2804,7 @@ block content %}
         if (!confirm("Are you sure you want to delete this model?")) return;
 
         try {
-            const response = await fetch("/api/models/" + modelId, {
+            const response = await fetch("/api/models/" + encodeURIComponent(modelId), {
                 method: "DELETE",
             });
             const result = await response.json();
@@ -2820,7 +2820,7 @@ block content %}
 
     async function cloneModel(modelId) {
         try {
-            const response = await fetch("/api/models/" + modelId + "/clone", {
+            const response = await fetch("/api/models/" + encodeURIComponent(modelId) + "/clone", {
                 method: "POST",
             });
             const result = await response.json();
@@ -2922,7 +2922,7 @@ block content %}
         if (window.toast) toast.show("Testing model connection\u2026", "info", 2000);
 
         try {
-            const response = await fetch("/api/models/" + modelId + "/test", {
+            const response = await fetch("/api/models/" + encodeURIComponent(modelId) + "/test", {
                 method: "POST",
             });
             const result = await response.json();

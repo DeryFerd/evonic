@@ -741,6 +741,7 @@ def api_task_classifier():
             model = db.get_model_by_id(model_id)
             if not model:
                 return jsonify({'success': False, 'error': 'Model not found'}), 404
+            model_id = model['id']  # canonicalize legacy ids
         db.set_setting('task_classifier_enabled', enabled)
         db.set_setting('task_classifier_model_id', model_id)
         old_enabled = db.get_setting('task_classifier_enabled', default_enabled)
@@ -789,9 +790,9 @@ def api_set_default_model():
         old_id = old_model.get('id', '') if old_model else ''
         with db._connect() as conn:
             conn.execute("UPDATE llm_models SET is_default = 0")
-            conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
+            conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model['id'],))
             conn.commit()
-        _audit_setting_change('default_model', old_id, model_id)
+        _audit_setting_change('default_model', old_id, model['id'])
         return jsonify({'success': True, 'model': _sanitize_model(db.get_default_model())})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -967,9 +968,9 @@ def api_batch_save():
             if model:
                 with db._connect() as conn:
                     conn.execute("UPDATE llm_models SET is_default = 0")
-                    conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
+                    conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model['id'],))
                     conn.commit()
-                results['default_model_id'] = model_id
+                results['default_model_id'] = model['id']
             else:
                 errors.append('default_model_id: Model not found')
 
@@ -979,8 +980,8 @@ def api_batch_save():
         if vision_model_id:
             model = db.get_model_by_id(vision_model_id)
             if model and model.get('vision_supported'):
-                db.set_setting('vision_model_id', vision_model_id)
-                results['vision_model_id'] = vision_model_id
+                db.set_setting('vision_model_id', model['id'])
+                results['vision_model_id'] = model['id']
             elif model:
                 errors.append('vision_model_id: Model does not support vision')
             else:
@@ -996,8 +997,8 @@ def api_batch_save():
         if kb_organizer_model_id:
             model = db.get_model_by_id(kb_organizer_model_id)
             if model:
-                db.set_setting('kb_organizer_model_id', kb_organizer_model_id)
-                results['kb_organizer_model_id'] = kb_organizer_model_id
+                db.set_setting('kb_organizer_model_id', model['id'])
+                results['kb_organizer_model_id'] = model['id']
             else:
                 errors.append('kb_organizer_model_id: Model not found')
         else:

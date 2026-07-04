@@ -733,6 +733,17 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add legacy_id column to llm_models if missing
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN legacy_id TEXT")
+            except sqlite3.OperationalError:
+                pass
+
+            # One-shot migration: rewrite model ids to 'provider/model_name'
+            # format (v2). Old ids are kept in legacy_id so stale references
+            # still resolve via get_model_by_id. Guarded by a marker so later
+            # provider/model_name edits never re-rename ids.
+            self._migrate_model_ids_v2(cursor)
 
             # ==================== Attachments Table ====================
             cursor.execute("""
@@ -1025,6 +1036,67 @@ class SchemaMixin:
 
         # Populate session_index from per-agent chat DBs (idempotent one-time migration)
         self._populate_session_index()
+
+    def _migrate_model_ids_v2(self, cursor):
+        """One-shot rename of llm_models ids to 'provider/model_name' format.
+
+        Cascades to agents model columns and app_settings model-id keys.
+        Old ids are preserved in llm_models.legacy_id. Guarded by the
+        app_settings marker 'model_id_format' = 'v2'.
+        """
+        cursor.execute("SELECT value FROM app_settings WHERE key = 'model_id_format'")
+        row = cursor.fetchone()
+        if row and row[0] == 'v2':
+            return
+
+        cursor.execute("SELECT id, provider, model_name FROM llm_models")
+        rows = cursor.fetchall()
+        all_old_ids = {r[0] for r in rows}
+        used = set()
+        renames = []
+        # Pass 1: rows already in final form keep their id (reserve it)
+        for old_id, provider, model_name in rows:
+            if old_id == f"{provider or 'custom'}/{model_name or ''}".rstrip('/'):
+                used.add(old_id)
+        # Pass 2: assign new ids, avoiding reserved/assigned ids AND other
+        # rows' current ids (SQLite checks the PK per UPDATE statement)
+        for old_id, provider, model_name in rows:
+            base = f"{provider or 'custom'}/{model_name or ''}".rstrip('/')
+            if old_id == base:
+                continue
+            candidate, n = base, 2
+            while candidate in used or candidate in (all_old_ids - {old_id}):
+                candidate = f"{base}-{n}"
+                n += 1
+            used.add(candidate)
+            renames.append((old_id, candidate))
+
+        for old_id, new_id in renames:
+            cursor.execute(
+                "UPDATE llm_models SET id = ?, legacy_id = ? WHERE id = ?",
+                (new_id, old_id, old_id),
+            )
+            for col in ("model_id", "fallback_model_id", "vision_model_id", "default_model_id"):
+                try:
+                    cursor.execute(
+                        f"UPDATE agents SET {col} = ? WHERE {col} = ?",
+                        (new_id, old_id),
+                    )
+                except sqlite3.OperationalError:
+                    pass  # legacy column may have been dropped
+            for key in ("vision_model_id", "kb_organizer_model_id",
+                        "task_classifier_model_id", "audio_model_id"):
+                cursor.execute(
+                    "UPDATE app_settings SET value = ? WHERE key = ? AND value = ?",
+                    (new_id, key, old_id),
+                )
+
+        cursor.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('model_id_format', 'v2') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        # Raw SQL above bypasses set_setting's cache invalidation
+        self.invalidate_settings_cache()
 
     def _populate_session_index(self):
         """One-time migration: populate session_index from all per-agent chat DBs.

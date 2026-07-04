@@ -1048,6 +1048,36 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
     if run_as_user and not agent.get('sandbox_enabled'):
         prompt += f"\n\nYou are run as the **{run_as_user}** user."
 
+    # Bwrap sandbox awareness: agents executing inside a bubblewrap sandbox
+    # (bwrap workplace, or global SANDBOX_BACKEND=bwrap) need to know its rules.
+    _bwrap_active = False
+    _wp_id = agent.get('workplace_id')
+    if _wp_id:
+        try:
+            _wp = db.get_workplace(_wp_id)
+            _bwrap_active = bool(_wp and _wp.get('type') == 'bwrap')
+        except Exception:
+            pass
+    elif agent.get('sandbox_enabled'):
+        try:
+            from config import SANDBOX_BACKEND
+            _bwrap_active = SANDBOX_BACKEND == 'bwrap'
+        except ImportError:
+            pass
+    if _bwrap_active:
+        prompt += (
+            "\n\n## Sandbox Environment\n"
+            "You run inside a lightweight Linux sandbox (bubblewrap):\n"
+            "- No root/sudo — the OS filesystem is read-only. Install tools into your "
+            "home instead (`pip install --user`, `npm --prefix ~/…`, or binaries in `~/bin`); "
+            "your home persists.\n"
+            "- Work in `/workspace` (visible to file tools) or `~` (`/home/agent`). "
+            "Files under `/tmp` are invisible to file tools.\n"
+            "- Background processes (servers, tunnels, tmux) keep running between "
+            "commands, but die when the platform restarts.\n"
+            "- `ping` may be unavailable (no raw sockets) — use `curl` to test connectivity."
+        )
+
     # Dynamic enabled-agent roster for super agents.
     # Injects a lightweight list of enabled agents (id, name, description) so the
     # super agent can quickly identify targets for delegation via send_agent_message.

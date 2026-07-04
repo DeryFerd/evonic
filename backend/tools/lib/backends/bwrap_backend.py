@@ -1,31 +1,52 @@
 """
 BwrapBackend — lightweight per-agent sandbox via bubblewrap (bwrap).
 
-Used when sandbox_enabled=1 and SANDBOX_BACKEND=bwrap. Linux-only.
+Used when sandbox_enabled=1 and SANDBOX_BACKEND=bwrap, or for 'bwrap'
+workplaces. Linux-only.
 
-Each command runs in a fresh bubblewrap namespace sandbox: the host rootfs
-is mounted read-only, the agent workspace is bound rw at /workspace, and a
-persistent home lives at /home/agent (backed by <workspace>/.home on the
-host). The agent gets its own hostname (UTS ns), PID namespace, IPC
+Persistent-sandbox model: a long-lived **keeper** process
+(`bwrap … sleep infinity`) per session holds the mount/PID/UTS/IPC/user
+namespaces; every command joins those namespaces via unprivileged nsenter
+(valid because the user namespace is owned by the same uid). The host
+rootfs is mounted read-only, the agent workspace is bound rw at
+/workspace, and a persistent home lives at /home/agent (backed by
+<workspace>/.home on the host). The agent gets its own hostname, PID
 namespace, and a private tmpfs /tmp — it "feels like its own OS" with
-near-zero overhead: no daemon, no image, no standing container process.
+near-zero overhead: no daemon, no image, just one sleeping process.
 
-Stateless process model: one bwrap invocation per run_bash/run_python.
-State persists only via the workspace/home directories on disk. Documented
-limitation: background processes do NOT survive between calls — when the
-sandbox's PID-namespace init exits, the kernel kills every process in the
-namespace, so tmux/screen/nohup workflows will not persist.
+Persistence guarantees while the keeper lives:
+- Background processes (web servers, tunnels) reparent to bwrap's init
+  and survive between commands.
+- /tmp is a single tmpfs for the keeper's lifetime, so tmux/screen
+  sockets persist and the long_running_guard tmux workflow works.
+
+Lifecycle:
+- Session-keyed keepers are destroyed after SANDBOX_IDLE_TIMEOUT of
+  inactivity (like Docker containers).
+- Workplace keepers (session ids starting with 'workplace-bwrap-') are
+  exempt from idle reaping — they live until the workplace is
+  disconnected or the server exits.
+- --die-with-parent ties every keeper (and its daemons) to the Evonic
+  server process: a server restart tears down all sandboxes; no orphan
+  processes are possible.
 
 If unprivileged user namespaces are disabled on the host, bwrap fails with
 a uid-map error; check `sysctl kernel.unprivileged_userns_clone` (Debian)
 or `kernel.apparmor_restrict_unprivileged_userns` (Ubuntu 24.04+).
 """
 
+import atexit
+import json
+import logging
 import os
 import re
+import select
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 from backend.tools.lib.exec_backend import truncate
@@ -33,11 +54,19 @@ from backend.tools.lib.process_tracker import process_tracker
 from backend.tools.lib.backends.local_backend import LocalBackend, _MAX_OUTPUT_BYTES
 
 try:
-    from config import SANDBOX_WORKSPACE, SANDBOX_NETWORK, SANDBOX_BWRAP_ULIMIT_V_MB
+    from config import (
+        SANDBOX_WORKSPACE,
+        SANDBOX_NETWORK,
+        SANDBOX_BWRAP_ULIMIT_V_MB,
+        SANDBOX_IDLE_TIMEOUT,
+    )
 except ImportError:
     SANDBOX_WORKSPACE = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
     SANDBOX_NETWORK = 'bridge'
     SANDBOX_BWRAP_ULIMIT_V_MB = 0
+    SANDBOX_IDLE_TIMEOUT = 1800
+
+logger = logging.getLogger(__name__)
 
 # Directory containing the evonic helper package (bound into the sandbox).
 _HELPERS_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', '..', 'runpy_helpers'))
@@ -75,6 +104,9 @@ def _availability_error() -> str:
     if shutil.which('bwrap') is None:
         return ('bubblewrap is not installed. Install it with: sudo apt install bubblewrap '
                 '(Debian/Ubuntu) — or set SANDBOX_BACKEND=docker.')
+    if shutil.which('nsenter') is None:
+        return ('nsenter (util-linux) is required for the persistent bwrap sandbox. '
+                'Install util-linux — or set SANDBOX_BACKEND=docker.')
     return None
 
 
@@ -83,8 +115,177 @@ def _sanitize_hostname(name: str) -> str:
     return h or 'agent'
 
 
+# ---------------------------------------------------------------------------
+# Module-level keeper pool (shared across all BwrapBackend instances —
+# the registry constructs a fresh instance per tool call, so keeper state
+# must not live on the instance)
+# ---------------------------------------------------------------------------
+
+_WORKPLACE_PREFIX = 'workplace-bwrap-'   # exempt from idle reaping
+_KEEPER_SPAWN_TIMEOUT = 10.0             # seconds to wait for the child-pid JSON line
+
+_keepers: dict = {}   # session_id -> {proc, inner_pid, status_fd, created_at, last_used, workspace, hostname}
+_pool_lock = threading.Lock()
+_reaper_thread: threading.Thread = None
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _keeper_alive(info: dict) -> bool:
+    return info['proc'].poll() is None and _pid_alive(info['inner_pid'])
+
+
+def _stale_sessions(now: float) -> list:
+    """Session ids whose keeper is idle past the timeout (workplaces exempt)."""
+    deadline = now - SANDBOX_IDLE_TIMEOUT
+    with _pool_lock:
+        return [sid for sid, info in _keepers.items()
+                if not sid.startswith(_WORKPLACE_PREFIX) and info['last_used'] < deadline]
+
+
+def _destroy_keeper(session_id: str) -> dict:
+    with _pool_lock:
+        info = _keepers.pop(session_id, None)
+    if info is None:
+        return {'result': 'no_keeper', 'detail': 'No active sandbox for this session.'}
+    proc = info['proc']
+    try:
+        # Killing bwrap kills the namespace init (PID 1), and the kernel then
+        # kills every process in the namespace — daemons included.
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=2)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        os.close(info['status_fd'])
+    except OSError:
+        pass
+    return {'result': 'sandbox_destroyed',
+            'detail': 'bwrap keeper and all sandbox processes terminated.'}
+
+
+def _ensure_reaper_running() -> None:
+    global _reaper_thread
+    with _pool_lock:
+        if _reaper_thread is not None and _reaper_thread.is_alive():
+            return
+    t = threading.Thread(target=_reaper_loop, daemon=True, name='bwrap-backend-reaper')
+    t.start()
+    with _pool_lock:
+        _reaper_thread = t
+
+
+def _reaper_loop() -> None:
+    while True:
+        time.sleep(60)
+        try:
+            for sid in _stale_sessions(time.time()):
+                logger.info(f'Idle timeout — destroying bwrap keeper for session {sid[:12]}')
+                _destroy_keeper(sid)
+        except Exception:
+            logger.error('bwrap reaper loop error', exc_info=True)
+
+
+@atexit.register
+def _cleanup_all() -> None:
+    with _pool_lock:
+        sids = list(_keepers.keys())
+    for sid in sids:
+        _destroy_keeper(sid)
+
+
+def get_pool_status() -> dict:
+    """Return current keeper pool state for monitoring/debugging."""
+    with _pool_lock:
+        keepers = [{
+            'session_id': sid[:24],
+            'inner_pid': info['inner_pid'],
+            'alive': _keeper_alive(info),
+            'created_at': info['created_at'],
+            'last_used': info['last_used'],
+            'workspace': info.get('workspace'),
+            'hostname': info.get('hostname'),
+        } for sid, info in _keepers.items()]
+    return {'pool_size': len(keepers), 'idle_timeout': SANDBOX_IDLE_TIMEOUT, 'keepers': keepers}
+
+
+def _read_child_pid(fd: int, proc, timeout: float = _KEEPER_SPAWN_TIMEOUT):
+    """Read JSON lines from bwrap's --json-status-fd until {"child-pid": N} appears.
+
+    Returns the host PID of the sandboxed command, or None on
+    timeout/EOF/bwrap death.
+    """
+    deadline = time.time() + timeout
+    buf = b''
+    while time.time() < deadline:
+        try:
+            rlist, _, _ = select.select([fd], [], [], 0.5)
+        except (ValueError, OSError):
+            return None
+        if not rlist:
+            if proc is not None and proc.poll() is not None:
+                return None            # bwrap died before reporting
+            continue
+        try:
+            chunk = os.read(fd, 4096)
+        except OSError:
+            return None
+        if chunk == b'':
+            return None                # EOF without a child-pid line
+        buf += chunk
+        for line in buf.split(b'\n'):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            if 'child-pid' in obj:
+                return int(obj['child-pid'])
+    return None
+
+
+def _nsenter_argv(inner_pid: int, workdir: str, inner: list, ulimit_v_kb: int = 0) -> list:
+    """Build the command that joins the keeper's namespaces and runs *inner*.
+
+    util-linux 2.37 (Ubuntu 22.04) has no `nsenter --wd`, and entering the
+    mount namespace resets the cwd to /, so the workdir is set by a bash
+    trampoline. nsenter -p makes the forked child enter the PID namespace;
+    zombies inside the sandbox are reaped by bwrap's init.
+    """
+    setup = f'cd {shlex.quote(workdir)} || exit 127'
+    if ulimit_v_kb > 0:
+        setup += f'; ulimit -v {ulimit_v_kb} 2>/dev/null'
+    return ['nsenter', '--preserve-credentials', '-U', '-m', '-u', '-i', '-p',
+            '-t', str(inner_pid), '--',
+            'bash', '-c', f'{setup}; exec "$@"', 'evonic-exec'] + inner
+
+
+_KEEPER_GONE_PHRASES = ('no such process', 'cannot open /proc')
+
+
+def _is_keeper_gone(result: dict) -> bool:
+    """Detect nsenter failures caused by the keeper having died."""
+    if 'error' not in result and result.get('exit_code', 0) == 0:
+        return False
+    combined = (result.get('stderr', '') + result.get('stdout', '')
+                + result.get('error', '')).lower()
+    return 'nsenter:' in combined and any(p in combined for p in _KEEPER_GONE_PHRASES)
+
+
 class BwrapBackend(LocalBackend):
-    """Executes bash/python inside a fresh bubblewrap namespace sandbox.
+    """Executes bash/python inside a persistent bubblewrap namespace sandbox.
 
     Subclasses LocalBackend (with run_as_user=None) to reuse its
     _poll_proc / _run_bash_streaming machinery and its host-side (non-sudo)
@@ -143,7 +344,6 @@ class BwrapBackend(LocalBackend):
             '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--unshare-user',
             '--hostname', self._hostname,
             '--die-with-parent',
-            '--chdir', '/workspace/.scratch' if self._is_subagent else '/workspace',
         ]
         if SANDBOX_NETWORK == 'none':
             argv += ['--unshare-net']
@@ -172,6 +372,93 @@ class BwrapBackend(LocalBackend):
         if SANDBOX_BWRAP_ULIMIT_V_MB > 0:
             prefix = f'ulimit -v {SANDBOX_BWRAP_ULIMIT_V_MB * 1024} 2>/dev/null\n' + prefix
         return prefix
+
+    def _workdir(self) -> str:
+        # Sub-agents run with cwd = /workspace/.scratch so their relative-path
+        # writes stay out of the project root.
+        return '/workspace/.scratch' if self._is_subagent else '/workspace'
+
+    # ------------------------------------------------------------------
+    # Keeper lifecycle
+    # ------------------------------------------------------------------
+
+    def _spawn_keeper(self):
+        """Start `bwrap … --json-status-fd W sleep infinity`.
+
+        Returns (info_dict, None) on success or (None, error_message).
+        """
+        self._ensure_dirs()
+        r_fd, w_fd = os.pipe()
+        cmd = self._bwrap_argv() + ['--json-status-fd', str(w_fd), 'sleep', 'infinity']
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True,
+                env=self._base_env({}),
+                pass_fds=(w_fd,), start_new_session=True,
+            )
+        except OSError as e:
+            os.close(r_fd)
+            os.close(w_fd)
+            return None, f'Failed to start bwrap keeper: {e}'
+        os.close(w_fd)  # our copy; bwrap holds its own
+        inner_pid = _read_child_pid(r_fd, proc)
+        if inner_pid is None:
+            stderr = ''
+            if proc.poll() is not None:
+                try:
+                    stderr = (proc.stderr.read() or '').strip()
+                except Exception:
+                    pass
+            try:
+                os.close(r_fd)
+            except OSError:
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            msg = f'bwrap keeper failed to start: {stderr or "no child-pid reported"}'
+            if 'bwrap:' in stderr:
+                msg += _USERNS_HINT
+            return None, msg
+        now = time.time()
+        # Keep r_fd open in the pool entry (closed in _destroy_keeper) so
+        # bwrap never hits a broken pipe when writing its exit-status line.
+        return {'proc': proc, 'inner_pid': inner_pid, 'status_fd': r_fd,
+                'created_at': now, 'last_used': now,
+                'workspace': self._cwd(), 'hostname': self._hostname}, None
+
+    def _get_or_create_keeper(self):
+        """Return (inner_pid, None) or (None, error_message)."""
+        ws = self._cwd()
+        stale = False
+        with _pool_lock:
+            info = _keepers.get(self._session_id)
+            if info is not None:
+                if info['workspace'] != ws:
+                    logger.info(f'Workspace changed for session {self._session_id[:12]} — recreating keeper')
+                    stale = True
+                elif not _keeper_alive(info):
+                    logger.warning(f'bwrap keeper vanished for session {self._session_id[:12]} — recreating')
+                    stale = True
+                else:
+                    info['last_used'] = time.time()
+                    return info['inner_pid'], None
+        if stale:
+            _destroy_keeper(self._session_id)
+        with _pool_lock:
+            info = _keepers.get(self._session_id)  # re-check after re-acquire
+            if info is not None and _keeper_alive(info) and info['workspace'] == ws:
+                info['last_used'] = time.time()
+                return info['inner_pid'], None
+            new_info, err = self._spawn_keeper()
+            if err:
+                return None, err
+            _keepers[self._session_id] = new_info
+        _ensure_reaper_running()
+        return new_info['inner_pid'], None
 
     # ------------------------------------------------------------------
     # Execution
@@ -222,6 +509,17 @@ class BwrapBackend(LocalBackend):
             'execution_time': elapsed,
         }
 
+    def _exec_in_keeper(self, inner: list, input_data: str, timeout: int,
+                        run_env: dict, on_output=None, ulimit_v_kb: int = 0) -> dict:
+        inner_pid, err = self._get_or_create_keeper()
+        if err:
+            return {'error': err, 'exit_code': -1, 'execution_time': 0}
+        cmd = _nsenter_argv(inner_pid, self._workdir(), inner, ulimit_v_kb)
+        if on_output is not None:
+            return self._run_bash_streaming(cmd, input_data, timeout, run_env,
+                                            time.time(), on_output)
+        return self._exec(cmd, input_data, timeout, run_env)
+
     def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
         err = _availability_error()
         if err:
@@ -229,10 +527,12 @@ class BwrapBackend(LocalBackend):
         self._ensure_dirs()
         run_env = self._base_env(env)
         prefixed = self._bash_prefix() + script
-        cmd = self._bwrap_argv() + ['bash', '-s']
-        if on_output is not None:
-            return self._run_bash_streaming(cmd, prefixed, timeout, run_env, time.time(), on_output)
-        return self._exec(cmd, prefixed, timeout, run_env)
+        result = self._exec_in_keeper(['bash', '-s'], prefixed, timeout, run_env, on_output)
+        if _is_keeper_gone(result):
+            # Keeper died mid-race: recreate once, retry once.
+            _destroy_keeper(self._session_id)
+            result = self._exec_in_keeper(['bash', '-s'], prefixed, timeout, run_env, on_output)
+        return result
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
         err = _availability_error()
@@ -241,13 +541,14 @@ class BwrapBackend(LocalBackend):
         self._ensure_dirs()
         run_env = self._base_env(env)
         run_env['PYTHONPATH'] = _HELPERS_MOUNT_PARENT
-        if SANDBOX_BWRAP_ULIMIT_V_MB > 0:
-            inner = ['bash', '-c',
-                     f'ulimit -v {SANDBOX_BWRAP_ULIMIT_V_MB * 1024} 2>/dev/null; exec python3 -']
-        else:
-            inner = ['python3', '-']
-        cmd = self._bwrap_argv() + inner
-        return self._exec(cmd, code, timeout, run_env)
+        ulimit_v_kb = SANDBOX_BWRAP_ULIMIT_V_MB * 1024 if SANDBOX_BWRAP_ULIMIT_V_MB > 0 else 0
+        result = self._exec_in_keeper(['python3', '-'], code, timeout, run_env,
+                                      ulimit_v_kb=ulimit_v_kb)
+        if _is_keeper_gone(result):
+            _destroy_keeper(self._session_id)
+            result = self._exec_in_keeper(['python3', '-'], code, timeout, run_env,
+                                          ulimit_v_kb=ulimit_v_kb)
+        return result
 
     # ------------------------------------------------------------------
     # Path resolution & file I/O
@@ -266,7 +567,9 @@ class BwrapBackend(LocalBackend):
         File tools call resolve_path() first and hand us the sandbox view;
         the workspace and home are plain host directories, so file I/O runs
         host-side (LocalBackend non-sudo paths) on the mapped location.
-        Other paths (e.g. /tmp — a per-invocation tmpfs) pass through as-is.
+        Other paths pass through as-is — note that /tmp, while persistent
+        for the keeper's lifetime, is invisible to host-side file tools;
+        agents should keep tool-visible files under /workspace or /home/agent.
         """
         ws = self._cwd()
         if path == '/workspace' or path.startswith('/workspace/'):
@@ -304,8 +607,7 @@ class BwrapBackend(LocalBackend):
     # ------------------------------------------------------------------
 
     def destroy(self) -> dict:
-        return {'result': 'ok',
-                'detail': 'bwrap backend is stateless — nothing to destroy. Agent home persists in the workspace.'}
+        return _destroy_keeper(self._session_id)
 
     def status(self) -> dict:
         err = _availability_error()
@@ -314,8 +616,17 @@ class BwrapBackend(LocalBackend):
             'workspace': self._cwd(),
             'hostname': self._hostname,
             'available': err is None,
-            'detail': f'stateless; one sandbox per command; {_HOME_MOUNT} persists at <workspace>/{_HOME_SUBDIR}',
+            'detail': ('persistent sandbox; background processes survive between commands; '
+                       f'{_HOME_MOUNT} persists at <workspace>/{_HOME_SUBDIR}'),
         }
+        with _pool_lock:
+            keeper = _keepers.get(self._session_id)
+        if keeper is not None:
+            info['keeper'] = 'running' if _keeper_alive(keeper) else 'dead'
+            info['inner_pid'] = keeper['inner_pid']
+            info['uptime_s'] = round(time.time() - keeper['created_at'], 1)
+        else:
+            info['keeper'] = 'not_started'
         if err:
             info['error'] = err
         return info

@@ -9,9 +9,38 @@ SANDBOX_BACKEND config.
 
 import os
 import sys
+import time
+
+import pytest
 
 from backend.tools.lib.backends import bwrap_backend
 from backend.tools.lib.backends.bwrap_backend import BwrapBackend, _sanitize_hostname
+
+
+@pytest.fixture(autouse=True)
+def clean_keeper_pool():
+    """Keeper state is module-level — isolate it per test."""
+    bwrap_backend._keepers.clear()
+    yield
+    bwrap_backend._keepers.clear()
+
+
+class FakeProc:
+    def __init__(self, pid=1000, returncode=None):
+        self.pid = pid
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def make_keeper_info(inner_pid=4242, workspace='/ws', last_used=None):
+    return {'proc': FakeProc(), 'inner_pid': inner_pid, 'status_fd': -1,
+            'created_at': time.time(), 'last_used': last_used or time.time(),
+            'workspace': workspace, 'hostname': 'agent'}
 
 
 # ---------------------------------------------------------------------------
@@ -88,13 +117,14 @@ def test_bwrap_argv_core_flags(tmp_path):
     assert argv[ws_bind + 1:ws_bind + 3] == [ws, '/workspace']
     assert os.path.join(ws, '.home') in argv and '/home/agent' in argv
     assert bwrap_backend._HELPERS_DIR in argv
-    assert argv[argv.index('--chdir') + 1] == '/workspace'
+    # workdir is set per-exec by the nsenter trampoline, not on the keeper
+    assert '--chdir' not in argv
 
 
-def test_bwrap_argv_subagent_chdir(tmp_path):
-    b = BwrapBackend(session_id='s1', workspace=str(tmp_path), is_subagent=True)
-    argv = b._bwrap_argv()
-    assert argv[argv.index('--chdir') + 1] == '/workspace/.scratch'
+def test_workdir_subagent(tmp_path):
+    assert BwrapBackend(session_id='s1', workspace=str(tmp_path))._workdir() == '/workspace'
+    assert BwrapBackend(session_id='s1', workspace=str(tmp_path),
+                        is_subagent=True)._workdir() == '/workspace/.scratch'
 
 
 def test_bwrap_argv_binds_resolv_conf_target(tmp_path, monkeypatch):
@@ -185,3 +215,148 @@ def test_registry_defaults_to_docker(tmp_path, monkeypatch):
         'sandbox_enabled': 1, 'workspace': str(tmp_path), 'agent_id': 'a1',
     })
     assert isinstance(backend, DockerBackend)
+
+# ---------------------------------------------------------------------------
+# Keeper: nsenter argv, child-pid parsing, pool logic
+# ---------------------------------------------------------------------------
+
+def test_nsenter_argv_contents():
+    argv = bwrap_backend._nsenter_argv(4242, '/workspace/.scratch', ['bash', '-s'])
+    assert argv[0] == 'nsenter'
+    for flag in ('--preserve-credentials', '-U', '-m', '-u', '-i', '-p'):
+        assert flag in argv
+    assert argv[argv.index('-t') + 1] == '4242'
+    trampoline = argv[argv.index('-c') + 1]
+    assert 'cd /workspace/.scratch' in trampoline and 'exec "$@"' in trampoline
+    assert 'ulimit' not in trampoline
+    assert argv[-2:] == ['bash', '-s']
+
+    with_limit = bwrap_backend._nsenter_argv(1, '/workspace', ['python3', '-'], ulimit_v_kb=1024)
+    assert 'ulimit -v 1024' in with_limit[with_limit.index('-c') + 1]
+    assert with_limit[-2:] == ['python3', '-']
+
+
+def test_read_child_pid_parses_json():
+    r, w = os.pipe()
+    try:
+        os.write(w, b'{"child-pid": 4242}\n')
+        assert bwrap_backend._read_child_pid(r, None, timeout=2) == 4242
+    finally:
+        os.close(r); os.close(w)
+
+    # Garbage lines tolerated, pid line split across writes
+    r, w = os.pipe()
+    try:
+        os.write(w, b'not-json\n{"other": 1}\n{"child-pi')
+        os.write(w, b'd": 77}\n')
+        assert bwrap_backend._read_child_pid(r, None, timeout=2) == 77
+    finally:
+        os.close(r); os.close(w)
+
+    # EOF without a child-pid line -> None
+    r, w = os.pipe()
+    os.write(w, b'{"other": 1}\n')
+    os.close(w)
+    try:
+        assert bwrap_backend._read_child_pid(r, None, timeout=2) is None
+    finally:
+        os.close(r)
+
+    # bwrap died before reporting -> None (no data ever arrives)
+    r, w = os.pipe()
+    try:
+        assert bwrap_backend._read_child_pid(r, FakeProc(returncode=1), timeout=2) is None
+    finally:
+        os.close(r); os.close(w)
+
+
+def test_keeper_pool_reuse_and_workspace_change(tmp_path, monkeypatch):
+    ws = str(tmp_path)
+    b = BwrapBackend(session_id='sess-1', workspace=ws)
+    monkeypatch.setattr(bwrap_backend, '_pid_alive', lambda pid: True)
+    spawned = []
+
+    def fake_spawn(self):
+        info = make_keeper_info(inner_pid=1000 + len(spawned), workspace=self._cwd())
+        spawned.append(info)
+        return info, None
+
+    monkeypatch.setattr(BwrapBackend, '_spawn_keeper', fake_spawn)
+
+    pid1, err = b._get_or_create_keeper()
+    assert err is None and pid1 == 1000 and len(spawned) == 1
+    before = bwrap_backend._keepers['sess-1']['last_used']
+    time.sleep(0.01)
+    pid2, _ = b._get_or_create_keeper()
+    assert pid2 == pid1 and len(spawned) == 1
+    assert bwrap_backend._keepers['sess-1']['last_used'] > before
+
+    # Same session, different workspace -> destroy + recreate
+    destroys = []
+    real_destroy = bwrap_backend._destroy_keeper
+    monkeypatch.setattr(bwrap_backend, '_destroy_keeper',
+                        lambda sid: (destroys.append(sid), real_destroy(sid))[1])
+    ws2 = str(tmp_path / 'other')
+    os.makedirs(ws2, exist_ok=True)
+    b2 = BwrapBackend(session_id='sess-1', workspace=ws2)
+    pid3, err = b2._get_or_create_keeper()
+    assert err is None and pid3 == 1001 and destroys == ['sess-1']
+
+
+def test_keeper_gone_retry(tmp_path, monkeypatch):
+    b = BwrapBackend(session_id='sess-1', workspace=str(tmp_path))
+    monkeypatch.setattr(bwrap_backend, '_availability_error', lambda: None)
+    monkeypatch.setattr(BwrapBackend, '_get_or_create_keeper', lambda self: (4242, None))
+    destroys = []
+    monkeypatch.setattr(bwrap_backend, '_destroy_keeper', lambda sid: destroys.append(sid))
+    results = [
+        {'stdout': '', 'stderr': 'nsenter: cannot open /proc/4242/ns/user: No such process',
+         'exit_code': 1, 'execution_time': 0.01},
+        {'stdout': 'ok', 'stderr': '', 'exit_code': 0, 'execution_time': 0.01},
+    ]
+    calls = []
+    monkeypatch.setattr(BwrapBackend, '_exec',
+                        lambda self, cmd, data, timeout, env: calls.append(cmd) or results[len(calls) - 1])
+    result = b.run_bash('echo ok', timeout=5, env={})
+    assert result['stdout'] == 'ok' and len(calls) == 2 and destroys == ['sess-1']
+
+
+def test_is_keeper_gone():
+    gone = {'stderr': 'nsenter: cannot open /proc/1/ns/user: No such process', 'exit_code': 1}
+    assert bwrap_backend._is_keeper_gone(gone) is True
+    ordinary_fail = {'stdout': '', 'stderr': 'ls: cannot access /nope: No such file', 'exit_code': 2}
+    assert bwrap_backend._is_keeper_gone(ordinary_fail) is False
+    ok = {'stdout': 'fine', 'stderr': '', 'exit_code': 0}
+    assert bwrap_backend._is_keeper_gone(ok) is False
+
+
+def test_stale_sessions_exempts_workplaces():
+    old = time.time() - bwrap_backend.SANDBOX_IDLE_TIMEOUT - 100
+    bwrap_backend._keepers['workplace-bwrap-abc'] = make_keeper_info(last_used=old)
+    bwrap_backend._keepers['sess-y'] = make_keeper_info(last_used=old)
+    bwrap_backend._keepers['sess-fresh'] = make_keeper_info()
+    assert bwrap_backend._stale_sessions(time.time()) == ['sess-y']
+
+
+def test_destroy_pops_pool_and_kills(tmp_path, monkeypatch):
+    kills = []
+    monkeypatch.setattr(bwrap_backend.os, 'killpg', lambda pgid, sig: kills.append((pgid, sig)))
+    monkeypatch.setattr(bwrap_backend.os, 'close', lambda fd: None)
+    bwrap_backend._keepers['sess-1'] = make_keeper_info()
+    b = BwrapBackend(session_id='sess-1', workspace=str(tmp_path))
+    result = b.destroy()
+    assert result['result'] == 'sandbox_destroyed'
+    assert 'sess-1' not in bwrap_backend._keepers
+    assert kills and kills[0][1] == bwrap_backend.signal.SIGTERM
+
+    # Destroy with no keeper is a graceful no-op
+    assert b.destroy()['result'] == 'no_keeper'
+
+
+def test_status_reports_keeper(tmp_path, monkeypatch):
+    b = BwrapBackend(session_id='sess-1', workspace=str(tmp_path))
+    assert b.status()['keeper'] == 'not_started'
+    monkeypatch.setattr(bwrap_backend, '_pid_alive', lambda pid: True)
+    bwrap_backend._keepers['sess-1'] = make_keeper_info(inner_pid=555)
+    st = b.status()
+    assert st['keeper'] == 'running' and st['inner_pid'] == 555 and st['uptime_s'] >= 0

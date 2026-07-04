@@ -47,6 +47,21 @@ def _match_with_unicode_fallback(content, old_str, new_str):
             norm_new = normalize_code_quotes(new_str)
             return norm_old, norm_new, occurrences
 
+    # Tier 4: bidirectional quote normalization fallback
+    # The file may contain smart quotes while the agent provides straight quotes,
+    # or the reverse.  Normalize both sides and locate the match position in the
+    # original content so we can extract the actual (smart-quoted) substring.
+    norm_content = normalize_code_quotes(content)
+    if norm_content != content or norm_old != old_str:
+        if norm_old in norm_content:
+            # locate the first occurrence in normalized content
+            idx = norm_content.index(norm_old)
+            effective_old = content[idx:idx + len(norm_old)]
+            occurrences = content.count(effective_old)
+            if occurrences > 0:
+                effective_new = normalize_code_quotes(new_str)
+                return effective_old, effective_new, occurrences
+
     return old_str, new_str, 0
 
 
@@ -56,6 +71,11 @@ def _close_match_hint(content, old_str):
     norm = normalize_code_quotes(old_str)
     if norm != old_str and norm in content:
         return f" Did you mean: {norm!r}? (quotes were normalized from smart \u2192 straight)"
+    # Reverse case: file has smart quotes, agent provided straight quotes
+    norm_content = normalize_code_quotes(content)
+    norm_old = normalize_code_quotes(old_str)
+    if norm_content != content and norm_old == old_str and norm_old in norm_content:
+        return f" The file contains smart quotes matching your input. Try copying the exact text from read_file output."
     return ""
 
 

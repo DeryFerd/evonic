@@ -1158,5 +1158,62 @@ def _register_builtins():
         "Manually trigger KB organizer sub-agent for the current agent",
     )
 
+    # /dump -- Dump current session as JSONL file for download
+    def dump_handler(
+        session_id: str,
+        agent_id: str,
+        external_user_id: str,
+        channel_id: Optional[str],
+        args: str,
+    ) -> str:
+        """Dump the current agent session JSONL file and send it to the user."""
+        import shutil
+        from models.chatlog import _AGENTS_DIR
+        from backend.agent_runtime import agent_runtime
+
+        # Resolve the JSONL file path (same logic as ChatLog.__init__)
+        hash_part = session_id
+        if hash_part.startswith(f'{agent_id}-'):
+            hash_part = hash_part[len(agent_id) + 1:]
+        jsonl_path = os.path.join(_AGENTS_DIR, agent_id, 'sessions', f'{hash_part}.jsonl')
+
+        if not os.path.exists(jsonl_path):
+            return f"Session log not found: {jsonl_path}"
+
+        if os.path.getsize(jsonl_path) == 0:
+            return "Session log is empty. No messages to dump yet."
+
+        # Create a snapshot copy so the live file is not affected
+        dump_path = f"/tmp/dump-{agent_id}-{hash_part}.jsonl"
+        try:
+            shutil.copy2(jsonl_path, dump_path)
+        except Exception as e:
+            _logger.error("Failed to copy session log: %s", e, exc_info=True)
+            return f"Failed to create dump file: {e}"
+
+        # Send the dump file to the user via the chat UI
+        caption = f"Session dump: {session_id}"
+        mime_type = "application/jsonl"
+        try:
+            success = agent_runtime.send_file_as_bot(
+                session_id, dump_path, caption, mime_type
+            )
+        except Exception as e:
+            _logger.error("Failed to send dump file: %s", e, exc_info=True)
+            # Clean up the dump file on failure
+            try:
+                os.remove(dump_path)
+            except Exception:
+                pass
+            return f"Failed to send dump file: {e}"
+
+        return f"Session dump sent as: dump-{agent_id}-{hash_part}.jsonl"
+
+    command_registry.register(
+        "dump",
+        dump_handler,
+        "Dump current session as JSONL file for download",
+    )
+
 # Register builtins at import time
 _register_builtins()

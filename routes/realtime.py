@@ -494,6 +494,7 @@ def _producer_chat(ring: BoundedRing, breaker: CircuitBreaker,
             'thinking_duration': d.get('thinking_duration'),
             'response': d.get('response', ''),
             'slash_command': d.get('slash_command', False),
+            'attachment_info': d.get('attachment_info'),
         }),
         'approval_required': ('approval_required', lambda d: {
             'approval_id': d.get('approval_id', ''),

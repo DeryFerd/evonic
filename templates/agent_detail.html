@@ -1699,8 +1699,12 @@ let _chatFullscreenActive = false;
 
 function toggleChatFullscreenMode() {
     const $tab = $('#tab-chat');
-    // The page header and tab bar are the two flex-shrink-0 siblings above #tab-chat
-    const $header = $tab.closest('.flex-col').children('.flex-shrink-0');
+    // Hide/show the page header and tab bar on fullscreen toggle.
+    // Exclude the WhatsApp bridge banner — its visibility is controlled solely
+    // by updateWABridgeBanner() and must NOT be touched by .hide()/.show()
+    // because jQuery's .show() sets inline display:block that overrides the
+    // Tailwind 'hidden' class (inline styles always have higher specificity).
+    const $header = $tab.closest('.flex-col').children('.flex-shrink-0').not('#whatsapp-bridge-banner, #workspace-invalid-banner');
 
     _chatFullscreenActive = !_chatFullscreenActive;
     try { localStorage.setItem('evonic-chat-fullscreen', _chatFullscreenActive ? '1' : '0'); } catch(_) {}
@@ -1721,10 +1725,6 @@ function toggleChatFullscreenMode() {
         $('#chat-fs-collapse-icon').addClass('hidden');
         // Re-apply height sizing for the non-fullscreen state
         enterChatFullscreen();
-        // Refresh bridge banner because $header.show() above overrides the 'hidden'
-        // class on the WhatsApp banner with an inline display:block, making it
-        // visible even when no channel is disconnected.
-        refreshWABridgeBanner();
     }
 
     requestAnimationFrame(function () {

@@ -2092,7 +2092,7 @@ async function saveGeneral() {
     const homeSel = document.getElementById('agent-workplace-id');
     const selectedOpt = homeSel ? homeSel.options[homeSel.selectedIndex] : null;
     const homeType = selectedOpt ? selectedOpt.dataset.type : '';
-    const isRemoteOrTunnel = (homeType === 'remote' || homeType === 'tunnel');
+    const sandboxForced = (homeType === 'remote' || homeType === 'tunnel' || homeType === 'bwrap');
     const newWorkspace = document.getElementById('agent-workspace').value || null;
     workspaceChanged = (newWorkspace || null) !== (ORIGINAL_WORKSPACE || null);
     const res = await fetch(`/api/agents/${AGENT_ID}`, {
@@ -2109,7 +2109,7 @@ async function saveGeneral() {
             video_enabled: document.getElementById('agent-video').checked ? 1 : 0,
             attachments_enabled: document.getElementById('agent-attachments').checked ? 1 : 0,
             attachment_max_size_mb: Math.min(20, Math.max(1, parseInt(document.getElementById('agent-attachment-max-mb').value) || 20)),
-            sandbox_enabled: isRemoteOrTunnel ? 0 : (document.getElementById('agent-sandbox').checked ? 1 : 0),
+            sandbox_enabled: sandboxForced ? 0 : (document.getElementById('agent-sandbox').checked ? 1 : 0),
             inject_agent_id: document.getElementById('agent-inject-id').checked ? 1 : 0,
             inject_datetime: document.getElementById('agent-inject-datetime').checked ? 1 : 0,
         })
@@ -5617,6 +5617,12 @@ function updateChatPanelTitle(connectionStatus) {
         badge.className = 'inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border flex-shrink-0 ' + (isDisconnected
             ? 'bg-gray-100 text-gray-500 border-blue-300 dark:bg-gray-700 dark:text-gray-400 dark:border-blue-700'
             : 'bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-900/20 dark:text-blue-400 dark:border-blue-700');
+    } else if (homeType === 'bwrap') {
+        badge.classList.remove('hidden');
+        badge.textContent = 'Bwrap';
+        badge.className = 'inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded border flex-shrink-0 ' + (isDisconnected
+            ? 'bg-gray-100 text-gray-500 border-amber-300 dark:bg-gray-700 dark:text-gray-400 dark:border-amber-700'
+            : 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-900/20 dark:text-amber-400 dark:border-amber-700');
     } else {
         badge.textContent = '';
         badge.className = 'hidden';
@@ -5631,10 +5637,13 @@ function updateSandboxVisibility() {
     if (!sel || !sandboxInput || !sandboxWarning || !sandboxLabel) return;
     const selectedOpt = sel.options[sel.selectedIndex];
     const homeType = selectedOpt ? selectedOpt.dataset.type : '';
-    if (homeType === 'remote' || homeType === 'tunnel') {
+    if (homeType === 'remote' || homeType === 'tunnel' || homeType === 'bwrap') {
         sandboxInput.disabled = true;
         sandboxInput.checked = false;
         sandboxLabel.classList.add('opacity-50', 'cursor-not-allowed');
+        sandboxWarning.textContent = homeType === 'bwrap'
+            ? 'Docker Sandbox is disabled — isolation is provided by the bwrap workplace.'
+            : '⚠ Docker Sandbox only available for local workplace.';
         sandboxWarning.classList.remove('hidden');
     } else {
         sandboxInput.disabled = false;

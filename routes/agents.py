@@ -78,11 +78,15 @@ def _sanitize_agents(agents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _apply_sandbox_workplace_policy(agent_data: dict, workplace_id: Optional[str]) -> None:
-    """Docker sandbox is only supported on local workplaces."""
+    """Docker sandbox is only supported on local workplaces.
+
+    Remote/tunnel workplaces execute elsewhere, and bwrap workplaces provide
+    their own isolation — all three force sandbox_enabled off.
+    """
     if not workplace_id:
         return
     workplace = db.get_workplace(workplace_id)
-    if workplace and workplace.get('type') in ('remote', 'tunnel'):
+    if workplace and workplace.get('type') in ('remote', 'tunnel', 'bwrap'):
         agent_data['sandbox_enabled'] = 0
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

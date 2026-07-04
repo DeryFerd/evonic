@@ -803,7 +803,7 @@ class SchemaMixin:
                 CREATE TABLE IF NOT EXISTS workplaces (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel')),
+                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel', 'bwrap')),
                     config TEXT NOT NULL DEFAULT '{}',
                     status TEXT DEFAULT 'disconnected',
                     error_msg TEXT,
@@ -844,6 +844,40 @@ class SchemaMixin:
                         FROM workplaces_old
                     """)
                     cursor.execute("DROP TABLE workplaces_old")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: add 'bwrap' to the workplaces.type CHECK constraint.
+            # Guarded by sqlite_master so it only runs while the existing table's
+            # CHECK does not yet include 'bwrap'. Uses create-new/copy/drop/rename
+            # (instead of renaming the old table first) so REFERENCES workplaces
+            # clauses in tunnel_connectors/agents are not rewritten by SQLite.
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='workplaces'"
+            ).fetchone()
+            if row and "'bwrap'" not in row[0]:
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS workplaces_new")
+                    cursor.execute("""
+                        CREATE TABLE workplaces_new (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel', 'bwrap')),
+                            config TEXT NOT NULL DEFAULT '{}',
+                            status TEXT DEFAULT 'disconnected',
+                            error_msg TEXT,
+                            last_connected_at TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    cursor.execute("""
+                        INSERT INTO workplaces_new (id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at)
+                        SELECT id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at
+                        FROM workplaces
+                    """)
+                    cursor.execute("DROP TABLE workplaces")
+                    cursor.execute("ALTER TABLE workplaces_new RENAME TO workplaces")
                 except sqlite3.OperationalError:
                     pass
 

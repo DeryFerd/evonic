@@ -127,6 +127,12 @@ class BwrapBackend(LocalBackend):
                 argv += ['--symlink', 'usr' + d, d]
             elif os.path.isdir(d):
                 argv += ['--ro-bind', d, d]
+        # On systemd-resolved/resolvconf hosts /etc/resolv.conf is a symlink
+        # into /run, which is not mounted — bind the real file at its target
+        # path so DNS resolution works inside the sandbox.
+        resolv = os.path.realpath('/etc/resolv.conf')
+        if resolv != '/etc/resolv.conf':
+            argv += ['--ro-bind-try', resolv, resolv]
         argv += [
             '--proc', '/proc',
             '--dev', '/dev',

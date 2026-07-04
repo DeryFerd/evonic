@@ -97,6 +97,26 @@ def test_bwrap_argv_subagent_chdir(tmp_path):
     assert argv[argv.index('--chdir') + 1] == '/workspace/.scratch'
 
 
+def test_bwrap_argv_binds_resolv_conf_target(tmp_path, monkeypatch):
+    b = BwrapBackend(session_id='s1', workspace=str(tmp_path))
+    real_realpath = os.path.realpath
+
+    def fake_realpath(path, **kw):
+        if path == '/etc/resolv.conf':
+            return '/run/systemd/resolve/stub-resolv.conf'
+        return real_realpath(path, **kw)
+
+    monkeypatch.setattr(bwrap_backend.os.path, 'realpath', fake_realpath)
+    argv = b._bwrap_argv()
+    i = argv.index('/run/systemd/resolve/stub-resolv.conf')
+    assert argv[i - 1] == '--ro-bind-try' and argv[i + 1] == argv[i]
+
+    # Plain-file resolv.conf (no symlink) needs no extra bind
+    monkeypatch.setattr(bwrap_backend.os.path, 'realpath',
+                        lambda p, **kw: p if p == '/etc/resolv.conf' else real_realpath(p, **kw))
+    assert '/run/systemd/resolve/stub-resolv.conf' not in b._bwrap_argv()
+
+
 def test_bwrap_argv_unshare_net_follows_config(tmp_path, monkeypatch):
     b = BwrapBackend(session_id='s1', workspace=str(tmp_path))
     monkeypatch.setattr(bwrap_backend, 'SANDBOX_NETWORK', 'bridge')

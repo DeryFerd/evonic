@@ -316,8 +316,13 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   .pnl-badge.running { background:#ca8a04; }
   .pnl-badge.done { background:#059669; }
   .pnl-badge.error { background:#dc2626; }
-  .pnl-clear { font-size:.68rem; color:#94a3b8; background:transparent; border:1px solid #334155; border-radius:.375rem; padding:.2rem .5rem; cursor:pointer; }
+  .pnl-clear { font-size:.68rem; color:#94a3b8; background:transparent; border:1px solid #334155; border-radius:.375rem; padding:.2rem .5rem; cursor:pointer; white-space:nowrap; }
   .pnl-clear:hover { color:#e2e8f0; border-color:#475569; }
+  .pnl-run { position:relative; }
+  .pnl-run + .pnl-run { border-top:1px solid #1e293b; margin-top:.35rem; padding-top:.35rem; }
+  .pnl-run-fwd { position:absolute; top:0; right:0; opacity:0; transition:opacity .12s; font-size:.66rem; color:#cbd5e1; background:#1e293b; border:1px solid #334155; border-radius:.375rem; padding:.1rem .45rem; cursor:pointer; z-index:1; white-space:nowrap; }
+  .pnl-run:hover .pnl-run-fwd { opacity:1; }
+  .pnl-run-fwd:hover { color:#fff; border-color:#475569; }
   .pnl-term-body { flex:1; overflow-y:auto; padding:.75rem 1rem; margin:0; font-family:'Fira Code','Cascadia Code','Consolas',Menlo,Monaco,monospace; font-size:12.5px; line-height:1.5; color:#e2e8f0; white-space:pre-wrap; word-break:break-word; }
   .pnl-cmd { color:#818cf8; font-weight:600; }
   .pnl-muted { color:#64748b; }
@@ -419,6 +424,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   let pollTimer = null;
   let pendingAction = null;
   let termFresh = true;
+  let currentRunBody = null;
 
   const termBody = document.getElementById('pnl-term-body');
   const badge = document.getElementById('pnl-badge');
@@ -428,12 +434,59 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   }
 
   function termAppend(text, cls) {
-    termShow();
+    let target = currentRunBody;
+    if (!target) { termShow(); target = termBody; }
     const span = document.createElement('span');
     if (cls) span.className = cls;
     span.textContent = text;
-    termBody.appendChild(span);
+    target.appendChild(span);
     termBody.scrollTop = termBody.scrollHeight;
+  }
+
+  // Begin a new output session (one per action run): a hoverable block with its
+  // own "→ Chat" forward button and a command-echo header. Subsequent output is
+  // appended into this block via currentRunBody.
+  function startRun(label) {
+    termShow();
+    const run = document.createElement('div');
+    run.className = 'pnl-run';
+    const fwd = document.createElement('button');
+    fwd.className = 'pnl-run-fwd';
+    fwd.type = 'button';
+    fwd.title = 'Quote this output into the Chat tab to ask the agent about it';
+    fwd.innerHTML = '&#8594; Chat';
+    const body = document.createElement('div');
+    body.className = 'pnl-run-body';
+    fwd.addEventListener('click', function(e) {
+      e.stopPropagation();
+      forwardToChat(body.textContent || '');
+    });
+    run.appendChild(fwd);
+    run.appendChild(body);
+    termBody.appendChild(run);
+    currentRunBody = body;
+    const cmd = document.createElement('span');
+    cmd.className = 'pnl-cmd';
+    cmd.textContent = '$ ' + label + '\\n';
+    body.appendChild(cmd);
+    termBody.scrollTop = termBody.scrollHeight;
+  }
+
+  // Quote the given output into the chat composer and switch to the Chat tab.
+  function forwardToChat(rawText) {
+    const text = (rawText || '').trim();
+    if (!text) return;
+    const quoted = text.split('\\n').map(function(l) { return '> ' + l; }).join('\\n');
+    const message = quoted + '\\n\\n';
+    if (typeof window.showTab === 'function') window.showTab('chat');
+    const input = document.getElementById('chat-input');
+    if (input) {
+      input.value = message;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.focus();
+      try { input.setSelectionRange(input.value.length, input.value.length); } catch (e) {}
+      input.scrollTop = input.scrollHeight;
+    }
   }
 
   // ── ANSI (SGR) color rendering ────────────────────────────────────
@@ -496,7 +549,8 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
 
   const ANSI_RE = /\\x1b\\[([0-9;]*)([A-Za-z])/g;
   function ansiAppend(text) {
-    termShow();
+    let target = currentRunBody;
+    if (!target) { termShow(); target = termBody; }
     ANSI_RE.lastIndex = 0;
     const frag = document.createDocumentFragment();
     let last = 0, m;
@@ -517,7 +571,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
       }
     }
     emit(text.slice(last));
-    termBody.appendChild(frag);
+    target.appendChild(frag);
     termBody.scrollTop = termBody.scrollHeight;
   }
 
@@ -556,6 +610,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     clearBtn.addEventListener('click', function() {
       termBody.innerHTML = '<span class="pnl-muted"># Ready — click a button to run it.</span>';
       termFresh = true;
+      currentRunBody = null;
       ansiReset();
       setBadge('idle', 'idle');
     });
@@ -634,7 +689,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
 
     setButtonsDisabled(true);
     ansiReset();
-    termAppend('\\n$ ' + label + '\\n', 'pnl-cmd');
+    startRun(label);
     setBadge('running', 'running');
 
     try {

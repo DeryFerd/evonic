@@ -287,36 +287,89 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     actions_json = json.dumps(actions)
     agent_name = agent.get("name", agent_id)
 
-    html = f"""<style>
-  .panel-btn {{ color: #fff; font-weight: 500; padding: 0.75rem 1rem;
-                border-radius: 0.5rem; transition: background-color 0.15s; }}
-  .btn-script {{ background-color: #4f46e5; }}
-  .btn-script:hover {{ background-color: #4338ca; }}
-  .btn-prompt {{ background-color: #059669; }}
-  .btn-prompt:hover {{ background-color: #047857; }}
-  .btn-disabled {{ opacity: 0.5; cursor: not-allowed; }}
-  #output {{ font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace; font-size: 13px; }}
+    panel_css = """<style>
+  .pnl-wrap { display:grid; grid-template-columns:minmax(240px,320px) 1fr; gap:1rem; padding:1rem; align-items:start; }
+  .pnl-left { display:flex; flex-direction:column; gap:.75rem; min-width:0; }
+  .pnl-title { font-size:1.05rem; font-weight:700; margin:0; }
+  .pnl-title span { color:#818cf8; }
+  .pnl-search-wrap { position:relative; }
+  .pnl-search-wrap > svg { position:absolute; left:.625rem; top:50%; transform:translateY(-50%); width:1rem; height:1rem; color:#9ca3af; pointer-events:none; }
+  .pnl-search { width:100%; box-sizing:border-box; padding:.5rem .75rem .5rem 2rem; border-radius:.5rem; border:1px solid #d1d5db; background:#fff; color:#111827; font-size:.8125rem; }
+  .pnl-search:focus { outline:none; border-color:#6366f1; box-shadow:0 0 0 3px rgba(99,102,241,.15); }
+  .pnl-btn-grid { display:grid; grid-template-columns:1fr 1fr; gap:.5rem; }
+  .panel-btn { display:flex; align-items:center; gap:.5rem; color:#fff; font-weight:500; font-size:.8125rem; padding:.625rem .75rem; border-radius:.5rem; border:none; cursor:pointer; text-align:left; width:100%; box-sizing:border-box; transition:background-color .15s, transform .05s; }
+  .panel-btn:active { transform:translateY(1px); }
+  .panel-btn .pnl-dot { width:.5rem; height:.5rem; border-radius:9999px; flex:0 0 auto; background:rgba(255,255,255,.75); }
+  .panel-btn .pnl-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .btn-script { background-color:#4f46e5; }
+  .btn-script:hover { background-color:#4338ca; }
+  .btn-prompt { background-color:#059669; }
+  .btn-prompt:hover { background-color:#047857; }
+  .btn-disabled { opacity:.5; cursor:not-allowed; }
+  .pnl-hidden { display:none !important; }
+  .pnl-empty { color:#6b7280; font-size:.8125rem; padding:1rem; text-align:center; border:1px dashed #d1d5db; border-radius:.5rem; }
+  .pnl-btn-grid .pnl-empty { grid-column:1 / -1; }
+  .pnl-term { display:flex; flex-direction:column; background:#0f172a; border:1px solid #1e293b; border-radius:.75rem; overflow:hidden; height:72vh; min-height:360px; }
+  .pnl-term-head { display:flex; align-items:center; justify-content:space-between; gap:.5rem; padding:.5rem .75rem; background:#1e293b; border-bottom:1px solid #334155; }
+  .pnl-term-head-left { display:flex; align-items:center; gap:.5rem; }
+  .pnl-term-dots { display:flex; gap:.375rem; }
+  .pnl-term-dots i { width:.6rem; height:.6rem; border-radius:9999px; display:block; }
+  .pnl-term-title { color:#94a3b8; font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; }
+  .pnl-badge { font-size:.68rem; padding:.125rem .5rem; border-radius:9999px; font-weight:600; color:#fff; white-space:nowrap; }
+  .pnl-badge.idle { background:#475569; }
+  .pnl-badge.running { background:#ca8a04; }
+  .pnl-badge.done { background:#059669; }
+  .pnl-badge.error { background:#dc2626; }
+  .pnl-clear { font-size:.68rem; color:#94a3b8; background:transparent; border:1px solid #334155; border-radius:.375rem; padding:.2rem .5rem; cursor:pointer; }
+  .pnl-clear:hover { color:#e2e8f0; border-color:#475569; }
+  .pnl-term-body { flex:1; overflow-y:auto; padding:.75rem 1rem; margin:0; font-family:'Fira Code','Cascadia Code','Consolas',Menlo,Monaco,monospace; font-size:12.5px; line-height:1.5; color:#e2e8f0; white-space:pre-wrap; word-break:break-word; }
+  .pnl-cmd { color:#818cf8; font-weight:600; }
+  .pnl-muted { color:#64748b; }
+  .pnl-ok { color:#34d399; }
+  .pnl-err { color:#f87171; }
+  .pnl-modal { position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:center; justify-content:center; z-index:50; padding:1rem; }
+  .pnl-modal-card { background:#1e293b; border:1px solid #334155; border-radius:.75rem; padding:1.25rem; width:100%; max-width:28rem; box-sizing:border-box; }
+  .pnl-modal-title { color:#f1f5f9; font-size:1rem; font-weight:600; margin:0 0 1rem; }
+  .pnl-field { margin-bottom:.75rem; }
+  .pnl-field label { display:block; color:#94a3b8; font-size:.8125rem; margin-bottom:.25rem; }
+  .pnl-field input { width:100%; box-sizing:border-box; background:#0f172a; border:1px solid #334155; border-radius:.5rem; padding:.5rem .75rem; color:#f1f5f9; font-size:.8125rem; }
+  .pnl-field input:focus { outline:none; border-color:#6366f1; }
+  .pnl-modal-actions { display:flex; justify-content:flex-end; gap:.5rem; margin-top:.5rem; }
+  .pnl-btn-sec, .pnl-btn-pri { padding:.5rem 1rem; border-radius:.5rem; font-size:.8125rem; font-weight:500; cursor:pointer; border:none; color:#fff; }
+  .pnl-btn-sec { background:#475569; }
+  .pnl-btn-sec:hover { background:#334155; }
+  .pnl-btn-pri { background:#4f46e5; }
+  .pnl-btn-pri:hover { background:#4338ca; }
+  .dark .pnl-search { background:#374151; border-color:#4b5563; color:#f3f4f6; }
+  .dark .pnl-empty { border-color:#4b5563; color:#9ca3af; }
+  @media (max-width:1023px) {
+    .pnl-wrap { grid-template-columns:1fr; }
+    .pnl-term { height:60vh; }
+  }
+  @media (max-width:640px) {
+    .pnl-btn-grid { grid-template-columns:1fr; }
+  }
 </style>
-<div class="max-w-4xl mx-auto p-4 sm:p-6">
+"""
 
-  <h2 class="text-xl font-bold mb-4">
-    Panel — <span class="text-indigo-400">{_escape_html(agent_name)}</span>
-  </h2>
-
-  <!-- Action Buttons Grid -->
-  <div id="actions-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+    html = panel_css + f"""<div class="pnl-wrap">
+  <div class="pnl-left">
+    <h2 class="pnl-title">Panel — <span>{_escape_html(agent_name)}</span></h2>
+    <div class="pnl-search-wrap">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-4.3-4.3m1.8-4.7a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z"/></svg>
+      <input id="pnl-search" class="pnl-search" type="search" placeholder="Filter buttons..." autocomplete="off">
+    </div>
+    <div id="pnl-btn-grid" class="pnl-btn-grid">
 """
 
     for action in actions:
         label = _escape_html(action["label"])
+        label_lower = _escape_html((action["label"] or "").lower())
         aid = action["id"]
         atype = action["action_type"]
         enabled = action.get("enabled", True)
 
-        if atype == "script":
-            color_class = "btn-script"
-        else:
-            color_class = "btn-prompt"
+        color_class = "btn-script" if atype == "script" else "btn-prompt"
 
         disabled_attr = ""
         disabled_class = ""
@@ -324,255 +377,266 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
             disabled_attr = "disabled"
             disabled_class = " btn-disabled"
 
-        html += f"""    <button
-      class="panel-btn {color_class}{disabled_class}"
-      data-action-id="{aid}"
-      data-action-type="{atype}"
-      data-label="{label}"
-      {disabled_attr}
-    >{label}</button>
+        html += f"""      <button class="panel-btn {color_class}{disabled_class}" data-action-id="{aid}" data-action-type="{atype}" data-label="{label}" data-search="{label_lower}" {disabled_attr}><span class="pnl-dot"></span><span class="pnl-label">{label}</span></button>
 """
 
-    html += f"""  </div>
+    if not actions:
+        html += '      <div class="pnl-empty">No actions yet. This agent has not added any panel buttons.</div>\n'
 
-  <!-- Params Modal -->
-  <div id="params-modal" class="hidden fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
-    <div class="bg-gray-800 border border-gray-700 rounded-xl p-6 w-full max-w-md mx-4">
-      <h3 id="params-modal-title" class="text-lg font-semibold mb-4">Enter Parameters</h3>
-      <div id="params-modal-body" class="space-y-3 mb-4"></div>
-      <div class="flex justify-end gap-3">
-        <button id="params-cancel" class="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white rounded-lg transition-colors">Cancel</button>
-        <button id="params-submit" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors">Execute</button>
+    html += """    </div>
+    <div id="pnl-nomatch" class="pnl-empty pnl-hidden">No buttons match your search.</div>
+  </div>
+
+  <div class="pnl-term">
+    <div class="pnl-term-head">
+      <div class="pnl-term-head-left">
+        <span class="pnl-term-dots"><i style="background:#ef4444"></i><i style="background:#eab308"></i><i style="background:#22c55e"></i></span>
+        <span class="pnl-term-title">Output</span>
+        <span id="pnl-badge" class="pnl-badge idle">idle</span>
       </div>
+      <button id="pnl-clear" class="pnl-clear" type="button">Clear</button>
     </div>
+    <div id="pnl-term-body" class="pnl-term-body"><span class="pnl-muted"># Ready — click a button to run it.</span></div>
   </div>
-
-  <!-- Output Area -->
-  <div id="output-container" class="hidden">
-    <div class="flex items-center justify-between mb-2">
-      <h3 class="text-sm font-semibold text-gray-300 uppercase tracking-wide">Execution Output</h3>
-      <span id="status-badge" class="text-xs px-2 py-1 rounded-full bg-yellow-600 text-white">Running...</span>
-    </div>
-    <pre id="output" class="bg-gray-950 border border-gray-700 rounded-lg p-4 overflow-x-auto text-gray-300 whitespace-pre-wrap max-h-96 overflow-y-auto"></pre>
-  </div>
-
 </div>
 
-<script>
-(function() {{
+<div id="pnl-modal" class="pnl-modal pnl-hidden">
+  <div class="pnl-modal-card">
+    <h3 id="pnl-modal-title" class="pnl-modal-title">Enter Parameters</h3>
+    <div id="pnl-modal-body"></div>
+    <div class="pnl-modal-actions">
+      <button id="pnl-cancel" class="pnl-btn-sec" type="button">Cancel</button>
+      <button id="pnl-submit" class="pnl-btn-pri" type="button">Execute</button>
+    </div>
+  </div>
+</div>
+"""
+
+    panel_script = """<script>
+(function() {
   'use strict';
 
-  const AGENT_ID = '{agent_id}';
-  const actions = {actions_json};
+  const AGENT_ID = '__AGENT_ID__';
+  const actions = __ACTIONS_JSON__;
 
   let currentExecutionId = null;
   let pollTimer = null;
   let pendingAction = null;
+  let termFresh = true;
+
+  const termBody = document.getElementById('pnl-term-body');
+  const badge = document.getElementById('pnl-badge');
+
+  function termAppend(text, cls) {
+    if (termFresh) { termBody.innerHTML = ''; termFresh = false; }
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    termBody.appendChild(span);
+    termBody.scrollTop = termBody.scrollHeight;
+  }
+
+  function setBadge(state, text) {
+    badge.className = 'pnl-badge ' + state;
+    badge.textContent = text;
+  }
+
+  function setButtonsDisabled(state) {
+    document.querySelectorAll('.panel-btn').forEach(function(b) {
+      if (!b.classList.contains('btn-disabled')) b.disabled = state;
+    });
+  }
+
+  // ── Search filter ─────────────────────────────────────────────────
+  const searchInput = document.getElementById('pnl-search');
+  const btnGrid = document.getElementById('pnl-btn-grid');
+  const noMatch = document.getElementById('pnl-nomatch');
+  if (searchInput) {
+    searchInput.addEventListener('input', function() {
+      const q = searchInput.value.trim().toLowerCase();
+      const btns = btnGrid.querySelectorAll('.panel-btn');
+      let visible = 0;
+      btns.forEach(function(btn) {
+        const match = !q || (btn.dataset.search || '').indexOf(q) !== -1;
+        btn.classList.toggle('pnl-hidden', !match);
+        if (match) visible++;
+      });
+      noMatch.classList.toggle('pnl-hidden', !(btns.length > 0 && visible === 0));
+    });
+  }
+
+  // ── Clear terminal ────────────────────────────────────────────────
+  const clearBtn = document.getElementById('pnl-clear');
+  if (clearBtn) {
+    clearBtn.addEventListener('click', function() {
+      termBody.innerHTML = '<span class="pnl-muted"># Ready — click a button to run it.</span>';
+      termFresh = true;
+      setBadge('idle', 'idle');
+    });
+  }
 
   // ── Button click handler ──────────────────────────────────────────
-
-  document.querySelectorAll('.panel-btn:not([disabled])').forEach(btn => {{
-    btn.addEventListener('click', () => {{
+  document.querySelectorAll('.panel-btn:not([disabled])').forEach(function(btn) {
+    btn.addEventListener('click', function() {
       const actionId = parseInt(btn.dataset.actionId);
       const actionType = btn.dataset.actionType;
-      const action = actions.find(a => a.id === actionId);
+      const action = actions.find(function(a) { return a.id === actionId; });
       if (!action) return;
 
-      if (actionType === 'prompt') {{
+      if (actionType === 'prompt') {
         executeAction(actionId, null);
-      }} else if (actionType === 'script') {{
-        // Check if the action has params
-        if (action.params) {{
-          let paramsDef;
-          try {{
-            paramsDef = typeof action.params === 'string'
-              ? JSON.parse(action.params)
-              : action.params;
-          }} catch(e) {{
-            paramsDef = [];
-          }}
+        return;
+      }
 
-          if (paramsDef && paramsDef.length > 0) {{
-            showParamsModal(actionId, action.label, paramsDef);
-            return;
-          }}
-        }}
-        executeAction(actionId, {{}});
-      }}
-    }});
-  }});
+      let paramsDef = [];
+      if (action.params) {
+        try {
+          paramsDef = typeof action.params === 'string' ? JSON.parse(action.params) : action.params;
+        } catch (e) { paramsDef = []; }
+      }
+      if (paramsDef && paramsDef.length > 0) {
+        showParamsModal(actionId, action.label, paramsDef);
+        return;
+      }
+      executeAction(actionId, {});
+    });
+  });
 
   // ── Params modal ──────────────────────────────────────────────────
-
-  function showParamsModal(actionId, label, paramsDef) {{
-    pendingAction = {{ actionId, paramsDef }};
-    document.getElementById('params-modal-title').textContent = label;
-    const body = document.getElementById('params-modal-body');
+  function showParamsModal(actionId, label, paramsDef) {
+    pendingAction = { actionId: actionId, paramsDef: paramsDef };
+    document.getElementById('pnl-modal-title').textContent = label;
+    const body = document.getElementById('pnl-modal-body');
     body.innerHTML = '';
+    paramsDef.forEach(function(p) {
+      const field = document.createElement('div');
+      field.className = 'pnl-field';
+      const lab = document.createElement('label');
+      lab.textContent = p.label || p.name;
+      const inp = document.createElement('input');
+      inp.type = p.type === 'password' ? 'password' : (p.type === 'number' ? 'number' : 'text');
+      inp.name = 'param_' + p.name;
+      if (p.default) inp.value = p.default;
+      field.appendChild(lab);
+      field.appendChild(inp);
+      body.appendChild(field);
+    });
+    document.getElementById('pnl-modal').classList.remove('pnl-hidden');
+  }
 
-    paramsDef.forEach(p => {{
-      const div = document.createElement('div');
-      div.innerHTML = `
-        <label class="block text-sm text-gray-400 mb-1">${{_escapeHTML(p.label || p.name)}}</label>
-        <input type="text" name="param_${{p.name}}" class="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-indigo-500" placeholder="${{_escapeHTML(p.description || '')}}">
-      `;
-      body.appendChild(div);
-    }});
-
-    document.getElementById('params-modal').classList.remove('hidden');
-  }}
-
-  document.getElementById('params-cancel').addEventListener('click', () => {{
-    document.getElementById('params-modal').classList.add('hidden');
+  document.getElementById('pnl-cancel').addEventListener('click', function() {
+    document.getElementById('pnl-modal').classList.add('pnl-hidden');
     pendingAction = null;
-  }});
+  });
 
-  document.getElementById('params-submit').addEventListener('click', () => {{
+  document.getElementById('pnl-submit').addEventListener('click', function() {
     if (!pendingAction) return;
-    const params = {{}};
-    pendingAction.paramsDef.forEach(p => {{
-      const input = document.querySelector(`input[name="param_${{p.name}}"]`);
+    const params = {};
+    pendingAction.paramsDef.forEach(function(p) {
+      const input = document.querySelector('input[name="param_' + p.name + '"]');
       if (input) params[p.name] = input.value;
-    }});
-    document.getElementById('params-modal').classList.add('hidden');
+    });
+    document.getElementById('pnl-modal').classList.add('pnl-hidden');
     executeAction(pendingAction.actionId, params);
     pendingAction = null;
-  }});
+  });
 
   // ── Execute action ────────────────────────────────────────────────
+  async function executeAction(actionId, params) {
+    const action = actions.find(function(a) { return a.id === actionId; });
+    const label = action ? action.label : ('action ' + actionId);
 
-  async function executeAction(actionId, params) {{
-    // Disable buttons during execution
-    document.querySelectorAll('.panel-btn').forEach(b => b.disabled = true);
+    setButtonsDisabled(true);
+    termAppend('\\n$ ' + label + '\\n', 'pnl-cmd');
+    setBadge('running', 'running');
 
-    // Show output area
-    const outputContainer = document.getElementById('output-container');
-    const outputEl = document.getElementById('output');
-    const statusBadge = document.getElementById('status-badge');
-
-    outputContainer.classList.remove('hidden');
-    outputEl.textContent = '';
-    statusBadge.textContent = 'Running...';
-    statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-yellow-600 text-white';
-
-    try {{
-      const body = params !== null ? JSON.stringify({{ params: params }}) : JSON.stringify({{}});
-      const resp = await fetch(`/plugin/panel/${{AGENT_ID}}/execute/${{actionId}}`, {{
+    try {
+      const body = params !== null ? JSON.stringify({ params: params }) : JSON.stringify({});
+      const resp = await fetch('/plugin/panel/' + AGENT_ID + '/execute/' + actionId, {
         method: 'POST',
-        headers: {{ 'Content-Type': 'application/json' }},
-        body: body,
-      }});
-
+        headers: { 'Content-Type': 'application/json' },
+        body: body
+      });
       const data = await resp.json();
 
-      if (data.needs_params) {{
-        // Server says params needed — but we should not get here since we check client-side
-        outputEl.textContent = 'Error: Parameters required but not provided.';
-        statusBadge.textContent = 'Error';
-        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-        document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
+      if (data.needs_params) {
+        termAppend('Error: parameters required but not provided.\\n', 'pnl-err');
+        setBadge('error', 'error');
+        setButtonsDisabled(false);
         return;
-      }}
-
-      if (resp.status === 409) {{
-        outputEl.textContent = data.error || 'A script is already running for this agent.';
-        statusBadge.textContent = 'Busy';
-        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-        document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
+      }
+      if (resp.status === 409) {
+        termAppend((data.error || 'A script is already running for this agent.') + '\\n', 'pnl-err');
+        setBadge('error', 'busy');
+        setButtonsDisabled(false);
         return;
-      }}
-
-      if (data.status === 'prompt_sent') {{
-        outputEl.textContent = '✓ Prompt sent to agent session.';
-        statusBadge.textContent = 'Sent';
-        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-emerald-600 text-white';
-        document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
+      }
+      if (data.status === 'prompt_sent') {
+        termAppend('✓ Prompt sent to agent session.\\n', 'pnl-ok');
+        setBadge('done', 'sent');
+        setButtonsDisabled(false);
         return;
-      }}
-
-      if (data.status === 'queued' && data.execution_id) {{
+      }
+      if (data.status === 'queued' && data.execution_id) {
         currentExecutionId = data.execution_id;
         pollExecution(data.execution_id);
         return;
-      }}
-
-      // Unexpected response
-      outputEl.textContent = JSON.stringify(data, null, 2);
-      statusBadge.textContent = 'Done';
-      statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-gray-600 text-white';
-      document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
-    }} catch (err) {{
-      outputEl.textContent = 'Network error: ' + err.message;
-      statusBadge.textContent = 'Error';
-      statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-      document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
-    }}
-  }}
+      }
+      termAppend(JSON.stringify(data, null, 2) + '\\n', 'pnl-muted');
+      setBadge('done', 'done');
+      setButtonsDisabled(false);
+    } catch (err) {
+      termAppend('Network error: ' + err.message + '\\n', 'pnl-err');
+      setBadge('error', 'error');
+      setButtonsDisabled(false);
+    }
+  }
 
   // ── Poll execution status ─────────────────────────────────────────
-
-  async function pollExecution(executionId) {{
-    const outputEl = document.getElementById('output');
-    const statusBadge = document.getElementById('status-badge');
-
+  async function pollExecution(executionId) {
     if (pollTimer) clearInterval(pollTimer);
-
     let seenLines = 0;
 
-    pollTimer = setInterval(async () => {{
-      try {{
-        const resp = await fetch(`/plugin/panel/${{AGENT_ID}}/execution/${{executionId}}/status`);
-        if (!resp.ok) {{
+    pollTimer = setInterval(async function() {
+      try {
+        const resp = await fetch('/plugin/panel/' + AGENT_ID + '/execution/' + executionId + '/status');
+        if (!resp.ok) {
           clearInterval(pollTimer);
-          outputEl.textContent = 'Error polling execution status.';
-          statusBadge.textContent = 'Error';
-          statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-          document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
+          termAppend('Error polling execution status.\\n', 'pnl-err');
+          setBadge('error', 'error');
+          setButtonsDisabled(false);
           return;
-        }}
-
+        }
         const data = await resp.json();
 
-        // Append new lines
-        if (data.output_lines && data.output_lines.length > seenLines) {{
-          const newLines = data.output_lines.slice(seenLines);
-          outputEl.textContent += newLines.join('');
+        if (data.output_lines && data.output_lines.length > seenLines) {
+          termAppend(data.output_lines.slice(seenLines).join(''));
           seenLines = data.output_lines.length;
-          // Auto-scroll
-          const container = outputEl.parentElement;
-          if (container) container.scrollTop = container.scrollHeight;
-        }}
+        }
 
-        if (data.status === 'completed') {{
+        if (data.status === 'completed') {
           clearInterval(pollTimer);
-          statusBadge.textContent = `Completed (exit: ${{data.exit_code}})`;
-          statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-emerald-600 text-white';
-          document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
-        }} else if (data.status === 'error') {{
+          termAppend('\\n[completed · exit ' + data.exit_code + ']\\n', 'pnl-muted');
+          setBadge('done', 'completed (' + data.exit_code + ')');
+          setButtonsDisabled(false);
+        } else if (data.status === 'error') {
           clearInterval(pollTimer);
-          statusBadge.textContent = `Error (exit: ${{data.exit_code}})`;
-          statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-          document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
-        }}
-      }} catch (err) {{
+          termAppend('\\n[error · exit ' + data.exit_code + ']\\n', 'pnl-err');
+          setBadge('error', 'error (' + data.exit_code + ')');
+          setButtonsDisabled(false);
+        }
+      } catch (err) {
         clearInterval(pollTimer);
-        outputEl.textContent += '\\n[Polling error: ' + err.message + ']';
-        statusBadge.textContent = 'Error';
-        statusBadge.className = 'text-xs px-2 py-1 rounded-full bg-red-600 text-white';
-        document.querySelectorAll('.panel-btn').forEach(b => b.disabled = false);
-      }}
-    }}, 500); // Poll every 500ms
-  }}
-
-  // ── Utility ───────────────────────────────────────────────────────
-
-  function _escapeHTML(str) {{
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-  }}
-}})();
+        termAppend('\\n[polling error: ' + err.message + ']\\n', 'pnl-err');
+        setBadge('error', 'error');
+        setButtonsDisabled(false);
+      }
+    }, 500);
+  }
+})();
 </script>"""
+
+    html += panel_script.replace('__AGENT_ID__', agent_id).replace('__ACTIONS_JSON__', actions_json)
 
     return html
 

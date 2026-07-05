@@ -1137,7 +1137,11 @@ function connectSessionStream(sessionId, afterSeq = 0) {
             }
             if (!alreadyRendered) {
                 // Not rendered yet — display the response and mark it so POST/poll skip it
-                chatUI.appendMessage('assistant', payload.response);
+                const msgOpts = {};
+                if (payload.attachment_info) {
+                    msgOpts.metadata = { attachment_info: payload.attachment_info };
+                }
+                chatUI.appendMessage('assistant', payload.response, msgOpts);
                 if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
                 _pendingSlashResponse = payload.response;
             }
@@ -1178,7 +1182,11 @@ function connectSessionStream(sessionId, afterSeq = 0) {
         // lookup returns nothing (see routes/agents.py api_chat_jsonl).
         if (payload.response) {
             const wasAtBottom = chatUI.isNearBottom(80);
-            chatUI.appendMessage('assistant', payload.response);
+            const msgOpts = {};
+            if (payload.attachment_info) {
+                msgOpts.metadata = { attachment_info: payload.attachment_info };
+            }
+            chatUI.appendMessage('assistant', payload.response, msgOpts);
             if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
             _pendingSlashResponse = payload.response;
         }

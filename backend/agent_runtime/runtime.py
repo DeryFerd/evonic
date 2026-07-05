@@ -2500,6 +2500,24 @@ class AgentRuntime:
                 _cl.append({'type': 'system', 'session_id': session_id, 'content': response,
                             'metadata': {'slash_command': True}})
                 agent = db.get_agent(agent_id)
+                # Check for any attachments created by the handler (e.g. /dump)
+                attachment_info = None
+                try:
+                    attachments = db.list_session_attachments(session_id, agent_id)
+                    if attachments:
+                        att = attachments[0]
+                        guessed_mime = att.get('mime_type') or 'application/octet-stream'
+                        att_info = {
+                            'attachment_id': att['id'],
+                            'filename': att.get('filename', ''),
+                            'mime_type': guessed_mime,
+                            'size_bytes': att.get('size_bytes', 0),
+                            'is_image': guessed_mime.startswith('image/'),
+                            'file_path': att.get('file_path', ''),
+                        }
+                        attachment_info = att_info
+                except Exception:
+                    pass
                 # Emit turn_complete so SSE client shows the response
                 event_stream.emit('turn_complete', {
                     'agent_id': agent_id,
@@ -2512,6 +2530,7 @@ class AgentRuntime:
                     'is_error': False,
                     'thinking_duration': 0.0,
                     'slash_command': True,
+                    'attachment_info': attachment_info,
                 })
                 # Signal the client to clear the chat UI when the clear command was used
                 if cmd_name == 'clear':

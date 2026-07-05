@@ -486,6 +486,7 @@ def test_spawn_organizer_forces_server_local_kb_config(tmp_path):
     agent = {"id": "a1", "name": "A", "user_id": "u", "channel_id": "c",
              "workplace_id": "remote-wp", "sandbox_enabled": 1, "run_as_user": "someuser"}
 
+    from backend.agent_runtime import explorer as explorer_mod
     from models.db import db
     with patch.object(workspace_mod, "resolve_self_path", return_value=str(kb_dir)), \
          patch.object(subagent_mod.subagent_manager, "spawn_explorer", _fake_spawn), \
@@ -496,6 +497,8 @@ def test_spawn_organizer_forces_server_local_kb_config(tmp_path):
          patch.object(event_mod, "event_stream", es), \
          patch.object(db, "get_setting", return_value=None), \
          patch.object(db, "get_default_model", return_value=None), \
+         patch.object(explorer_mod, "resolve_tool_ids",
+                      return_value=(["grep", "glob", "read"], None)), \
          patch.object(M, "evomem_available", lambda: True), \
          patch.object(M, "get_engine", lambda: "evomem"):
         result = M._spawn_kb_organizer(agent, "the summary", "User: ke Jakarta naik Bima")

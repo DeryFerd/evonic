@@ -1,0 +1,390 @@
+{# Tools pane — list + editor modal. Logic in static/js/settings-tools.js #}
+
+<div class="settings-pane-head">
+    <h2 class="settings-pane-title">Tools</h2>
+    <p class="settings-pane-desc">
+        Custom function tools available to agents — mock responses for
+        evaluation and real Python backends for production.
+    </p>
+</div>
+
+<div class="flex flex-col md:grid md:grid-cols-2">
+    <div>
+        <div class="flex items-center gap-3 mb-4">
+            <input
+                id="tools-filter"
+                type="text"
+                placeholder="Filter tools…"
+                oninput="settingsTools.filter()"
+                class="flex-1 border border-gray-300 dark:border-gray-600 rounded-md px-3 py-2 text-sm bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            />
+            <span
+                id="tools-count"
+                class="text-xs text-gray-400 whitespace-nowrap"
+            ></span>
+        </div>
+
+        <div id="tools-list">
+            <!-- Tools are rendered here -->
+        </div>
+    </div>
+</div>
+<div
+    id="tools-pagination"
+    class="flex items-center justify-center gap-2 mt-4 hidden"
+>
+    <button
+        onclick="settingsTools.goPage(settingsTools.page - 1)"
+        id="tools-prev"
+        class="px-3 py-1.5 rounded-md text-sm border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+    >
+        &larr; Prev
+    </button>
+    <span id="tools-page-info" class="text-sm text-gray-500"></span>
+    <button
+        onclick="settingsTools.goPage(settingsTools.page + 1)"
+        id="tools-next"
+        class="px-3 py-1.5 rounded-md text-sm border border-gray-300 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700"
+    >
+        Next &rarr;
+    </button>
+</div>
+
+<!-- Tool Modal -->
+<div id="tool-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[760px] shadow-xl flex flex-col"
+        style="max-height: 90vh"
+    >
+        <div
+            class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="tool-modal-title"
+                class="m-0 text-gray-800 dark:text-gray-100"
+            >
+                Add Tool
+            </h3>
+            <button
+                onclick="closeModal('tool-modal')"
+                class="bg-transparent border-none text-gray-500 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-300"
+            >
+                &times;
+            </button>
+        </div>
+        <!-- Main Tab Bar -->
+        <div class="flex border-b border-gray-200 dark:border-gray-700 flex-shrink-0 px-5">
+            <button
+                id="tool-main-tab-btn-info"
+                onclick="settingsTools.switchModalTab('info')"
+                class="px-4 py-3 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600 -mb-px"
+            >
+                Info
+            </button>
+            <button
+                id="tool-main-tab-btn-operation"
+                onclick="settingsTools.switchModalTab('operation')"
+                class="px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px"
+            >
+                Operation
+            </button>
+        </div>
+        <div class="flex-1 overflow-y-auto">
+            <form id="tool-form">
+                <input type="hidden" id="tool-edit-id" />
+                <!-- Info Tab -->
+                <div id="tool-main-tab-info" class="p-5 space-y-4">
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >ID</label
+                        >
+                        <input
+                            type="text"
+                            id="tool-id-input"
+                            placeholder="Auto-generated from name if empty"
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                    </div>
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >Name *</label
+                        >
+                        <input
+                            type="text"
+                            id="tool-name"
+                            required
+                            placeholder="e.g., Get Weather"
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                    </div>
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >Description</label
+                        >
+                        <input
+                            type="text"
+                            id="tool-description"
+                            placeholder="Brief description of the tool"
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                    </div>
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >Function Name *</label
+                        >
+                        <input
+                            type="text"
+                            id="tool-func-name"
+                            required
+                            placeholder="e.g., get_weather"
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        />
+                        <small class="text-gray-500 text-xs"
+                            >The function name used in OpenAI tool calling
+                            format</small
+                        >
+                    </div>
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >Function Description</label
+                        >
+                        <textarea
+                            id="tool-func-description"
+                            rows="2"
+                            placeholder="Description shown to the LLM"
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        ></textarea>
+                    </div>
+                    <div>
+                        <label
+                            class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                            >Parameters (JSON)</label
+                        >
+                        <textarea
+                            id="tool-parameters"
+                            rows="7"
+                            placeholder='{"type": "object", "properties": {"location": {"type": "string", "description": "City name"}}, "required": ["location"]}'
+                            class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                        ></textarea>
+                        <small class="text-gray-500 text-xs"
+                            >OpenAI function parameters schema (JSON
+                            object)</small
+                        >
+                    </div>
+                    <div
+                        class="flex items-center justify-between p-3 bg-amber-50 border border-amber-200 rounded-md"
+                    >
+                        <div>
+                            <label
+                                for="tool-no-mock"
+                                class="text-sm font-medium text-gray-800 cursor-pointer"
+                                >Use Real Backend (no mock)</label
+                            >
+                            <p class="text-xs text-gray-500 mt-0.5">
+                                When enabled, evaluation will call the real
+                                backend implementation instead of mock
+                                responses. Fails if no backend exists.
+                            </p>
+                        </div>
+                        <input
+                            type="checkbox"
+                            id="tool-no-mock"
+                            class="w-4 h-4 text-indigo-600 rounded cursor-pointer ml-4 flex-shrink-0"
+                        />
+                    </div>
+                </div>
+                <!-- Operation Tab -->
+                <div id="tool-main-tab-operation" class="hidden p-5">
+                    <!-- Operation Sub-tab Bar -->
+                    <div class="flex border-b border-gray-200 dark:border-gray-700 mb-4">
+                        <button
+                            type="button"
+                            id="tool-op-tab-btn-prod"
+                            onclick="settingsTools.switchModalOpTab('prod')"
+                            class="px-4 py-2 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600 -mb-px"
+                        >
+                            Prod
+                        </button>
+                        <button
+                            type="button"
+                            id="tool-op-tab-btn-mock"
+                            onclick="settingsTools.switchModalOpTab('mock')"
+                            class="px-4 py-2 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700 -mb-px"
+                        >
+                            Mock
+                        </button>
+                    </div>
+                    <!-- Prod Sub-tab -->
+                    <div id="tool-op-tab-prod">
+                        <label
+                            class="text-xs uppercase tracking-wide text-gray-400 font-semibold"
+                            >Backend Code (Python)</label
+                        >
+                        <textarea
+                            id="tool-backend-code"
+                            class="w-full font-mono text-xs bg-gray-900 text-gray-100 border border-gray-700 rounded-md p-3 mt-2 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                            rows="14"
+                            spellcheck="false"
+                            style="resize: vertical; tab-size: 4"
+                            onkeydown="
+                                if (event.key === 'Tab') {
+                                    event.preventDefault();
+                                    const s = this.selectionStart,
+                                        e = this.selectionEnd;
+                                    this.value =
+                                        this.value.substring(0, s) +
+                                        '    ' +
+                                        this.value.substring(e);
+                                    this.selectionStart = this.selectionEnd =
+                                        s + 4;
+                                }
+                            "
+                        ></textarea>
+                        <div class="flex items-center gap-3 mt-2">
+                            <button
+                                type="button"
+                                onclick="settingsTools.saveBackendCode()"
+                                class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600 transition-colors"
+                            >
+                                Save
+                            </button>
+                            <span
+                                id="tool-backend-save-status"
+                                class="text-sm text-green-600 hidden"
+                                >Saved!</span
+                            >
+                        </div>
+                        <!-- Test section (Prod) -->
+                        <div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
+                            <label
+                                class="text-xs uppercase tracking-wide text-gray-400 font-semibold"
+                                >Test</label
+                            >
+                            <textarea
+                                id="tool-test-args-real"
+                                class="w-full font-mono text-xs bg-gray-50 border border-gray-200 rounded-md p-2 mt-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                                rows="3"
+                                spellcheck="false"
+                                placeholder='{"key": "value"}'
+                            ></textarea>
+                            <div class="flex items-center gap-3 mt-2">
+                                <button
+                                    type="button"
+                                    onclick="settingsTools.testExec('real')"
+                                    class="px-4 py-2 bg-emerald-500 text-white rounded-md text-sm hover:bg-emerald-600 transition-colors"
+                                >
+                                    Run
+                                </button>
+                                <span
+                                    id="tool-test-status-real"
+                                    class="text-xs text-gray-400 hidden"
+                                ></span>
+                            </div>
+                            <pre
+                                id="tool-test-result-real"
+                                class="hidden mt-2 bg-gray-50 border border-gray-200 rounded-md p-3 text-xs font-mono whitespace-pre-wrap overflow-x-auto"
+                                style="max-height: 200px"
+                            ></pre>
+                        </div>
+                    </div>
+                    <!-- Mock Sub-tab -->
+                    <div id="tool-op-tab-mock" class="hidden">
+                        <div class="mb-4">
+                            <label
+                                class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                                >Mock Response Type</label
+                            >
+                            <select
+                                id="tool-mock-type"
+                                onchange="settingsTools.toggleMockResponseHelp()"
+                                class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                            >
+                                <option value="json">JSON Object</option>
+                                <option value="javascript">JavaScript</option>
+                            </select>
+                        </div>
+                        <div class="mb-2">
+                            <label
+                                class="block mb-1 text-gray-700 dark:text-gray-200 text-sm font-medium"
+                                >Mock Response</label
+                            >
+                            <textarea
+                                id="tool-mock-response"
+                                rows="10"
+                                placeholder='{"result": "sample data"}'
+                                class="w-full p-2.5 border border-gray-300 rounded-md bg-white text-gray-800 text-sm font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                            ></textarea>
+                            <small
+                                id="tool-mock-help-json"
+                                class="text-gray-500 text-xs"
+                                >JSON object that will be returned when this
+                                tool is called during evaluation</small
+                            >
+                            <small
+                                id="tool-mock-help-js"
+                                class="hidden text-gray-500 text-xs"
+                                >JavaScript code. Use <code>ARGS</code> variable
+                                to access tool call arguments. Output via
+                                <code>console.log(JSON.stringify(result))</code
+                                >.</small
+                            >
+                        </div>
+                        <!-- Test section (Mock) -->
+                        <div class="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
+                            <label
+                                class="text-xs uppercase tracking-wide text-gray-400 font-semibold"
+                                >Test</label
+                            >
+                            <textarea
+                                id="tool-test-args-mock"
+                                class="w-full font-mono text-xs bg-gray-50 border border-gray-200 rounded-md p-2 mt-1 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                                rows="3"
+                                spellcheck="false"
+                                placeholder='{"key": "value"}'
+                            ></textarea>
+                            <div class="flex items-center gap-3 mt-2">
+                                <button
+                                    type="button"
+                                    onclick="settingsTools.testExec('mock')"
+                                    class="px-4 py-2 bg-emerald-500 text-white rounded-md text-sm hover:bg-emerald-600 transition-colors"
+                                >
+                                    Run
+                                </button>
+                                <span
+                                    id="tool-test-status-mock"
+                                    class="text-xs text-gray-400 hidden"
+                                ></span>
+                            </div>
+                            <pre
+                                id="tool-test-result-mock"
+                                class="hidden mt-2 bg-gray-50 border border-gray-200 rounded-md p-3 text-xs font-mono whitespace-pre-wrap overflow-x-auto"
+                                style="max-height: 200px"
+                            ></pre>
+                        </div>
+                    </div>
+                </div>
+            </form>
+        </div>
+        <div
+            class="flex justify-end gap-2.5 p-5 border-t border-gray-200 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                onclick="closeModal('tool-modal')"
+                class="bg-gray-100 text-gray-700 border border-gray-300 px-5 py-2.5 rounded-md cursor-pointer text-sm hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-200 dark:border-gray-600 dark:hover:bg-gray-600"
+            >
+                Cancel
+            </button>
+            <button
+                onclick="settingsTools.save()"
+                class="bg-indigo-600 text-white border-none px-5 py-2.5 rounded-md cursor-pointer text-sm hover:bg-indigo-700"
+            >
+                Save Tool
+            </button>
+        </div>
+    </div>
+</div>

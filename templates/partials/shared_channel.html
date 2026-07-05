@@ -1,44 +1,59 @@
-<div class="space-y-4">
+<div>
     <!-- Header -->
-    <div class="flex items-center justify-between">
-        <div>
-            <h3 class="font-medium text-gray-800 dark:text-gray-100">Shared Channel</h3>
-            <p class="text-sm text-gray-500 mt-0.5">One WhatsApp number serving multiple agents. Connect once, then assign incoming users and groups to agents. Unassigned senders get no reply.</p>
-        </div>
+    <div class="settings-pane-head">
+        <h2 class="settings-pane-title">Shared Channel</h2>
+        <p class="settings-pane-desc">One WhatsApp number serving multiple agents. Connect once, then assign incoming users and groups to agents. Unassigned senders get no reply.</p>
     </div>
 
-    <!-- Connection card / empty state -->
-    <div id="sc-channels"></div>
+    <!-- Connection -->
+    <section class="setting-group">
+        <div class="setting-group-head">
+            <i data-lucide="plug-zap"></i>
+            <h3>Connection</h3>
+        </div>
+        <div id="sc-channels"></div>
+    </section>
 
     <!-- Unassigned senders -->
-    <div id="sc-inbox-section" class="hidden">
-        <div class="flex items-center justify-between mb-2">
-            <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300">Unassigned Senders</h4>
-            <span id="sc-inbox-count" class="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full"></span>
+    <section id="sc-inbox-section" class="setting-group hidden">
+        <div class="setting-group-head">
+            <i data-lucide="inbox"></i>
+            <h3>Unassigned Senders</h3>
+            <span id="sc-inbox-count" class="text-[11px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 px-2 py-0.5 rounded-full empty:hidden"></span>
         </div>
-        <p class="text-xs text-gray-400 mb-2">People and groups that messaged the shared number but have no agent yet. Names are self-reported by the sender — edit before assigning if needed.</p>
+        <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">People and groups that messaged the shared number but have no agent yet. Names are self-reported by the sender — edit before assigning if needed.</p>
         <div id="sc-inbox-list" class="space-y-2">
             <p class="text-xs text-gray-400 text-center py-3">No unassigned senders.</p>
         </div>
-    </div>
+    </section>
 
     <!-- Routes -->
-    <div id="sc-routes-section" class="hidden">
-        <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">User &rarr; Agent Routes</h4>
-        <div id="sc-routes-list" class="space-y-1.5 mb-3">
-            <p class="text-xs text-gray-400 text-center py-2">No routes configured.</p>
+    <section id="sc-routes-section" class="setting-group hidden">
+        <div class="setting-group-head">
+            <i data-lucide="git-fork"></i>
+            <h3>User &rarr; Agent Routes</h3>
         </div>
-        <div class="flex gap-2 flex-wrap">
-            <input type="text" id="sc-route-user-input" placeholder="Phone number, e.g. 62812345678"
-                class="flex-1 min-w-[180px] p-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
-            <input type="text" id="sc-route-name-input" placeholder="Name (optional)"
-                class="w-32 p-2 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
-            <select id="sc-route-agent-select"
-                class="w-36 p-2 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"></select>
-            <button onclick="sharedChannel.addRoute()" class="px-3 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600 flex-shrink-0">Add</button>
+        <div class="setting-group-body">
+            <div id="sc-routes-list" class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                <p class="text-xs text-gray-400 text-center py-4">No routes configured.</p>
+            </div>
+            <!-- Add route (manual pre-authorization) -->
+            <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
+                <div class="flex gap-2 flex-wrap">
+                    <input type="text" id="sc-route-user-input" placeholder="Phone number, e.g. 62812345678"
+                        class="flex-1 min-w-[180px] px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
+                    <input type="text" id="sc-route-name-input" placeholder="Name (optional)"
+                        class="w-36 px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
+                    <select id="sc-route-agent-select"
+                        class="w-40 px-2 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"></select>
+                    <button onclick="sharedChannel.addRoute()" class="btn-primary flex-shrink-0" style="padding:6px 14px">
+                        <i data-lucide="plus"></i>Add Route
+                    </button>
+                </div>
+                <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">Manual entry is a fallback for pre-authorizing known phone numbers — normally senders appear above after their first message and you assign them there.</p>
+            </div>
         </div>
-        <p class="text-[10px] text-gray-400 mt-1">Manual entry is a fallback for pre-authorizing known phone numbers — normally senders appear above after their first message and you assign them there.</p>
-    </div>
+    </section>
 </div>
 
 <script>
@@ -71,7 +86,7 @@
         startPolling: function() {
             if (sharedChannel._pollTimer) return;
             sharedChannel._pollTimer = setInterval(function() {
-                if (document.getElementById('shared_channel-tab').classList.contains('active')) {
+                if (document.getElementById('section-shared_channel').classList.contains('active')) {
                     sharedChannel.load();
                 } else {
                     sharedChannel.stopPolling();
@@ -127,51 +142,65 @@
                 return;
             }
             sharedChannel._chanSig = sig;
+            var phoneIcon =
+                '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">' +
+                '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>';
             if (!ch) {
                 if (sharedChannel._qrTimer) { clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null; }
                 el.innerHTML =
-                    '<div class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600">' +
-                    '<p class="text-sm text-gray-500 mb-3">No shared channel yet. Create one and scan the QR code with the WhatsApp account you want to share.</p>' +
-                    '<div class="flex gap-2">' +
-                    '<input type="text" id="sc-create-name" placeholder="Name, e.g. Company WhatsApp" class="flex-1 p-2 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">' +
-                    '<button onclick="sharedChannel.create()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600 flex-shrink-0">Create Shared WhatsApp</button>' +
-                    '</div></div>';
+                    '<div class="setting-group-body"><div class="px-6 py-8 text-center">' +
+                    '<div class="mx-auto w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400 flex items-center justify-center mb-3">' + phoneIcon + '</div>' +
+                    '<p class="text-sm font-medium text-gray-800 dark:text-gray-100">No shared channel yet</p>' +
+                    '<p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">Create one and scan the QR code with the WhatsApp account you want to share.</p>' +
+                    '<div class="flex gap-2 max-w-md mx-auto">' +
+                    '<input type="text" id="sc-create-name" placeholder="Name, e.g. Company WhatsApp" class="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' +
+                    '<button onclick="sharedChannel.create()" class="btn-primary flex-shrink-0" style="padding:6px 14px">Create Shared WhatsApp</button>' +
+                    '</div></div></div>';
                 return;
             }
             // Three UI states: not running → Connect; running but the
             // WhatsApp account isn't linked yet → QR + Cancel; linked → Stop.
             var connected = ch.running && status === 'connected';
             var connecting = ch.running && !connected;
-            var dot = connected ? 'bg-green-500' : (connecting ? 'bg-amber-400' : 'bg-gray-300');
+            var dot = connected ? 'bg-emerald-500' : (connecting ? 'bg-amber-400 animate-pulse' : 'bg-gray-300 dark:bg-gray-600');
             var statusLabel = connected ? 'Connected'
                 : (connecting
                     ? (status === 'qr_pending' ? 'Waiting for QR scan' : 'Connecting...')
                     : 'Not connected');
+            var iconTone = connected
+                ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400'
+                : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500';
             var toggleBtn;
             if (connected) {
-                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="text-xs px-3 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100">Stop</button>';
+                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/30 transition-colors">Stop</button>';
             } else if (connecting) {
-                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="text-xs px-3 py-1 rounded bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300">Cancel</button>';
+                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors">Cancel</button>';
             } else {
-                toggleBtn = '<button onclick="sharedChannel.toggle(true)" class="text-xs px-3 py-1 rounded bg-green-50 text-green-600 hover:bg-green-100">Connect</button>';
+                toggleBtn = '<button onclick="sharedChannel.toggle(true)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/30 transition-colors">Connect</button>';
             }
+            var trashIcon =
+                '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">' +
+                '<path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></svg>';
             var html =
-                '<div class="p-4 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600">' +
-                '<div class="flex items-center justify-between">' +
+                '<div class="setting-group-body">' +
+                '<div class="p-4 flex items-center justify-between gap-3 flex-wrap">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                '<div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ' + iconTone + '">' + phoneIcon + '</div>' +
+                '<div class="min-w-0">' +
                 '<div class="flex items-center gap-2">' +
-                '<span class="text-sm font-semibold text-gray-800 dark:text-gray-100">' + sharedChannel.esc(ch.name || 'Shared WhatsApp') + '</span>' +
-                '<span class="text-xs px-2 py-0.5 rounded font-medium bg-green-100 text-green-700">' + sharedChannel.esc(ch.type) + '</span>' +
+                '<span class="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">' + sharedChannel.esc(ch.name || 'Shared WhatsApp') + '</span>' +
+                '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">' + sharedChannel.esc(ch.type) + '</span>' +
                 '</div>' +
-                '<div class="flex items-center gap-2">' + toggleBtn +
-                '<button onclick="sharedChannel.remove()" class="text-xs text-red-500 hover:text-red-700">Delete</button>' +
-                '</div></div>' +
-                '<div class="flex items-center gap-1.5 mt-2">' +
+                '<div class="flex items-center gap-1.5 mt-0.5">' +
                 '<span class="inline-block w-2 h-2 rounded-full ' + dot + '"></span>' +
                 '<span class="text-xs text-gray-400">' + statusLabel + '</span>' +
-                '</div>' +
-                '<div id="sc-qr-area" class="mt-3 ' + (connecting ? '' : 'hidden') + ' text-center">' +
-                '<img id="sc-qr-image" class="mx-auto w-52 h-52 hidden" alt="WhatsApp QR">' +
-                '<p id="sc-qr-hint" class="text-xs text-gray-400 mt-2">Preparing QR code...</p>' +
+                '</div></div></div>' +
+                '<div class="flex items-center gap-2 flex-shrink-0">' + toggleBtn +
+                '<button onclick="sharedChannel.remove()" title="Delete channel" class="inline-flex items-center justify-center w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600 text-gray-400 hover:text-red-600 hover:border-red-300 dark:hover:text-red-400 dark:hover:border-red-700 transition-colors">' + trashIcon + '</button>' +
+                '</div></div>' +
+                '<div id="sc-qr-area" class="px-4 pb-5 border-t border-gray-100 dark:border-gray-700 ' + (connecting ? '' : 'hidden') + ' text-center">' +
+                '<img id="sc-qr-image" class="mx-auto w-52 h-52 mt-4 rounded-lg border border-gray-200 dark:border-gray-600 bg-white p-2 hidden" alt="WhatsApp QR">' +
+                '<p id="sc-qr-hint" class="text-xs text-gray-400 mt-3">Preparing QR code...</p>' +
                 '</div></div>';
             el.innerHTML = html;
             if (connecting) { sharedChannel.pollQr(); }
@@ -267,19 +296,22 @@
                 var prefillName = e.is_group ? (e.group_name || '') : (e.push_name || '');
                 var alt = e.alt_user_id ? ' <span class="text-gray-400">/ ' + sharedChannel.esc(e.alt_user_id) + '</span>' : '';
                 var preview = e.last_message ? sharedChannel.esc(e.last_message.substring(0, 120)) : '';
-                return '<div class="p-2.5 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800">' +
-                    '<div class="flex items-center justify-between gap-2 flex-wrap">' +
-                    '<div class="min-w-0 flex-1">' +
-                    '<div class="text-xs font-medium text-gray-800 dark:text-gray-100 truncate">' + sharedChannel.esc(title) + '</div>' +
-                    '<div class="text-xs text-gray-500 dark:text-gray-400 font-mono">' + sharedChannel.esc(e.external_user_id) + alt + '</div>' +
-                    (preview ? '<div class="text-xs text-gray-500 dark:text-gray-400 truncate italic">&ldquo;' + preview + '&rdquo;</div>' : '') +
-                    '<div class="text-xs text-gray-400">' + e.message_count + ' message(s), last ' + sharedChannel.esc(e.last_seen || '') + '</div>' +
-                    '</div>' +
+                var initial = String(title).trim().charAt(0).toUpperCase() || '?';
+                return '<div class="p-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 border-l-2 border-l-amber-400 dark:border-l-amber-500">' +
+                    '<div class="flex items-center justify-between gap-3 flex-wrap">' +
+                    '<div class="flex items-center gap-3 min-w-0 flex-1">' +
+                    '<span class="w-8 h-8 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 flex items-center justify-center text-xs font-semibold flex-shrink-0">' + sharedChannel.esc(initial) + '</span>' +
+                    '<div class="min-w-0">' +
+                    '<div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">' + sharedChannel.esc(title) + '</div>' +
+                    '<div class="text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate">' + sharedChannel.esc(e.external_user_id) + alt + '</div>' +
+                    (preview ? '<div class="text-xs text-gray-500 dark:text-gray-400 truncate italic mt-0.5">&ldquo;' + preview + '&rdquo;</div>' : '') +
+                    '<div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">' + e.message_count + ' message(s) · last ' + sharedChannel.esc(e.last_seen || '') + '</div>' +
+                    '</div></div>' +
                     '<div class="flex items-center gap-1.5 flex-shrink-0 flex-wrap">' +
-                    '<input type="text" id="sc-assign-name-' + sharedChannel.escAttr(e.id) + '" value="' + sharedChannel.escAttr(prefillName) + '" placeholder="Name" class="w-24 p-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">' +
-                    '<select id="sc-assign-agent-' + sharedChannel.escAttr(e.id) + '" class="w-28 p-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">' + agentOpts + '</select>' +
-                    '<button onclick="sharedChannel.assign(\'' + sharedChannel.escAttr(e.id) + '\')" class="px-2.5 py-1 text-xs rounded bg-green-500 text-white hover:bg-green-600">Assign</button>' +
-                    '<button onclick="sharedChannel.dismiss(\'' + sharedChannel.escAttr(e.id) + '\')" class="px-2.5 py-1 text-xs rounded bg-gray-200 text-gray-600 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300">Dismiss</button>' +
+                    '<input type="text" id="sc-assign-name-' + sharedChannel.escAttr(e.id) + '" value="' + sharedChannel.escAttr(prefillName) + '" placeholder="Name" class="w-28 px-2 py-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' +
+                    '<select id="sc-assign-agent-' + sharedChannel.escAttr(e.id) + '" class="w-32 px-2 py-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">' + agentOpts + '</select>' +
+                    '<button onclick="sharedChannel.assign(\'' + sharedChannel.escAttr(e.id) + '\')" class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">Assign</button>' +
+                    '<button onclick="sharedChannel.dismiss(\'' + sharedChannel.escAttr(e.id) + '\')" class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700 transition-colors">Dismiss</button>' +
                     '</div></div></div>';
             }).join('');
         },
@@ -316,19 +348,21 @@
             sharedChannel._routesSig = sig;
             var ids = Object.keys(routes);
             if (ids.length === 0) {
-                list.innerHTML = '<p class="text-xs text-gray-400 text-center py-2">No routes configured.</p>';
+                list.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No routes configured.</p>';
                 return;
             }
             list.innerHTML = ids.map(function(u) {
-                var name = names[u] ? '<span class="text-gray-600 dark:text-gray-400">— ' + sharedChannel.esc(names[u]) + '</span>' : '';
+                var name = names[u] ? '<span class="text-xs text-gray-600 dark:text-gray-400 truncate">' + sharedChannel.esc(names[u]) + '</span>' : '';
                 var agentName = sharedChannel.agentsById[routes[u]] || '(unknown agent)';
-                return '<div class="flex items-center justify-between p-2 bg-gray-50 dark:bg-gray-700/50 rounded-md border border-gray-100 dark:border-gray-600">' +
-                    '<div class="flex items-center gap-2 min-w-0">' +
+                return '<div class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">' +
+                    '<div class="flex items-center gap-3 min-w-0">' +
                     '<span class="text-xs text-gray-700 dark:text-gray-300 font-mono flex-shrink-0">' + sharedChannel.esc(u) + '</span>' +
-                    '<span class="text-xs truncate">' + name + '</span>' +
-                    '<span class="text-xs text-indigo-600 dark:text-indigo-400 flex-shrink-0">&rarr; ' + sharedChannel.esc(agentName) + '</span>' +
+                    name +
+                    '<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-800 flex-shrink-0">' +
+                    '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>' +
+                    sharedChannel.esc(agentName) + '</span>' +
                     '</div>' +
-                    '<button onclick="sharedChannel.removeRoute(\'' + sharedChannel.escAttr(u) + '\')" class="text-xs text-red-500 hover:text-red-700 flex-shrink-0 ml-2">Remove</button>' +
+                    '<button onclick="sharedChannel.removeRoute(\'' + sharedChannel.escAttr(u) + '\')" class="text-xs font-medium text-gray-400 hover:text-red-600 dark:hover:text-red-400 flex-shrink-0 transition-colors">Remove</button>' +
                     '</div>';
             }).join('');
         },

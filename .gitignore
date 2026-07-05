@@ -320,3 +320,6 @@ state/
 
 # PROMPTPurify ONNX model (downloaded via download_model.sh)
 backend/promptpurify/model.int8.onnx
+
+# Local tooling (standalone tailwindcss binary)
+.local/

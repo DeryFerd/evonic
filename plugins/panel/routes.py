@@ -296,6 +296,11 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   .panel-btn { display:flex; align-items:center; gap:.5rem; color:#fff; font-weight:500; font-size:.8125rem; padding:.625rem .75rem; border-radius:.5rem; border:none; cursor:pointer; text-align:left; width:100%; box-sizing:border-box; transition:background-color .15s, transform .05s; }
   .panel-btn:active { transform:translateY(1px); }
   .panel-btn .pnl-dot { width:.5rem; height:.5rem; border-radius:9999px; flex:0 0 auto; background:rgba(255,255,255,.75); }
+  .panel-btn .pnl-hour { display:none; flex:0 0 auto; font-size:.8125rem; line-height:1; }
+  .panel-btn.btn-running { opacity:.65; cursor:wait; }
+  .panel-btn.btn-running .pnl-dot { display:none; }
+  .panel-btn.btn-running .pnl-hour { display:inline-block; animation:pnl-hourspin 1.5s ease-in-out infinite; }
+  @keyframes pnl-hourspin { 0%,20% { transform:rotate(0deg); } 50%,70% { transform:rotate(180deg); } 100% { transform:rotate(360deg); } }
   .panel-btn .pnl-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .btn-script { background-color:#4f46e5; }
   .btn-script:hover { background-color:#4338ca; }
@@ -325,6 +330,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
   .pnl-run-fwd:hover { color:#fff; border-color:#475569; }
   .pnl-term-body { flex:1; overflow-y:auto; padding:.75rem 1rem; margin:0; font-family:'Fira Code','Cascadia Code','Consolas',Menlo,Monaco,monospace; font-size:12.5px; line-height:1.5; color:#e2e8f0; white-space:pre-wrap; word-break:break-word; }
   .pnl-cmd { color:#818cf8; font-weight:600; }
+  .pnl-cmd-src { color:#a5b4fc; opacity:.85; }
   .pnl-muted { color:#64748b; }
   .pnl-ok { color:#34d399; }
   .pnl-err { color:#f87171; }
@@ -378,7 +384,7 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
             disabled_attr = "disabled"
             disabled_class = " btn-disabled"
 
-        html += f"""      <button class="panel-btn {color_class}{disabled_class}" data-action-id="{aid}" data-action-type="{atype}" data-label="{label}" data-search="{label_lower}" {disabled_attr}><span class="pnl-dot"></span><span class="pnl-label">{label}</span></button>
+        html += f"""      <button class="panel-btn {color_class}{disabled_class}" data-action-id="{aid}" data-action-type="{atype}" data-label="{label}" data-search="{label_lower}" {disabled_attr}><span class="pnl-dot"></span><span class="pnl-hour">&#8987;</span><span class="pnl-label">{label}</span></button>
 """
 
     if not actions:
@@ -580,10 +586,21 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     badge.textContent = text;
   }
 
+  let loadingBtn = null;
+
+  function setBtnLoading(actionId) {
+    loadingBtn = document.querySelector('.panel-btn[data-action-id="' + actionId + '"]');
+    if (loadingBtn) loadingBtn.classList.add('btn-running');
+  }
+
   function setButtonsDisabled(state) {
     document.querySelectorAll('.panel-btn').forEach(function(b) {
       if (!b.classList.contains('btn-disabled')) b.disabled = state;
     });
+    if (!state && loadingBtn) {
+      loadingBtn.classList.remove('btn-running');
+      loadingBtn = null;
+    }
   }
 
   // ── Search filter ─────────────────────────────────────────────────
@@ -688,8 +705,24 @@ def _render_panel_html(agent_id: str, agent: dict, actions: list) -> str:
     const label = action ? action.label : ('action ' + actionId);
 
     setButtonsDisabled(true);
+    setBtnLoading(actionId);
     ansiReset();
     startRun(label);
+    if (action && action.action_type === 'script' && action.content) {
+      let cmdText = action.content;
+      if (params) {
+        let paramsDef = [];
+        try {
+          paramsDef = typeof action.params === 'string' ? JSON.parse(action.params) : (action.params || []);
+        } catch (e) { paramsDef = []; }
+        Object.keys(params).forEach(function(k) {
+          const def = paramsDef.find(function(p) { return p.name === k; });
+          const shown = def && def.type === 'password' ? '********' : String(params[k]);
+          cmdText = cmdText.split('{{' + k + '}}').join(shown);
+        });
+      }
+      termAppend(cmdText.replace(/\\s+$/, '') + '\\n', 'pnl-cmd-src');
+    }
     setBadge('running', 'running');
 
     try {

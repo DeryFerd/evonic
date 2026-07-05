@@ -386,7 +386,9 @@ def test_organizer_single_instance_and_debounce():
     assert M._organizer_try_claim(a, 0) is False
     M._organizer_release(a)
     # debounce: after release, an immediate re-claim within the window is refused
-    M._organizer_last_start.clear()
+    # Use a fresh dict to avoid any timing/debounce state leaking from other tests
+    M._organizer_last_start = {}
+    M._organizer_running = set()
     assert M._organizer_try_claim(a, 100) is True
     M._organizer_release(a)
     assert M._organizer_try_claim(a, 100) is False
@@ -483,13 +485,18 @@ def test_spawn_organizer_forces_server_local_kb_config(tmp_path):
     agent = {"id": "a1", "name": "A", "user_id": "u", "channel_id": "c",
              "workplace_id": "remote-wp", "sandbox_enabled": 1, "run_as_user": "someuser"}
 
+    from models.db import db
     with patch.object(workspace_mod, "resolve_self_path", return_value=str(kb_dir)), \
          patch.object(subagent_mod.subagent_manager, "spawn_explorer", _fake_spawn), \
          patch.object(subagent_mod.subagent_manager, "destroy", return_value=None), \
          patch.object(notifier_mod, "notify_agent", _fake_notify), \
          patch.object(report_mod, "resolve_report_to_for_subagent_spawn",
                       return_value=(None, None, None)), \
-         patch.object(event_mod, "event_stream", es):
+         patch.object(event_mod, "event_stream", es), \
+         patch.object(db, "get_setting", return_value=None), \
+         patch.object(db, "get_default_model", return_value=None), \
+         patch.object(M, "evomem_available", lambda: True), \
+         patch.object(M, "get_engine", lambda: "evomem"):
         result = M._spawn_kb_organizer(agent, "the summary", "User: ke Jakarta naik Bima")
 
     assert result == []                                       # parsed {"docs": []}

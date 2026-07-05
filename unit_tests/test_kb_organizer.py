@@ -99,9 +99,9 @@ def test_tail_messages_keeps_user_turns_drops_tool_noise():
     ]
     tail = _tail_messages_from_entries(entries)
     assert tail == [
-        {"role": "user", "content": "nama yg benar Yondix bukan Yonix"},
-        {"role": "assistant", "content": "Oke, mencari dulu"},
-        {"role": "assistant", "content": "Sudah kucatat."},
+        {"role": "user", "content": "nama yg benar Yondix bukan Yonix", "ts": 0},
+        {"role": "assistant", "content": "Oke, mencari dulu", "ts": 0},
+        {"role": "assistant", "content": "Sudah kucatat.", "ts": 0},
     ]
     out = M._format_recent_messages(tail, n=6)
     assert "User: nama yg benar Yondix bukan Yonix" in out   # the user turn survives
@@ -508,7 +508,7 @@ def test_author_docs_passes_recent_messages_to_organizer(brain):
     W.upsert_doc(AGENT, title="Gambir", doc_type="place", description="d", body="b")
     seen = {}
 
-    def _capture(agent, source_text, recent_text=""):
+    def _capture(agent, source_text, recent_text="", **kwargs):
         seen["recent"] = recent_text
         return []  # no ops
 

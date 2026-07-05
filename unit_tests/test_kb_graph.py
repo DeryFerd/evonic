@@ -2,8 +2,8 @@
 Tests for the kb_graph tool — KB document link graph traversal (1-hop).
 
 KB pages are the top-level pages of the evomem knowledge root, so their slug is
-the filename stem (e.g. 'notes', not 'evonic.md'). The tool accepts a filename
-('evonic.md') and query_kb_graph normalises it to the slug.
+the filename stem (e.g. 'notes'). The tool accepts a filename
+('notes.md') and query_kb_graph normalises it to the slug.
 """
 import os
 import json
@@ -111,7 +111,7 @@ class TestOutgoingLinks:
         db_dir = _make_test_db()
         from backend.tools.kb_graph import execute
         with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
-            result = execute({"agent_id": "test"}, {"filename": "evonic.md"})
+            result = execute({"agent_id": "test"}, {"filename": "notes.md"})
         text = result["result"]
         assert "→ references (2):" in text
         assert "howto-report" in text
@@ -121,7 +121,7 @@ class TestOutgoingLinks:
         db_dir = _make_test_db()
         from backend.tools.kb_graph import execute
         with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
-            result = execute({"agent_id": "test"}, {"filename": "evonic.md"})
+            result = execute({"agent_id": "test"}, {"filename": "notes.md"})
         text = result["result"]
         assert "last updated" in text
 
@@ -199,7 +199,7 @@ class TestStaleness:
         db_dir = _make_test_db()
         from backend.tools.kb_graph import execute
         with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
-            result = execute({"agent_id": "test"}, {"filename": "evonic.md"})
+            result = execute({"agent_id": "test"}, {"filename": "notes.md"})
         text = result["result"]
         # notes → changelog-format: changelog is NEWER (1 day ago)
         # notes → howto-report: howto is older (7 days ago)
@@ -214,7 +214,7 @@ class TestOneHopLimit:
         db_dir = _make_test_db()
         from backend.tools.kb_graph import execute
         with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
-            result = execute({"agent_id": "test"}, {"filename": "evonic.md"})
+            result = execute({"agent_id": "test"}, {"filename": "notes.md"})
         text = result["result"]
         # notes → changelog → api-docs. So api-docs is 2nd hop from notes.
         # notes' direct outgoing: howto-report + changelog-format
@@ -251,7 +251,7 @@ class TestCycleHandling:
         db_dir = _make_test_db()
         from backend.tools.kb_graph import execute
         with patch("backend.agent_runtime.evomem_client._get_evomem_dir", return_value=db_dir):
-            result = execute({"agent_id": "test"}, {"filename": "evonic.md"})
+            result = execute({"agent_id": "test"}, {"filename": "notes.md"})
         text = result["result"]
         # notes ↔ changelog is a mutual link, so changelog-format appears
         # once as an outgoing reference and once as an incoming referrer.
@@ -264,7 +264,7 @@ class TestCycleHandling:
 class TestEdgeCases:
     def test_missing_agent_id(self):
         from backend.tools.kb_graph import execute
-        result = execute({}, {"filename": "evonic.md"})
+        result = execute({}, {"filename": "notes.md"})
         assert "error" in result
         assert "agent_id" in result["error"]
 

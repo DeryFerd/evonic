@@ -1417,7 +1417,7 @@ def _apply_kb_ops(agent_id: str, session_id: str, docs: list, folder: str) -> st
 
     _, name_to_slug = _kb_doc_listing(agent_id)
 
-    modified, created, updated, renamed, edited, deduped = [], 0, 0, 0, 0, 0
+    modified, created, updated, renamed, edited, deduped, linked = [], 0, 0, 0, 0, 0, 0
     try:
         for d in docs[:12]:
             if not isinstance(d, dict):
@@ -1447,6 +1447,19 @@ def _apply_kb_ops(agent_id: str, session_id: str, docs: list, folder: str) -> st
                         if evomem_writer.replace_in_doc(agent_id, slug_hint, old_str, new_str):
                             modified.append(slug_hint)
                             edited += 1
+                continue
+
+            # Link: deterministic retro-link — wrap a plain-text mention as [[link]].
+            # The model only names the phrase + target doc (no old_str/new_str), so it
+            # cannot waste a turn on a no-op edit; the writer does the actual wrapping.
+            if action == 'link':
+                text = (d.get('text') or d.get('mention') or '').strip()
+                target = (d.get('target') or d.get('title') or text).strip()
+                if slug_hint and text:
+                    with _kb_page_lock(agent_id, slug_hint):
+                        if evomem_writer.link_in_doc(agent_id, slug_hint, text, target):
+                            modified.append(slug_hint)
+                            linked += 1
                 continue
 
             # Rename: fix a typo'd / alias-polluted doc name.
@@ -1502,8 +1515,8 @@ def _apply_kb_ops(agent_id: str, session_id: str, docs: list, folder: str) -> st
             evomem_writer.mark_dirty(agent_id)
             _emit_doc_updated(agent_id, modified)
         logger.info("[MemoryManager] _apply_kb_ops[%s]: %d created, %d updated, %d renamed, "
-                    "%d edited, %d deduped (folder=%s)", agent_id, created, updated, renamed,
-                    edited, deduped, folder or 'root')
+                    "%d edited, %d deduped, %d linked (folder=%s)", agent_id, created, updated, renamed,
+                    edited, deduped, linked, folder or 'root')
 
         parts = []
         if created:
@@ -1516,6 +1529,8 @@ def _apply_kb_ops(agent_id: str, session_id: str, docs: list, folder: str) -> st
             parts.append(f"{edited} edited")
         if deduped:
             parts.append(f"{deduped} deduped")
+        if linked:
+            parts.append(f"{linked} linked")
 
         if parts:
             return f"KB organized: {', '.join(parts)}."

@@ -42,8 +42,8 @@ class AgentMixin:
                     workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail, artifacts_enabled,
                     message_wrapper_enabled, fallback_model_id, model_id, audio_enabled, video_enabled,
                     run_as_user, bash_exec_enabled, vision_model_id, inter_agent_clear_context,
-                    builtin_tools_enabled, messaging_acl, messaging_acl_mode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    builtin_tools_enabled, messaging_acl, messaging_acl_mode, workplace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent['id'], agent.get('name', agent['id']),
                 agent.get('description', ''), agent.get('system_prompt', ''),
@@ -73,6 +73,7 @@ class AgentMixin:
                 1 if agent.get('builtin_tools_enabled', True) else 0,
                 agent.get('messaging_acl'),
                 agent.get('messaging_acl_mode', 'whitelist'),
+                agent.get('workplace_id'),
             ))
             conn.commit()
         return agent['id']

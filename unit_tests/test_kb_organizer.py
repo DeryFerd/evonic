@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import threading
+import time
 from unittest.mock import patch
 
 import pytest
@@ -392,9 +393,12 @@ def test_organizer_single_instance_and_debounce(monkeypatch):
     assert M._organizer_try_claim(a, 0) is False
     M._organizer_release(a)
     # debounce: after release, an immediate re-claim within the window is refused
+    # (every successful claim records last_start, including the debounce=0 one)
+    assert M._organizer_try_claim(a, 3600) is False
+    # outside the window the claim succeeds again
+    monkeypatch.setitem(fresh_last_start, a, time.monotonic() - 7200)
     assert M._organizer_try_claim(a, 3600) is True
     M._organizer_release(a)
-    assert M._organizer_try_claim(a, 3600) is False
     # a different agent is unaffected
     assert M._organizer_try_claim("agentY", 3600) is True
 

@@ -20,8 +20,15 @@ def _discover_tool_modules():
         if not fname.endswith('.py') or fname in SKIP_FILES:
             continue
         name = fname[:-3]
+        modname = f'backend.tools.{name}'
+        # Reuse the already-imported module: replacing the sys.modules entry
+        # with a fresh copy would strand other tests' patch.object() calls on
+        # the old module object while production code imports the new one.
+        if modname in sys.modules:
+            yield name, sys.modules[modname]
+            continue
         path = os.path.join(TOOLS_DIR, fname)
-        spec = importlib.util.spec_from_file_location(f'backend.tools.{name}', path)
+        spec = importlib.util.spec_from_file_location(modname, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         # Register in sys.modules so patches in test_execute() resolve correctly.

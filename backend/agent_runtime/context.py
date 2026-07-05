@@ -607,7 +607,7 @@ def _build_kb_listing(effective_id: str) -> list:
     )
     lines.append(
         "1. Save the image as an artifact first using "
-        "`save_artifact(source_path="...")`"
+        "`save_artifact(source_path=\"...\")`"
     )
     lines.append(
         "2. Reference it using markdown image format: "
@@ -618,7 +618,7 @@ def _build_kb_listing(effective_id: str) -> list:
         "won't render in the KB viewer"
     )
     lines.append(
-        "4. NEVER just mention "ada foto" without embedding it — always use "
+        "4. NEVER just mention \"ada foto\" without embedding it — always use "
         "the proper `![...](...)` markdown syntax"
     )
 

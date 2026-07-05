@@ -134,6 +134,15 @@ def execute(agent: dict, args: dict) -> Any:
     if not os.path.isfile(path):
         return f"Error: File not found: {path}"
 
+    # If the agent operates in a remote workplace (SSH/tunnel/etc.), ensure the
+    # image file is also available on the remote filesystem so the agent can
+    # reference it via bash, runpy, or other backend-routed tools.
+    try:
+        from backend.tools._ensure_workplace_file import ensure_workplace_file
+        ensure_workplace_file(path, agent)
+    except (ImportError, RuntimeError):
+        pass  # Non-critical: file is already accessible from the host side
+
     file_size = os.path.getsize(path)
     if file_size > 10 * 1024 * 1024:  # 10 MB
         return f"Error: Image file is {file_size / (1024*1024):.1f} MB, which exceeds the 10 MB limit."

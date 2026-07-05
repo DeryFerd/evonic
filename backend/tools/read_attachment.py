@@ -240,14 +240,25 @@ def execute(agent, args: dict) -> dict:
     else:
         return {"error": "Provide either 'attachment_id' or 'path'."}
 
+    # If the agent operates in a remote workplace (SSH/tunnel/etc.), ensure the
+    # attachment file is available on the remote filesystem.  This is needed
+    # because _read_text_file routes through the execution backend when the
+    # agent has a workplace, and would otherwise fail to find the file.
+    try:
+        from backend.tools._ensure_workplace_file import ensure_workplace_file
+        workplace_path = ensure_workplace_file(resolved_path, agent)
+    except (ImportError, RuntimeError) as e:
+        return {"error": f"Failed to prepare attachment for workplace: {e}"}
+
     mime_type = (row or {}).get('mime_type')
 
-    # Dispatch
+    # Dispatch — use the workplace path for operations that route through the
+    # execution backend, and the original host path for direct filesystem access.
     if _is_pdf(mime_type, resolved_path):
         return {"result": _read_pdf_text(resolved_path, offset)}
 
     if _is_textish(mime_type, resolved_path):
-        return {"result": _read_text_file(resolved_path, offset=offset)}
+        return {"result": _read_text_file(workplace_path, offset=offset)}
 
     # Binary fallback — metadata only.
     return {"result": _format_metadata(row, resolved_path)}

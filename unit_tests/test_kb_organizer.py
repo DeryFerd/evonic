@@ -386,14 +386,18 @@ def test_organizer_single_instance_and_debounce():
     assert M._organizer_try_claim(a, 0) is False
     M._organizer_release(a)
     # debounce: after release, an immediate re-claim within the window is refused
-    # Use a fresh dict to avoid any timing/debounce state leaking from other tests
-    M._organizer_last_start = {}
-    M._organizer_running = set()
-    assert M._organizer_try_claim(a, 100) is True
+    # Guard against stale state leaking from other tests that may have added
+    # this agent_id to _organizer_running or _organizer_last_start.
+    M._organizer_last_start.pop(a, None)
+    M._organizer_running.discard(a)
+    # Also guard against a stale monotonic clock value — use a large enough
+    # debounce window so the fresh claim passes regardless of when _last_start
+    # was last set (0.0 means now - 0 > debounce for any reasonable monotonic).
+    assert M._organizer_try_claim(a, 3600) is True
     M._organizer_release(a)
-    assert M._organizer_try_claim(a, 100) is False
+    assert M._organizer_try_claim(a, 3600) is False
     # a different agent is unaffected
-    assert M._organizer_try_claim("agentY", 100) is True
+    assert M._organizer_try_claim("agentY", 3600) is True
     M._organizer_running.clear()
     M._organizer_last_start.clear()
 

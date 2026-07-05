@@ -5768,11 +5768,12 @@ loadWorkplaceSelector();
 setInterval(pollWorkplaceStatus, 5000);
 
 // ==================== Tab persistence ====================
-// Restore tab from URL hash on page load (same pattern as settings.html)
+// Restore tab from URL hash on page load (same pattern as settings.html).
+// Validity is checked against the rendered tab buttons so plugin tabs count too.
 (function() {
-    const valid = ['chat', 'general', 'knowledge', 'tools', 'skills', 'channels', 'portals', 'artifacts'];
     const hash = location.hash.replace('#', '');
-    window._tabInitHash = (hash && valid.includes(hash)) ? hash : 'chat';
+    const isValid = hash && document.querySelector('.tab-btn[data-tab="' + CSS.escape(hash) + '"]');
+    window._tabInitHash = isValid ? hash : 'chat';
     if (window._tabInitHash !== 'chat') {
         showTab(window._tabInitHash);
     }
@@ -6650,6 +6651,16 @@ window.softSwitchAgent = async function (newId, opts = {}) {
     kbGraphDataEpoch = -1;
     kbTree = [];
     kbTreeState = {};
+
+    // Plugin tabs cache the previous agent's HTML — drop it so the next open re-fetches
+    _pluginTabCache.clear();
+    document.querySelectorAll('.tab-content[data-endpoint]').forEach(function (el) {
+        delete el.dataset.loaded;
+        const content = document.getElementById(el.id + '-content');
+        if (content) content.innerHTML = '';
+        const loading = document.getElementById(el.id + '-loading');
+        if (loading) loading.classList.remove('hidden');
+    });
 
     // --- Update server-rendered header bits ---
     const nameEl = document.getElementById('agent-header-name');

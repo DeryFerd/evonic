@@ -57,12 +57,26 @@ def _apply_sandbox_workplace_policy(agent_data: dict, workplace_id: Optional[str
 
     Remote/tunnel workplaces execute elsewhere, and bwrap workplaces provide
     their own isolation — all three force sandbox_enabled off.
+
+    For bwrap workplaces, additionally verify that the host can actually
+    enter the namespaces created by bubblewrap (catches WSL2 and similar
+    environments with broken user-namespace support).  Raises ValueError
+    with a descriptive message if the environment is incompatible.
     """
     if not workplace_id:
         return
     workplace = db.get_workplace(workplace_id)
-    if workplace and workplace.get('type') in ('remote', 'tunnel', 'bwrap'):
+    if not workplace:
+        return
+    wp_type = workplace.get('type')
+    if wp_type in ('remote', 'tunnel', 'bwrap'):
         agent_data['sandbox_enabled'] = 0
+    if wp_type == 'bwrap':
+        from backend.tools.lib.backends.bwrap_backend import _availability_error
+        # Fast path: binary-level check first (no overhead)
+        err = _availability_error()
+        if err:
+            raise ValueError(err)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS_DIR = os.path.join(BASE_DIR, 'agents')
@@ -271,7 +285,10 @@ def api_create_agent():
         return jsonify({'error': 'Description too long (max 2000 characters).'}), 400
     if len(data.get('system_prompt', '')) > 102400:
         return jsonify({'error': 'System prompt too long (max 100 KB).'}), 400
-    _apply_sandbox_workplace_policy(data, data.get('workplace_id'))
+    try:
+        _apply_sandbox_workplace_policy(data, data.get('workplace_id'))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     try:
         _ensure_kb_dir(agent_id)
         # Set default workspace for regular agents to shared/agents/[agent-id]
@@ -342,7 +359,10 @@ def api_update_agent(agent_id):
             except _json.JSONDecodeError:
                 return jsonify({'error': 'messaging_acl must be a JSON array of agent IDs.'}), 400
     target_workplace_id = data.get('workplace_id', existing.get('workplace_id'))
-    _apply_sandbox_workplace_policy(data, target_workplace_id)
+    try:
+        _apply_sandbox_workplace_policy(data, target_workplace_id)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     if 'system_prompt' in data:
         _write_system_prompt(agent_id, data['system_prompt'])
     # Handle artifacts_enabled toggle: manage all artifact tools

@@ -377,26 +377,26 @@ def test_author_docs_dedupe_action(brain):
 
 # ── single-instance + debounce ───────────────────────────────────────────────
 
-def test_organizer_single_instance_and_debounce():
-    M._organizer_running.clear()
-    M._organizer_last_start.clear()
+def test_organizer_single_instance_and_debounce(monkeypatch):
+    # Use fresh containers to avoid any state leaked by other tests via the
+    # shared _organizer_running / _organizer_last_start / _organizer_guard.
+    fresh_running: set = set()
+    fresh_last_start: dict = {}
+    monkeypatch.setattr(M, "_organizer_running", fresh_running)
+    monkeypatch.setattr(M, "_organizer_last_start", fresh_last_start)
+    monkeypatch.setattr(M, "_organizer_guard", threading.Lock())
+
     a = "agentX"
     # single instance: a second claim is refused while one is running
     assert M._organizer_try_claim(a, 0) is True
     assert M._organizer_try_claim(a, 0) is False
     M._organizer_release(a)
     # debounce: after release, an immediate re-claim within the window is refused
-    # Force-clear the organizer state for this agent so the next claim succeeds.
-    with M._organizer_guard:
-        M._organizer_running.discard(a)
-        M._organizer_last_start.pop(a, None)
     assert M._organizer_try_claim(a, 3600) is True
     M._organizer_release(a)
     assert M._organizer_try_claim(a, 3600) is False
     # a different agent is unaffected
     assert M._organizer_try_claim("agentY", 3600) is True
-    M._organizer_running.clear()
-    M._organizer_last_start.clear()
 
 
 def test_on_summary_updated_reads_flat_event(monkeypatch):

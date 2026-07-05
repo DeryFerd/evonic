@@ -48,6 +48,25 @@ def _split_message(text: str, max_len: int = 4096) -> list:
     return chunks
 
 
+def _wrap_group_message(text, group_name, push_name, sender,
+                        quoted_text, quoted_is_bot,
+                        quoted_sender_name, quoted_sender) -> str:
+    """Wrap a group message with group/sender context so the agent knows
+    it is in a WhatsApp group, who is talking to it, and whose message
+    was quoted on replies."""
+    group_label = f'WhatsApp group "{group_name}"' if group_name else 'WhatsApp group'
+    sender_label = f'{push_name} ({sender})' if push_name else sender
+    lines = [f'[{group_label} — message from {sender_label}]']
+    if quoted_text:
+        if quoted_is_bot:
+            lines.append(f'[Replying to your message: "{quoted_text[:200]}"]')
+        else:
+            who = quoted_sender_name or quoted_sender or 'unknown'
+            lines.append(f'[Replying to {who}: "{quoted_text[:200]}"]')
+    lines.append(text)
+    return '\n'.join(lines)
+
+
 class WhatsAppChannel(BaseChannel):
     def __init__(self, channel_id: str, agent_id: str, config: Dict[str, Any]):
         super().__init__(channel_id, agent_id, config)
@@ -353,6 +372,10 @@ class WhatsAppChannel(BaseChannel):
         is_group = payload.get('is_group', False)
         bot_mentioned = payload.get('bot_mentioned', False)
         quoted_is_bot = payload.get('quoted_is_bot', False)
+        push_name = payload.get('pushName') or ''
+        group_name = payload.get('group_name') or ''
+        quoted_sender = payload.get('quoted_sender') or ''
+        quoted_sender_name = payload.get('quoted_sender_name') or ''
 
         if sender and jid:
             self._jid_map[sender] = jid
@@ -383,7 +406,7 @@ class WhatsAppChannel(BaseChannel):
                 _logger.info("WhatsApp group not in allowlist: group=%s", group_id)
                 return
         else:
-            user_name = payload.get('pushName') or payload.get('name') or sender
+            user_name = push_name or payload.get('name') or sender
 
             # Step 1: Fully approved user? (in allowlist AND has name set)
             if db.is_user_allowed(self.channel_id, sender):
@@ -502,9 +525,14 @@ class WhatsAppChannel(BaseChannel):
             _logger.info("WhatsApp message dropped (no usable content): sender=%s", sender)
             return
 
-        # Prepend reply context with sender attribution
+        # Prepend group/sender context (groups) or reply context (DMs)
         final_text = text
-        if quoted_text:
+        if is_group:
+            final_text = _wrap_group_message(
+                text, group_name, push_name, sender,
+                quoted_text, quoted_is_bot,
+                quoted_sender_name, quoted_sender)
+        elif quoted_text:
             label = "Replying to bot" if quoted_is_bot else "Replying to"
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 

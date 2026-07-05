@@ -24,6 +24,25 @@ let botId = '';   // PN-based JID (e.g. 628xxx:1@s.whatsapp.net)
 let botLid = '';  // LID-based JID (e.g. 123456:1@lid)
 let lastPushedStatus = '';
 
+// Group/sender context caches (in-memory; repopulate after restart)
+const groupMetaCache = new Map(); // groupJid -> { subject, ts }
+const GROUP_META_TTL_MS = 60 * 60 * 1000;
+const pushNameCache = new Map(); // senderDigits -> pushName
+
+async function getGroupSubject(jid) {
+    const cached = groupMetaCache.get(jid);
+    if (cached && Date.now() - cached.ts < GROUP_META_TTL_MS) return cached.subject;
+    try {
+        const meta = await sock.groupMetadata(jid);
+        const subject = meta?.subject || null;
+        groupMetaCache.set(jid, { subject, ts: Date.now() });
+        return subject;
+    } catch (e) {
+        console.error('[whatsapp-bridge] Failed to fetch group metadata for %s: %s', jid, e.message);
+        return cached ? cached.subject : null;
+    }
+}
+
 function pushStatus() {
     if (!CALLBACK_URL || isShuttingDown) return;
     if (connectionStatus === lastPushedStatus) return;
@@ -127,6 +146,12 @@ async function startBaileys() {
             const messageId = msg.key.id || '';
             const content = unwrapMessage(msg.message);
 
+            // Remember display names of group members so quoted authors resolve
+            if (isGroup && msg.pushName && sender) {
+                if (pushNameCache.size > 2000) pushNameCache.clear();
+                pushNameCache.set(sender, msg.pushName);
+            }
+
             // Extract text
             const text =
                 content?.conversation ||
@@ -175,6 +200,8 @@ async function startBaileys() {
                 || content?.audioMessage?.contextInfo;
             let quotedText = null;
             let quotedIsBot = false;
+            let quotedSender = '';
+            let quotedSenderName = '';
             const quoted = contextInfo?.quotedMessage;
             if (quoted) {
                 quotedText =
@@ -185,6 +212,8 @@ async function startBaileys() {
                 if (quotedParticipant) {
                     quotedIsBot = (botId && areJidsSameUser(quotedParticipant, botId))
                         || (botLid && areJidsSameUser(quotedParticipant, botLid));
+                    quotedSender = quotedParticipant.split('@')[0].split(':')[0];
+                    quotedSenderName = pushNameCache.get(quotedSender) || '';
                 } else {
                     console.log('[whatsapp-bridge] WARNING: quoted message without participant:', JSON.stringify(contextInfo));
                 }
@@ -210,12 +239,17 @@ async function startBaileys() {
                 console.log('[whatsapp-bridge] mentionedJids:', JSON.stringify(mentionedJids), 'botMentioned:', botMentioned, 'quotedIsBot:', quotedIsBot, 'botId:', botId, 'botLid:', botLid);
             }
 
+            const groupName = isGroup ? await getGroupSubject(jid) : null;
+
             postCallback({
                 from: sender, jid, message_id: messageId, text, image,
                 quoted_text: quotedText,
                 is_group: isGroup,
                 bot_mentioned: botMentioned,
                 quoted_is_bot: quotedIsBot,
+                quoted_sender: quotedSender,
+                quoted_sender_name: quotedSenderName,
+                group_name: groupName,
                 pushName: msg.pushName || '',
             });
         }

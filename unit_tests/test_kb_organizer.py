@@ -34,6 +34,8 @@ def brain(monkeypatch, tmp_path):
     monkeypatch.setenv("EVOMEM_KB_ORGANIZER_DEBOUNCE_SECONDS", "0")  # don't debounce in tests
     # Bypass _ensure_brain (needs evomem binary) — upsert_doc writes files directly
     monkeypatch.setattr(W, "_ensure_brain", lambda aid: True)
+    # Fake evomem availability so resolve_memory_engine returns "evomem"
+    monkeypatch.setattr(M, "evomem_available", lambda: True)
     M._organizer_running.clear()
     M._organizer_last_start.clear()
     return tmp_path

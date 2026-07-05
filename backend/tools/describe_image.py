@@ -212,6 +212,10 @@ def execute(agent: dict, args: dict) -> Any:
         model_name = vision_model.get("name", vision_model.get("id", "unknown"))
         try:
             client = LLMClient(model_config=vision_model)
+            # Enforce a 2-minute (120s) maximum timeout for vision model calls,
+            # regardless of the model's configured timeout.
+            if client.timeout is None or client.timeout > 120:
+                client.timeout = 120
             result = client.chat_completion(
                 messages=messages,
                 enable_thinking=False,  # No need for reasoning on vision task

@@ -35,6 +35,8 @@ def brain(monkeypatch, tmp_path):
     # Bypass _ensure_brain (needs evomem binary) — upsert_doc writes files directly
     monkeypatch.setattr(W, "_ensure_brain", lambda aid: True)
     # Fake evomem availability so resolve_memory_engine returns "evomem"
+    # (resolve_memory_engine calls is_available() via get_engine() and evomem_available)
+    monkeypatch.setattr(M, "get_engine", lambda: "evomem")
     monkeypatch.setattr(M, "evomem_available", lambda: True)
     M._organizer_running.clear()
     M._organizer_last_start.clear()

@@ -143,6 +143,11 @@ async function startBaileys() {
             const sender = isGroup
                 ? (participant.includes('@') ? participant.split('@')[0] : participant)
                 : (from.includes('@') ? from.split('@')[0] : from);
+            // Alternate identifier: when the chat is LID-addressed, Baileys
+            // exposes the phone-number JID in senderPn/participantPn. Shared
+            // channels match routes against both digit namespaces.
+            const altJid = (isGroup ? msg.key.participantPn : msg.key.senderPn) || '';
+            const altSender = altJid.includes('@') ? altJid.split('@')[0].split(':')[0] : altJid;
             const messageId = msg.key.id || '';
             const content = unwrapMessage(msg.message);
 
@@ -243,6 +248,7 @@ async function startBaileys() {
 
             postCallback({
                 from: sender, jid, message_id: messageId, text, image,
+                alt_sender: altSender,
                 quoted_text: quotedText,
                 is_group: isGroup,
                 bot_mentioned: botMentioned,

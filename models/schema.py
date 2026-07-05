@@ -584,11 +584,12 @@ class SchemaMixin:
                 )
             """)
 
-            # Channels table (per-agent channel configs)
+            # Channels table (per-agent channel configs; agent_id is NULL for
+            # shared channels that serve multiple agents, e.g. whatsapp_shared)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     id TEXT PRIMARY KEY,
-                    agent_id TEXT NOT NULL,
+                    agent_id TEXT,
                     type TEXT NOT NULL,
                     name TEXT,
                     config TEXT DEFAULT '{}',
@@ -599,6 +600,49 @@ class SchemaMixin:
                     UNIQUE(agent_id, name)
                 )
             """)
+
+            # Migration: drop NOT NULL from channels.agent_id so shared channels
+            # can exist without a host agent. Guarded by sqlite_master so it only
+            # runs while the existing table still has the constraint. Uses
+            # create-new/copy/drop/rename (not rename-old-first) so REFERENCES
+            # channels clauses in other tables are not rewritten by SQLite.
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='channels'"
+            ).fetchone()
+            if row and 'agent_id TEXT NOT NULL' in row[0]:
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS channels_new")
+                    cursor.execute("""
+                        CREATE TABLE channels_new (
+                            id TEXT PRIMARY KEY,
+                            agent_id TEXT,
+                            type TEXT NOT NULL,
+                            name TEXT,
+                            config TEXT DEFAULT '{}',
+                            enabled BOOLEAN DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+                            UNIQUE(agent_id, name)
+                        )
+                    """)
+                    cursor.execute("""
+                        INSERT INTO channels_new (id, agent_id, type, name, config, enabled, created_at, updated_at)
+                        SELECT id, agent_id, type, name, config, enabled, created_at, updated_at
+                        FROM channels
+                    """)
+                    cursor.execute("DROP TABLE channels")
+                    cursor.execute("ALTER TABLE channels_new RENAME TO channels")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: detach shared channels from their v1 host agent —
+            # they are managed centrally (System Settings → Shared Channel).
+            try:
+                cursor.execute(
+                    "UPDATE channels SET agent_id = NULL WHERE type = 'whatsapp_shared' AND agent_id IS NOT NULL")
+            except sqlite3.OperationalError:
+                pass
 
             # Channel pending approvals (pairing code allowlist)
             cursor.execute("""\
@@ -611,6 +655,27 @@ class SchemaMixin:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     expires_at TIMESTAMP NOT NULL,
                     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+                )
+            """)
+
+            # Shared-channel inbox: unmapped senders captured for admin
+            # assignment (capture-and-assign flow — LIDs are unknowable until
+            # a message arrives, so admins annotate instead of typing IDs)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shared_channel_inbox (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    external_user_id TEXT NOT NULL,
+                    alt_user_id TEXT,
+                    push_name TEXT,
+                    is_group BOOLEAN DEFAULT 0,
+                    group_name TEXT,
+                    last_message TEXT,
+                    message_count INTEGER DEFAULT 1,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+                    UNIQUE(channel_id, external_user_id)
                 )
             """)
 

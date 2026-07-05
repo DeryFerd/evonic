@@ -96,6 +96,84 @@ _USERNS_HINT = (
 )
 
 
+def _nsenter_probe_argv(inner_pid: int) -> list:
+    """Build a minimal nsenter probe command — same namespace flags as _nsenter_argv."""
+    return ['nsenter', '--preserve-credentials', '-U', '-m', '-u', '-i', '-p',
+            '-t', str(inner_pid), '--',
+            '/usr/bin/bash', '-c', 'exit 0']
+
+
+def _check_nsenter_capability() -> str | None:
+    """Probe whether nsenter can actually join all namespaces created by bwrap.
+
+    On some platforms (notably WSL2), ``nsenter -U`` works but entering
+    additional namespaces (mount, pid, ipc, uts) fails with
+    ``Operation not permitted``.  This function starts a throwaway bwrap
+    sandbox running ``sleep infinity`` (same as the real keeper), tries a
+    full nsenter probe, and terminates the sandbox immediately.
+
+    Returns an error string on failure, or None if the probe succeeded.
+    """
+    r_fd, w_fd = os.pipe()
+    argv = _AVAILABILITY_PROBE_BWRAP_ARGV + ['--json-status-fd', str(w_fd), 'sleep', 'infinity']
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            text=True,
+            pass_fds=(w_fd,), start_new_session=True,
+        )
+    except OSError:
+        os.close(r_fd)
+        os.close(w_fd)
+        return None       # bwrap itself failed — _availability_error will report it
+    os.close(w_fd)
+    inner_pid = _read_child_pid(r_fd, proc)
+
+    if inner_pid is None:
+        _destroy_probe(proc, r_fd)
+        return None       # bwrap failed — not a nsenter-compatibility issue
+
+    # Probe: can nsenter join all namespaces?
+    try:
+        probe = subprocess.run(
+            _nsenter_probe_argv(inner_pid),
+            capture_output=True, text=True, timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        _destroy_probe(proc, r_fd)
+        return 'nsenter probe timed out — the bwrap sandbox may not be responding.'
+
+    _destroy_probe(proc, r_fd)
+
+    if probe.returncode != 0:
+        stderr = (probe.stderr or '').strip()
+        return (f'nsenter cannot join the bwrap sandbox namespaces on this host. '
+                f'Details: {stderr or "permission denied"}. '
+                f'The bwrap backend is incompatible with this environment '
+                f'(e.g. WSL2 has known namespace limitations).')
+    return None
+
+
+def _destroy_probe(proc, r_fd):
+    """Kill the probe bwrap process and close its status fd."""
+    if proc is not None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+            proc.wait(timeout=2)
+        except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.wait(timeout=2)
+            except Exception:
+                pass
+    try:
+        os.close(r_fd)
+    except OSError:
+        pass
+
+
 def _availability_error() -> str:
     """Return an error message if bwrap cannot run on this host, else None."""
     if sys.platform != 'linux':
@@ -107,7 +185,17 @@ def _availability_error() -> str:
     if shutil.which('nsenter') is None:
         return ('nsenter (util-linux) is required for the persistent bwrap sandbox. '
                 'Install util-linux — or set SANDBOX_BACKEND=docker.')
+    # Runtime probe: check that nsenter can actually join the namespaces
+    # that bwrap creates.  This catches WSL2 and other environments with
+    # broken user-namespace + additional-namespace support.
+    nsenter_err = _check_nsenter_capability()
+    if nsenter_err:
+        return nsenter_err
     return None
+
+
+# bwrap argv used exclusively for the availability probe (no bind-mounts needed).
+_AVAILABILITY_PROBE_BWRAP_ARGV = ['bwrap', '--ro-bind', '/usr', '/usr', '--ro-bind', '/etc', '/etc', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin', '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--unshare-pid', '--unshare-uts', '--unshare-ipc', '--unshare-user', '--die-with-parent']
 
 
 def _sanitize_hostname(name: str) -> str:

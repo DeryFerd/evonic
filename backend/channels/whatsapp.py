@@ -108,6 +108,90 @@ class WhatsAppChannel(BaseChannel):
             "- Keep responses clean and readable in plain text"
         )
 
+    def _resolve_agent(self, sender: str, is_group: bool, jid: str,
+                       alt_sender: str = '', payload: Optional[dict] = None) -> Optional[str]:
+        """Pick the agent that handles this message. The base channel is
+        bound to a single agent; subclasses may route per-sender/group and
+        use the raw payload for identity hints. Returning None drops the
+        message silently."""
+        return self.agent_id
+
+    def _gate_sender(self, sender: str, is_group: bool, jid: str, text: str,
+                     push_name: str, payload: dict) -> bool:
+        """Allowlist/pairing gate — returns True when the message should be
+        processed. Groups are checked by group ID, DMs by individual user ID.
+        Subclasses may override (e.g. when a routing table is the allowlist)."""
+        from models.db import db
+        if is_group:
+            group_id = jid.split('@')[0] if '@' in jid else jid
+            if not db.is_user_allowed(self.channel_id, group_id):
+                _logger.info("WhatsApp group not in allowlist: group=%s", group_id)
+                return False
+            return True
+
+        user_name = push_name or payload.get('name') or sender
+
+        # Step 1: Fully approved user? (in allowlist AND has name set)
+        if db.is_user_allowed(self.channel_id, sender):
+            if db.needs_name(self.channel_id, sender):
+                # NAME COLLECTION MODE — every message is treated as a name attempt
+                name_candidate = text.strip() if text else ''
+                if name_candidate and len(name_candidate) <= 100:
+                    db.set_user_display_name(self.channel_id, sender, name_candidate)
+                    self._do_send(sender,
+                        "Thanks, %s! You're all set. How can I help you today?" % name_candidate)
+                elif text:
+                    self._do_send(sender,
+                        "That name is too long. Please share a shorter name (max 100 characters).")
+                else:
+                    self._do_send(sender,
+                        "Please tell me your name to continue (e.g. 'My name is Budi').")
+                return False
+            # User is fully approved — proceed to normal processing
+            return True
+
+        # Step 2: User NOT in allowlist — try pairing-code auto-approve
+        from backend.channels.pairing import extract_pair_code, format_pair_code as fmt_code
+        raw_code = extract_pair_code(text) if text else None
+        if raw_code:
+            _logger.info("WhatsApp pairing code received from %s (channel %s)", sender, self.channel_id)
+            pending = db.get_pending_approval_by_code(raw_code)
+            if pending:
+                if not pending.get('external_user_id'):
+                    db.update_pending_user_id(pending['id'], sender)
+                approved_user = db.approve_pending_with_name_needed(pending['id'])
+                if approved_user:
+                    if db.needs_name(self.channel_id, sender):
+                        self._do_send(sender,
+                            "✅ You're now approved! Welcome aboard.\n\n"
+                            "Before we chat, please tell me your name (e.g. 'My name is Budi').")
+                    else:
+                        self._do_send(sender,
+                            "✅ You're now approved! Welcome aboard. How can I help you today?")
+                return False
+            else:
+                self._do_send(sender,
+                    "❌ That pairing code is invalid or has expired. "
+                    "Please ask the administrator for a new one.")
+                return False
+        else:
+            # No pairing code in message — check if pending approval already exists
+            existing = db.get_pending_approvals(self.channel_id)
+            already_pending = any(
+                p.get('external_user_id') == sender for p in existing
+            )
+            if not already_pending:
+                allowed, pair_code = self._check_allowlist(sender, user_name)
+                if not allowed and pair_code:
+                    self._do_send(sender,
+                        "👋 You're not yet approved to chat here. "
+                        "Please ask the administrator for a pairing code, then send it in this chat.")
+                # If open mode, user IS allowed — would have been caught above
+            # If already pending, stay silent (don't spam the user)
+            _logger.info("WhatsApp DM from unapproved user %s (pending=%s, channel %s)",
+                         sender, already_pending, self.channel_id)
+            return False
+
     def start(self):
         # Register EventStream handlers first (before background bridge startup)
         from backend.event_stream import event_stream
@@ -399,74 +483,18 @@ class WhatsAppChannel(BaseChannel):
         if bot_mentioned and text:
             text = re.sub(r'@\d+', '', text).strip()
 
-        # Allowlist check — groups use group ID, DMs use individual user ID
-        if is_group:
-            group_id = jid.split('@')[0] if '@' in jid else jid
-            if not db.is_user_allowed(self.channel_id, group_id):
-                _logger.info("WhatsApp group not in allowlist: group=%s", group_id)
-                return
-        else:
-            user_name = push_name or payload.get('name') or sender
+        # Resolve the handling agent (shared channels route per sender/group)
+        agent_id = self._resolve_agent(sender, is_group, jid,
+                                       payload.get('alt_sender') or '',
+                                       payload=payload)
+        if not agent_id:
+            _logger.info("WhatsApp message dropped (no route): sender=%s is_group=%s jid=%s",
+                         sender, is_group, jid)
+            return
 
-            # Step 1: Fully approved user? (in allowlist AND has name set)
-            if db.is_user_allowed(self.channel_id, sender):
-                if db.needs_name(self.channel_id, sender):
-                    # NAME COLLECTION MODE — every message is treated as a name attempt
-                    name_candidate = text.strip() if text else ''
-                    if name_candidate and len(name_candidate) <= 100:
-                        db.set_user_display_name(self.channel_id, sender, name_candidate)
-                        self._do_send(sender,
-                            "Thanks, %s! You're all set. How can I help you today?" % name_candidate)
-                    elif text:
-                        self._do_send(sender,
-                            "That name is too long. Please share a shorter name (max 100 characters).")
-                    else:
-                        self._do_send(sender,
-                            "Please tell me your name to continue (e.g. 'My name is Budi').")
-                    return
-                # User is fully approved — fall through to normal processing
-            else:
-                # Step 2: User NOT in allowlist — try pairing-code auto-approve
-                from backend.channels.pairing import extract_pair_code, format_pair_code as fmt_code
-                raw_code = extract_pair_code(text) if text else None
-                if raw_code:
-                    _logger.info("WhatsApp pairing code received from %s (channel %s)", sender, self.channel_id)
-                    pending = db.get_pending_approval_by_code(raw_code)
-                    if pending:
-                        if not pending.get('external_user_id'):
-                            db.update_pending_user_id(pending['id'], sender)
-                        approved_user = db.approve_pending_with_name_needed(pending['id'])
-                        if approved_user:
-                            if db.needs_name(self.channel_id, sender):
-                                self._do_send(sender,
-                                    "✅ You're now approved! Welcome aboard.\n\n"
-                                    "Before we chat, please tell me your name (e.g. 'My name is Budi').")
-                            else:
-                                self._do_send(sender,
-                                    "✅ You're now approved! Welcome aboard. How can I help you today?")
-                        return
-                    else:
-                        self._do_send(sender,
-                            "❌ That pairing code is invalid or has expired. "
-                            "Please ask the administrator for a new one.")
-                        return
-                else:
-                    # No pairing code in message — check if pending approval already exists
-                    existing = db.get_pending_approvals(self.channel_id)
-                    already_pending = any(
-                        p.get('external_user_id') == sender for p in existing
-                    )
-                    if not already_pending:
-                        allowed, pair_code = self._check_allowlist(sender, user_name)
-                        if not allowed and pair_code:
-                            self._do_send(sender,
-                                "👋 You're not yet approved to chat here. "
-                                "Please ask the administrator for a pairing code, then send it in this chat.")
-                        # If open mode, user IS allowed — would have been caught above
-                    # If already pending, stay silent (don't spam the user)
-                    _logger.info("WhatsApp DM from unapproved user %s (pending=%s, channel %s)",
-                                 sender, already_pending, self.channel_id)
-                    return
+        # Allowlist check — groups use group ID, DMs use individual user ID
+        if not self._gate_sender(sender, is_group, jid, text, push_name, payload):
+            return
 
         image_url = None
         video_url = None
@@ -474,7 +502,7 @@ class WhatsAppChannel(BaseChannel):
         audio_bytes = None  # decoded original bytes, persisted as attachment below
         audio_mime = None
 
-        agent = db.get_agent(self.agent_id)
+        agent = db.get_agent(agent_id)
 
         if image_data:
             try:
@@ -536,7 +564,7 @@ class WhatsAppChannel(BaseChannel):
             label = "Replying to bot" if quoted_is_bot else "Replying to"
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 
-        session_id = db.get_or_create_session(self.agent_id, sender, self.channel_id)
+        session_id = db.get_or_create_session(agent_id, sender, self.channel_id)
 
         # Persist the image to disk and build attachment_info — the in-memory
         # data URL alone is invisible to the agent (images are never auto-fed
@@ -545,20 +573,21 @@ class WhatsAppChannel(BaseChannel):
         if image_bytes:
             attachment_info = self._save_image_attachment(
                 session_id, sender, image_bytes,
-                image_data.get('mimetype') or 'image/jpeg')
+                image_data.get('mimetype') or 'image/jpeg', agent_id=agent_id)
         elif audio_bytes:
             attachment_info = self._save_audio_attachment(
-                session_id, sender, audio_bytes, audio_mime or 'audio/ogg')
+                session_id, sender, audio_bytes, audio_mime or 'audio/ogg',
+                agent_id=agent_id)
 
-        if not db.is_session_bot_enabled(session_id, agent_id=self.agent_id):
+        if not db.is_session_bot_enabled(session_id, agent_id=agent_id):
             _logger.info("WhatsApp message stored only — bot disabled for session %s (sender=%s)",
                          session_id, sender)
-            db.add_chat_message(session_id, 'user', text or '[Image]', agent_id=self.agent_id)
+            db.add_chat_message(session_id, 'user', text or '[Image]', agent_id=agent_id)
             return
 
         _logger.info("WhatsApp message received from %s (channel %s)", sender, self.channel_id)
         result = agent_runtime.handle_message(
-            self.agent_id, sender, final_text, self.channel_id,
+            agent_id, sender, final_text, self.channel_id,
             image_url=image_url, video_url=video_url,
             metadata={'attachment_info': attachment_info} if attachment_info else None,
         )
@@ -602,7 +631,8 @@ class WhatsAppChannel(BaseChannel):
         })
 
     def _save_image_attachment(self, session_id: str, external_user_id: str,
-                               image_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
+                               image_bytes: bytes, mime_type: str,
+                               agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Persist an incoming image to disk and return attachment_info.
 
         Mirrors Telegram's _ingest_photo(): honors the agent attachment config
@@ -610,8 +640,9 @@ class WhatsAppChannel(BaseChannel):
         Returns None when persistence is disabled, over-limit, or fails.
         """
         from models.db import db
+        agent_id = agent_id or self.agent_id
         try:
-            cfg = db.get_agent_attachment_config(self.agent_id)
+            cfg = db.get_agent_attachment_config(agent_id)
             if not cfg.get('enabled'):
                 return None
             max_bytes = cfg.get('max_size_mb', 10) * 1024 * 1024
@@ -619,20 +650,20 @@ class WhatsAppChannel(BaseChannel):
                 _logger.info(
                     "Skipping WhatsApp image attachment for agent %s: "
                     "size %s exceeds %s bytes",
-                    self.agent_id, len(image_bytes), max_bytes)
+                    agent_id, len(image_bytes), max_bytes)
                 return None
             ext = {
                 'image/jpeg': '.jpg', 'image/png': '.png',
                 'image/webp': '.webp', 'image/gif': '.gif',
             }.get(mime_type, '.jpg')
             filename = f"{int(time.time())}_whatsapp{ext}"
-            target_dir = os.path.join('data', 'attachments', self.agent_id, session_id)
+            target_dir = os.path.join('data', 'attachments', agent_id, session_id)
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, filename)
             with open(file_path, 'wb') as f:
                 f.write(image_bytes)
             attachment_id = db.save_attachment(
-                agent_id=self.agent_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 filename=filename,
                 file_path=file_path,
@@ -659,7 +690,8 @@ class WhatsAppChannel(BaseChannel):
             return None
 
     def _save_audio_attachment(self, session_id: str, external_user_id: str,
-                               audio_bytes: bytes, mime_type: str) -> Optional[Dict[str, Any]]:
+                               audio_bytes: bytes, mime_type: str,
+                               agent_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Persist an incoming voice/audio message to disk and return attachment_info.
 
         Mirrors _save_image_attachment(): honors the agent attachment config
@@ -668,8 +700,9 @@ class WhatsAppChannel(BaseChannel):
         Returns None when persistence is disabled, over-limit, or fails.
         """
         from models.db import db
+        agent_id = agent_id or self.agent_id
         try:
-            cfg = db.get_agent_attachment_config(self.agent_id)
+            cfg = db.get_agent_attachment_config(agent_id)
             if not cfg.get('enabled'):
                 return None
             max_bytes = cfg.get('max_size_mb', 10) * 1024 * 1024
@@ -677,7 +710,7 @@ class WhatsAppChannel(BaseChannel):
                 _logger.info(
                     "Skipping WhatsApp audio attachment for agent %s: "
                     "size %s exceeds %s bytes",
-                    self.agent_id, len(audio_bytes), max_bytes)
+                    agent_id, len(audio_bytes), max_bytes)
                 return None
             ext = {
                 'audio/ogg': '.ogg', 'audio/ogg; codecs=opus': '.ogg',
@@ -685,13 +718,13 @@ class WhatsAppChannel(BaseChannel):
                 'audio/wav': '.wav', 'audio/webm': '.webm',
             }.get(mime_type, '.ogg')
             filename = f"{int(time.time())}_whatsapp_voice{ext}"
-            target_dir = os.path.join('data', 'attachments', self.agent_id, session_id)
+            target_dir = os.path.join('data', 'attachments', agent_id, session_id)
             os.makedirs(target_dir, exist_ok=True)
             file_path = os.path.join(target_dir, filename)
             with open(file_path, 'wb') as f:
                 f.write(audio_bytes)
             attachment_id = db.save_attachment(
-                agent_id=self.agent_id,
+                agent_id=agent_id,
                 session_id=session_id,
                 filename=filename,
                 file_path=file_path,

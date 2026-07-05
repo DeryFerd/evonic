@@ -1,0 +1,409 @@
+<div>
+    <!-- Header -->
+    <div class="settings-pane-head">
+        <h2 class="settings-pane-title">Shared Channel</h2>
+        <p class="settings-pane-desc">One WhatsApp number serving multiple agents. Connect once, then assign incoming users and groups to agents. Unassigned senders get no reply.</p>
+    </div>
+
+    <!-- Connection -->
+    <section class="setting-group">
+        <div class="setting-group-head">
+            <i data-lucide="plug-zap"></i>
+            <h3>Connection</h3>
+        </div>
+        <div id="sc-channels"></div>
+    </section>
+
+    <!-- Unassigned senders -->
+    <section id="sc-inbox-section" class="setting-group hidden">
+        <div class="setting-group-head">
+            <i data-lucide="inbox"></i>
+            <h3>Unassigned Senders</h3>
+            <span id="sc-inbox-count" class="text-[11px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 px-2 py-0.5 rounded-full empty:hidden"></span>
+        </div>
+        <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">People and groups that messaged the shared number but have no agent yet. Names are self-reported by the sender — edit before assigning if needed.</p>
+        <div id="sc-inbox-list" class="space-y-2">
+            <p class="text-xs text-gray-400 text-center py-3">No unassigned senders.</p>
+        </div>
+    </section>
+
+    <!-- Routes -->
+    <section id="sc-routes-section" class="setting-group hidden">
+        <div class="setting-group-head">
+            <i data-lucide="git-fork"></i>
+            <h3>User &rarr; Agent Routes</h3>
+        </div>
+        <div class="setting-group-body">
+            <div id="sc-routes-list" class="divide-y divide-gray-100 dark:divide-gray-700/60">
+                <p class="text-xs text-gray-400 text-center py-4">No routes configured.</p>
+            </div>
+            <!-- Add route (manual pre-authorization) -->
+            <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
+                <div class="flex gap-2 flex-wrap">
+                    <input type="text" id="sc-route-user-input" placeholder="Phone number, e.g. 62812345678"
+                        class="flex-1 min-w-[180px] px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
+                    <input type="text" id="sc-route-name-input" placeholder="Name (optional)"
+                        class="w-36 px-3 py-1.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">
+                    <select id="sc-route-agent-select"
+                        class="w-40 px-2 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600"></select>
+                    <button onclick="sharedChannel.addRoute()" class="btn-primary flex-shrink-0" style="padding:6px 14px">
+                        <i data-lucide="plus"></i>Add Route
+                    </button>
+                </div>
+                <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">Manual entry is a fallback for pre-authorizing known phone numbers — normally senders appear above after their first message and you assign them there.</p>
+            </div>
+        </div>
+    </section>
+</div>
+
+<script>
+(function() {
+    window.sharedChannel = {
+        channel: null,      // the first (currently only) shared channel
+        agentsById: {},
+        _pollTimer: null,
+        _qrTimer: null,
+        // Render signatures — polls skip re-rendering when nothing changed,
+        // so user input in the forms is never clobbered mid-typing.
+        _chanSig: null,
+        _inboxSig: null,
+        _routesSig: null,
+
+        resetSigs: function() {
+            sharedChannel._chanSig = null;
+            sharedChannel._inboxSig = null;
+            sharedChannel._routesSig = null;
+        },
+
+        init: function() {
+            sharedChannel.stopPolling();
+            sharedChannel.resetSigs();
+            sharedChannel.loadAgents().then(sharedChannel.load);
+        },
+
+        // Only meaningful once a channel exists — there is no status or
+        // inbox to refresh before that, so load() starts/stops this.
+        startPolling: function() {
+            if (sharedChannel._pollTimer) return;
+            sharedChannel._pollTimer = setInterval(function() {
+                if (document.getElementById('section-shared_channel').classList.contains('active')) {
+                    sharedChannel.load();
+                } else {
+                    sharedChannel.stopPolling();
+                }
+            }, 10000);
+        },
+
+        stopPolling: function() {
+            if (sharedChannel._pollTimer) { clearInterval(sharedChannel._pollTimer); sharedChannel._pollTimer = null; }
+            if (sharedChannel._qrTimer) { clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null; }
+        },
+
+        loadAgents: function() {
+            return fetch('/api/agents').then(function(r) { return r.json(); }).then(function(data) {
+                sharedChannel.agentsById = {};
+                var opts = '';
+                (data.agents || []).filter(function(a) { return a.enabled; }).forEach(function(a) {
+                    sharedChannel.agentsById[a.id] = a.name || a.id;
+                    opts += '<option value="' + sharedChannel.escAttr(a.id) + '">' + sharedChannel.esc(a.name || a.id) + '</option>';
+                });
+                document.getElementById('sc-route-agent-select').innerHTML = opts;
+            });
+        },
+
+        load: function() {
+            fetch('/api/shared-channels').then(function(r) { return r.json(); }).then(function(data) {
+                var channels = data.channels || [];
+                sharedChannel.channel = channels[0] || null;
+                sharedChannel.renderChannel();
+                if (sharedChannel.channel) {
+                    sharedChannel.startPolling();
+                    document.getElementById('sc-inbox-section').classList.remove('hidden');
+                    document.getElementById('sc-routes-section').classList.remove('hidden');
+                    sharedChannel.loadInbox();
+                    sharedChannel.renderRoutes();
+                } else {
+                    sharedChannel.stopPolling();
+                    document.getElementById('sc-inbox-section').classList.add('hidden');
+                    document.getElementById('sc-routes-section').classList.add('hidden');
+                }
+            });
+        },
+
+        renderChannel: function() {
+            var el = document.getElementById('sc-channels');
+            var ch = sharedChannel.channel;
+            var status = ch ? (ch.bridge_status || (ch.running ? 'starting' : 'stopped')) : '';
+            var sig = ch ? [ch.id, ch.name, ch.running, status].join('|') : 'empty';
+            if (sig === sharedChannel._chanSig) {
+                // Nothing changed — leave the DOM (and any typing) alone,
+                // but keep the QR poller alive while waiting for a scan.
+                if (ch && ch.running && status !== 'connected') { sharedChannel.pollQr(); }
+                return;
+            }
+            sharedChannel._chanSig = sig;
+            var phoneIcon =
+                '<svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">' +
+                '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>';
+            if (!ch) {
+                if (sharedChannel._qrTimer) { clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null; }
+                el.innerHTML =
+                    '<div class="setting-group-body"><div class="px-6 py-8 text-center">' +
+                    '<div class="mx-auto w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400 flex items-center justify-center mb-3">' + phoneIcon + '</div>' +
+                    '<p class="text-sm font-medium text-gray-800 dark:text-gray-100">No shared channel yet</p>' +
+                    '<p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">Create one and scan the QR code with the WhatsApp account you want to share.</p>' +
+                    '<div class="flex gap-2 max-w-md mx-auto">' +
+                    '<input type="text" id="sc-create-name" placeholder="Name, e.g. Company WhatsApp" class="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' +
+                    '<button onclick="sharedChannel.create()" class="btn-primary flex-shrink-0" style="padding:6px 14px">Create Shared WhatsApp</button>' +
+                    '</div></div></div>';
+                return;
+            }
+            // Three UI states: not running → Connect; running but the
+            // WhatsApp account isn't linked yet → QR + Cancel; linked → Stop.
+            var connected = ch.running && status === 'connected';
+            var connecting = ch.running && !connected;
+            var dot = connected ? 'bg-emerald-500' : (connecting ? 'bg-amber-400 animate-pulse' : 'bg-gray-300 dark:bg-gray-600');
+            var statusLabel = connected ? 'Connected'
+                : (connecting
+                    ? (status === 'qr_pending' ? 'Waiting for QR scan' : 'Connecting...')
+                    : 'Not connected');
+            var iconTone = connected
+                ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400'
+                : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500';
+            var toggleBtn;
+            if (connected) {
+                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/30 transition-colors">Stop</button>';
+            } else if (connecting) {
+                toggleBtn = '<button onclick="sharedChannel.toggle(false)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-300 dark:hover:bg-gray-700 transition-colors">Cancel</button>';
+            } else {
+                toggleBtn = '<button onclick="sharedChannel.toggle(true)" class="inline-flex items-center h-8 text-xs font-medium px-3 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/30 transition-colors">Connect</button>';
+            }
+            var trashIcon =
+                '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24">' +
+                '<path d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v3M4 7h16"/></svg>';
+            var html =
+                '<div class="setting-group-body">' +
+                '<div class="p-4 flex items-center justify-between gap-3 flex-wrap">' +
+                '<div class="flex items-center gap-3 min-w-0">' +
+                '<div class="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ' + iconTone + '">' + phoneIcon + '</div>' +
+                '<div class="min-w-0">' +
+                '<div class="flex items-center gap-2">' +
+                '<span class="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">' + sharedChannel.esc(ch.name || 'Shared WhatsApp') + '</span>' +
+                '<span class="text-[11px] px-1.5 py-0.5 rounded font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">' + sharedChannel.esc(ch.type) + '</span>' +
+                '</div>' +
+                '<div class="flex items-center gap-1.5 mt-0.5">' +
+                '<span class="inline-block w-2 h-2 rounded-full ' + dot + '"></span>' +
+                '<span class="text-xs text-gray-400">' + statusLabel + '</span>' +
+                '</div></div></div>' +
+                '<div class="flex items-center gap-2 flex-shrink-0">' + toggleBtn +
+                '<button onclick="sharedChannel.remove()" title="Delete channel" class="inline-flex items-center justify-center w-8 h-8 rounded-md border border-gray-200 dark:border-gray-600 text-gray-400 hover:text-red-600 hover:border-red-300 dark:hover:text-red-400 dark:hover:border-red-700 transition-colors">' + trashIcon + '</button>' +
+                '</div></div>' +
+                '<div id="sc-qr-area" class="px-4 pb-5 border-t border-gray-100 dark:border-gray-700 ' + (connecting ? '' : 'hidden') + ' text-center">' +
+                '<img id="sc-qr-image" class="mx-auto w-52 h-52 mt-4 rounded-lg border border-gray-200 dark:border-gray-600 bg-white p-2 hidden" alt="WhatsApp QR">' +
+                '<p id="sc-qr-hint" class="text-xs text-gray-400 mt-3">Preparing QR code...</p>' +
+                '</div></div>';
+            el.innerHTML = html;
+            if (connecting) { sharedChannel.pollQr(); }
+            else if (sharedChannel._qrTimer) { clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null; }
+        },
+
+        pollQr: function() {
+            if (sharedChannel._qrTimer) return;
+            var fetchQr = function() {
+                if (!sharedChannel.channel) return;
+                fetch('/api/shared-channels/' + sharedChannel.channel.id + '/qr')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        var img = document.getElementById('sc-qr-image');
+                        var hint = document.getElementById('sc-qr-hint');
+                        if (img && data.qr) {
+                            img.src = data.qr;
+                            img.classList.remove('hidden');
+                            if (hint) hint.textContent = 'Open WhatsApp on your phone → Linked Devices → Link a Device, then scan.';
+                        }
+                        if (data.status === 'connected') {
+                            clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null;
+                            sharedChannel.load();
+                        }
+                    }).catch(function() {});
+            };
+            fetchQr();
+            sharedChannel._qrTimer = setInterval(fetchQr, 3000);
+        },
+
+        create: function() {
+            var name = (document.getElementById('sc-create-name').value || '').trim() || 'Shared WhatsApp';
+            fetch('/api/shared-channels', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name })
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                if (data.error) { alert(data.error); return; }
+                sharedChannel.resetSigs();
+                sharedChannel.load();
+            });
+        },
+
+        toggle: function(enabled) {
+            fetch('/api/shared-channels/' + sharedChannel.channel.id, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: enabled })
+            }).then(function(r) { return r.json(); }).then(function() {
+                sharedChannel.resetSigs();
+                sharedChannel.load();
+            });
+        },
+
+        remove: function() {
+            if (!confirm('Delete this shared channel? The WhatsApp session and all routes will be removed.')) return;
+            fetch('/api/shared-channels/' + sharedChannel.channel.id, { method: 'DELETE' })
+                .then(function(r) { return r.json(); }).then(function() {
+                    sharedChannel.resetSigs();
+                    sharedChannel.load();
+                });
+        },
+
+        loadInbox: function() {
+            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox')
+                .then(function(r) { return r.json(); })
+                .then(function(data) { sharedChannel.renderInbox(data.inbox || []); });
+        },
+
+        renderInbox: function(entries) {
+            var list = document.getElementById('sc-inbox-list');
+            var count = document.getElementById('sc-inbox-count');
+            var sig = JSON.stringify(entries.map(function(e) {
+                return [e.id, e.message_count, e.last_seen];
+            }));
+            if (sig === sharedChannel._inboxSig) return;
+            // Don't clobber a name being typed or an agent being picked
+            if (list.contains(document.activeElement)) return;
+            sharedChannel._inboxSig = sig;
+            count.textContent = entries.length > 0 ? entries.length + ' waiting' : '';
+            if (entries.length === 0) {
+                list.innerHTML = '<p class="text-xs text-gray-400 text-center py-3">No unassigned senders.</p>';
+                return;
+            }
+            var agentOpts = '';
+            Object.keys(sharedChannel.agentsById).forEach(function(id) {
+                agentOpts += '<option value="' + sharedChannel.escAttr(id) + '">' + sharedChannel.esc(sharedChannel.agentsById[id]) + '</option>';
+            });
+            list.innerHTML = entries.map(function(e) {
+                var title = e.is_group
+                    ? (e.group_name ? e.group_name + ' (group)' : 'Group ' + e.external_user_id)
+                    : (e.push_name || e.external_user_id);
+                var prefillName = e.is_group ? (e.group_name || '') : (e.push_name || '');
+                var alt = e.alt_user_id ? ' <span class="text-gray-400">/ ' + sharedChannel.esc(e.alt_user_id) + '</span>' : '';
+                var preview = e.last_message ? sharedChannel.esc(e.last_message.substring(0, 120)) : '';
+                var initial = String(title).trim().charAt(0).toUpperCase() || '?';
+                return '<div class="p-3 bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 border-l-2 border-l-amber-400 dark:border-l-amber-500">' +
+                    '<div class="flex items-center justify-between gap-3 flex-wrap">' +
+                    '<div class="flex items-center gap-3 min-w-0 flex-1">' +
+                    '<span class="w-8 h-8 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 flex items-center justify-center text-xs font-semibold flex-shrink-0">' + sharedChannel.esc(initial) + '</span>' +
+                    '<div class="min-w-0">' +
+                    '<div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">' + sharedChannel.esc(title) + '</div>' +
+                    '<div class="text-[11px] text-gray-500 dark:text-gray-400 font-mono truncate">' + sharedChannel.esc(e.external_user_id) + alt + '</div>' +
+                    (preview ? '<div class="text-xs text-gray-500 dark:text-gray-400 truncate italic mt-0.5">&ldquo;' + preview + '&rdquo;</div>' : '') +
+                    '<div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">' + e.message_count + ' message(s) · last ' + sharedChannel.esc(e.last_seen || '') + '</div>' +
+                    '</div></div>' +
+                    '<div class="flex items-center gap-1.5 flex-shrink-0 flex-wrap">' +
+                    '<input type="text" id="sc-assign-name-' + sharedChannel.escAttr(e.id) + '" value="' + sharedChannel.escAttr(prefillName) + '" placeholder="Name" class="w-28 px-2 py-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' +
+                    '<select id="sc-assign-agent-' + sharedChannel.escAttr(e.id) + '" class="w-32 px-2 py-1.5 border border-gray-300 rounded-md text-xs dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600">' + agentOpts + '</select>' +
+                    '<button onclick="sharedChannel.assign(\'' + sharedChannel.escAttr(e.id) + '\')" class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md bg-indigo-600 text-white hover:bg-indigo-700 transition-colors">Assign</button>' +
+                    '<button onclick="sharedChannel.dismiss(\'' + sharedChannel.escAttr(e.id) + '\')" class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md border border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-400 dark:hover:bg-gray-700 transition-colors">Dismiss</button>' +
+                    '</div></div></div>';
+            }).join('');
+        },
+
+        assign: function(entryId) {
+            var agentId = document.getElementById('sc-assign-agent-' + entryId).value;
+            var name = document.getElementById('sc-assign-name-' + entryId).value.trim();
+            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox/' + entryId + '/assign', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ agent_id: agentId, name: name })
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                if (data.error) { alert(data.error); return; }
+                sharedChannel.resetSigs();
+                sharedChannel.load();
+            });
+        },
+
+        dismiss: function(entryId) {
+            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox/' + entryId, { method: 'DELETE' })
+                .then(function(r) { return r.json(); }).then(function() {
+                    sharedChannel._inboxSig = null;
+                    sharedChannel.loadInbox();
+                });
+        },
+
+        renderRoutes: function() {
+            var config = (sharedChannel.channel && sharedChannel.channel.config) || {};
+            var routes = config.routes || {};
+            var names = config.user_names || {};
+            var list = document.getElementById('sc-routes-list');
+            var sig = JSON.stringify([routes, names]);
+            if (sig === sharedChannel._routesSig) return;
+            sharedChannel._routesSig = sig;
+            var ids = Object.keys(routes);
+            if (ids.length === 0) {
+                list.innerHTML = '<p class="text-xs text-gray-400 text-center py-4">No routes configured.</p>';
+                return;
+            }
+            list.innerHTML = ids.map(function(u) {
+                var name = names[u] ? '<span class="text-xs text-gray-600 dark:text-gray-400 truncate">' + sharedChannel.esc(names[u]) + '</span>' : '';
+                var agentName = sharedChannel.agentsById[routes[u]] || '(unknown agent)';
+                return '<div class="flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">' +
+                    '<div class="flex items-center gap-3 min-w-0">' +
+                    '<span class="text-xs text-gray-700 dark:text-gray-300 font-mono flex-shrink-0">' + sharedChannel.esc(u) + '</span>' +
+                    name +
+                    '<span class="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:border-indigo-800 flex-shrink-0">' +
+                    '<svg class="w-3 h-3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>' +
+                    sharedChannel.esc(agentName) + '</span>' +
+                    '</div>' +
+                    '<button onclick="sharedChannel.removeRoute(\'' + sharedChannel.escAttr(u) + '\')" class="text-xs font-medium text-gray-400 hover:text-red-600 dark:hover:text-red-400 flex-shrink-0 transition-colors">Remove</button>' +
+                    '</div>';
+            }).join('');
+        },
+
+        addRoute: function() {
+            var input = document.getElementById('sc-route-user-input');
+            var userId = input.value.trim().replace(/[+\s-]/g, '');
+            if (!userId || !/^\d+$/.test(userId)) { alert('Enter a phone number (digits only).'); return; }
+            var agentId = document.getElementById('sc-route-agent-select').value;
+            var name = document.getElementById('sc-route-name-input').value.trim();
+            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/routes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, agent_id: agentId, name: name })
+            }).then(function(r) { return r.json(); }).then(function(data) {
+                if (data.error) { alert(data.error); return; }
+                input.value = '';
+                document.getElementById('sc-route-name-input').value = '';
+                sharedChannel.resetSigs();
+                sharedChannel.load();
+            });
+        },
+
+        removeRoute: function(userId) {
+            if (!confirm('Remove the route for ' + userId + '?')) return;
+            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/routes/' + encodeURIComponent(userId), { method: 'DELETE' })
+                .then(function(r) { return r.json(); }).then(function() {
+                    sharedChannel.resetSigs();
+                    sharedChannel.load();
+                });
+        },
+
+        esc: function(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        },
+
+        escAttr: function(s) {
+            if (!s) return '';
+            return String(s).replace(/&/g, '&amp;').replace(/'/g, '\\\'').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+    };
+})();
+</script>

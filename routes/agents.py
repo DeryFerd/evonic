@@ -788,9 +788,12 @@ def api_kb_graph(agent_id):
     if not agent:
         return jsonify({'error': 'Agent not found'}), 404
 
+    from backend.agent_runtime.memory_manager import get_kb_activity
+    stats = get_kb_activity(agent_id)
+
     graph = get_graph_for_viz(agent_id)
     if not graph or not graph.get('nodes'):
-        return jsonify({'pages': {}, 'links': [], 'dangling_links': []})
+        return jsonify({'pages': {}, 'links': [], 'dangling_links': [], 'stats': stats})
 
     nodes = graph['nodes']
     links = graph['links']
@@ -830,6 +833,7 @@ def api_kb_graph(agent_id):
         'pages': pages,
         'links': links,                 # each carries source/target/edge_type
         'dangling_links': dangling_links,
+        'stats': stats,
     })
 
 

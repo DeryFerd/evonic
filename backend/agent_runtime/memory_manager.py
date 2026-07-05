@@ -1060,6 +1060,27 @@ def _save_sefton_last_filing(agent_id: str, ts: float) -> None:
         logger.debug("[MemoryManager] could not save sefton last-filing ts for %s", agent_id)
 
 
+def _load_kb_last_organized(agent_id: str) -> float:
+    try:
+        return float(db.get_setting(f"kb_last_organized:{agent_id}") or 0)
+    except (TypeError, ValueError, Exception):  # noqa: BLE001 — best-effort
+        return 0.0
+
+
+def _save_kb_last_organized(agent_id: str, ts: float) -> None:
+    try:
+        db.set_setting(f"kb_last_organized:{agent_id}", str(ts))
+    except Exception:
+        logger.debug("[MemoryManager] could not save kb last-organized ts for %s", agent_id)
+
+
+def get_kb_activity(agent_id: str) -> dict:
+    """Epoch seconds of last KB filing & last KB organize (None if never)."""
+    filed = max(_load_sefton_last_filing(agent_id), _load_organizer_last_run(agent_id))
+    organized = _load_kb_last_organized(agent_id)
+    return {'last_filed_at': filed or None, 'last_organized_at': organized or None}
+
+
 def _log_organizer_diff(agent_id, agent_name, session_id, prev_summary, curr_summary,
                         delta_text, score, recent_messages, fresh_recent,
                         last_recent_ts) -> None:
@@ -1752,6 +1773,7 @@ def sefton_tidy_agent(agent_id: str) -> str:
         return f"Agent {agent_id}: DirExplorer infra not available."
 
     result = _spawn_kb_tidy(agent)
+    _save_kb_last_organized(agent_id, time.time())
 
     try:
         from backend.agent_runtime.evomem_writer import mark_dirty

@@ -624,6 +624,10 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
                     </button>
                 </div>
                 <div id="kb-type-filters" class="hidden flex flex-col items-start gap-1"></div>
+                <div id="kb-graph-stats" class="hidden flex flex-col items-start gap-0.5 bg-white/80 dark:bg-gray-800 backdrop-blur-sm rounded-lg px-3 py-2 text-xs text-gray-500 dark:text-gray-400 shadow-lg border border-gray-200 dark:border-gray-600">
+                    <span>Last filed: <span id="kb-stat-last-filed">—</span></span>
+                    <span>Last organized: <span id="kb-stat-last-organized">—</span></span>
+                </div>
             </div>
 
             <!-- Overlay: Action buttons (top-right) -->
@@ -2718,6 +2722,29 @@ let kbGraphShowOrphans = true;
 let kbGraphZoom = null;
 let kbGraphSvg = null;
 
+function _kbTimeAgo(epochSec) {
+    if (!epochSec) return 'never';
+    const s = Math.max(0, Math.floor(Date.now() / 1000 - epochSec));
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+}
+
+function _renderKBStats(stats) {
+    const box = document.getElementById('kb-graph-stats');
+    if (!box) return;
+    if (!stats) { box.classList.add('hidden'); return; }
+    const set = (id, ts) => {
+        const el = document.getElementById(id);
+        el.textContent = _kbTimeAgo(ts);
+        el.title = ts ? new Date(ts * 1000).toLocaleString() : '';
+    };
+    set('kb-stat-last-filed', stats.last_filed_at);
+    set('kb-stat-last-organized', stats.last_organized_at);
+    box.classList.remove('hidden');
+}
+
 async function loadKBGraph() {
     const epoch = window._agentEpoch;
     try {
@@ -2727,6 +2754,7 @@ async function loadKBGraph() {
         if (epoch !== window._agentEpoch) return; // agent switched mid-flight
         kbGraphData = data;
         kbGraphDataEpoch = epoch;
+        _renderKBStats(data.stats);
         if (kbGraphMode === 'graph') renderKBGraph();
     } catch(e) {
         console.error('Failed to load KB graph:', e);

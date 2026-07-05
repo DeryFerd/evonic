@@ -39,15 +39,7 @@ func RunStart(args []string) error {
 	workdir := effectiveWorkDir(cfg)
 	exec := executor.New(workdir, *verbose)
 	client := ws.New(cfg, exec)
-
-	// Handle SIGINT/SIGTERM so CTRL+C cleanly stops the client.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		log.Printf("[evonet] Received %v, shutting down...", sig)
-		client.Stop()
-	}()
+	handleSignals(client)
 
 	log.SetFlags(log.Ltime)
 	log.Printf("[evonet] Connecting to %s...", cfg.ServerURL)
@@ -80,20 +72,27 @@ func RunRun(args []string) error {
 	workdir := effectiveWorkDir(cfg)
 	exec := executor.New(workdir, *verbose)
 	client := ws.New(cfg, exec)
-
-	// Handle SIGINT/SIGTERM so CTRL+C cleanly stops the client.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		sig := <-sigCh
-		log.Printf("[evonet] Received %v, shutting down...", sig)
-		client.Stop()
-	}()
+	handleSignals(client)
 
 	log.SetFlags(log.Ltime)
 	log.Printf("[evonet] Starting (auto-reconnect)...")
 	client.Run()
 	return nil
+}
+
+// handleSignals stops the client gracefully on the first SIGINT/SIGTERM and
+// force-exits on the second, so a hung shutdown can't swallow CTRL+C forever.
+func handleSignals(client *ws.Client) {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		sig := <-sigCh
+		log.Printf("[evonet] Received %v, shutting down...", sig)
+		go client.Stop()
+		sig = <-sigCh
+		log.Printf("[evonet] Received %v again, forcing exit", sig)
+		os.Exit(130)
+	}()
 }
 
 // RunStatus prints the current config status.

@@ -106,6 +106,10 @@ func captureLoginEnv() []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, shell, "-l", "-i", "-c", "echo "+envCaptureMarker+"; env")
+	// Detach from the controlling terminal: an interactive shell would otherwise
+	// grab the TTY's foreground process group and leave evonet unable to receive
+	// CTRL+C after the first command (Linux bash ≥4.4 / zsh).
+	detachTTY(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("[evonet] login env capture failed (shell=%s, env will be process env): %v", shell, err)

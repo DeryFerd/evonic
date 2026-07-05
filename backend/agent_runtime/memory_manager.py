@@ -1168,7 +1168,12 @@ def _organizer_try_claim(agent_id: str, debounce_s: float) -> bool:
     with _organizer_guard:
         if agent_id in _organizer_running:
             return False  # an instance is already running for this agent
-        if debounce_s > 0 and (now - _organizer_last_start.get(agent_id, 0.0)) < debounce_s:
+        # A missing entry means "never ran" and must always be claimable —
+        # don't default it to 0.0: time.monotonic() starts near 0 at boot, so
+        # (now - 0.0) < debounce_s would refuse every agent's FIRST run for a
+        # whole debounce window after the machine starts.
+        last = _organizer_last_start.get(agent_id)
+        if debounce_s > 0 and last is not None and (now - last) < debounce_s:
             return False  # ran too recently
         _organizer_running.add(agent_id)
         _organizer_last_start[agent_id] = now

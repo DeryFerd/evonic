@@ -1118,3 +1118,196 @@ def api_user_audit(user_id):
     logs = db.get_audit_log(user_id=user_id)
     return jsonify({'user_id': user_id, 'audit_logs': logs})
 
+
+
+# ==================== Shared Channels (System Settings → Shared Channel) ====================
+# Shared channels serve multiple agents from one connection (agent_id IS NULL);
+# inbound senders are routed per-user/group via config.routes and unknown
+# senders land in shared_channel_inbox for capture-and-assign.
+
+def _shared_channel_or_404(channel_id):
+    channel = db.get_channel(channel_id)
+    if not channel or channel.get('agent_id') is not None:
+        return None
+    return channel
+
+
+@settings_bp.route('/api/shared-channels', methods=['GET'])
+def api_list_shared_channels():
+    from backend.channels.registry import channel_manager
+    channels = db.get_shared_channels()
+    for ch in channels:
+        ch['running'] = channel_manager.is_running(ch['id'])
+        ch['bridge_status'] = None
+        if ch['running']:
+            instance = channel_manager.get_channel_instance(ch['id'])
+            if instance:
+                try:
+                    ch['bridge_status'] = instance.get_bridge_status().get('status')
+                except Exception:
+                    pass
+    return jsonify({'channels': channels})
+
+
+@settings_bp.route('/api/shared-channels', methods=['POST'])
+def api_create_shared_channel():
+    from backend.channels.registry import channel_manager
+    data = request.get_json() or {}
+    name = (data.get('name') or 'Shared WhatsApp').strip()
+    # UNIQUE(agent_id, name) treats NULLs as distinct — enforce app-side
+    if any(c.get('name') == name for c in db.get_shared_channels()):
+        return jsonify({'error': f"Shared channel '{name}' already exists"}), 409
+    chan_id = db.create_channel({
+        'agent_id': None,
+        'type': 'whatsapp_shared',
+        'name': name,
+        'config': {'mode': 'open', 'routes': {}},
+    })
+    try:
+        channel_manager.start_channel(chan_id)
+    except Exception as e:
+        _logger.error("Auto-start failed for shared channel %s: %s", chan_id, e)
+    channel = db.get_channel(chan_id)
+    channel['running'] = channel_manager.is_running(chan_id)
+    audit.log_setting_change(user_id='admin', key='shared_channel.create',
+                             old_value='', new_value=name, ip=request.remote_addr or '')
+    return jsonify({'success': True, 'channel': channel})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>', methods=['PUT'])
+def api_update_shared_channel(channel_id):
+    from backend.channels.registry import channel_manager
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    data = request.get_json() or {}
+    db.update_channel(channel_id, {k: v for k, v in data.items() if k in ('name', 'enabled')})
+    if 'enabled' in data:
+        try:
+            if data['enabled']:
+                channel_manager.start_channel(channel_id)
+            else:
+                channel_manager.stop_channel(channel_id)
+        except Exception as e:
+            _logger.error("Toggle failed for shared channel %s: %s", channel_id, e)
+    return jsonify({'success': True, 'running': channel_manager.is_running(channel_id)})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>', methods=['DELETE'])
+def api_delete_shared_channel(channel_id):
+    from backend.channels.registry import channel_manager
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    try:
+        channel_manager.stop_channel(channel_id)
+    except Exception:
+        pass
+    db.delete_channel(channel_id)
+    audit.log_setting_change(user_id='admin', key='shared_channel.delete',
+                             old_value=channel.get('name') or channel_id, new_value='',
+                             ip=request.remote_addr or '')
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/qr', methods=['GET'])
+def api_shared_channel_qr(channel_id):
+    from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
+    instance = channel_manager.get_channel_instance(channel_id)
+    if not isinstance(instance, WhatsAppChannel):
+        return jsonify({'error': 'Shared channel not running'}), 404
+    return jsonify(instance.get_qr())
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/bridge-status', methods=['GET'])
+def api_shared_channel_bridge_status(channel_id):
+    from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
+    instance = channel_manager.get_channel_instance(channel_id)
+    if not isinstance(instance, WhatsAppChannel):
+        return jsonify({'status': 'not_running'})
+    return jsonify(instance.get_bridge_status())
+
+
+def _add_shared_route(channel, user_id, agent_id, display_name='', alt_user_id=''):
+    """Write route entries (and optional annotation) into the channel config.
+    Routes both identifier namespaces when the alternate is known."""
+    config = channel.get('config') or {}
+    routes = config.get('routes') or {}
+    routes[user_id] = agent_id
+    if alt_user_id:
+        routes[alt_user_id] = agent_id
+    config['routes'] = routes
+    if display_name:
+        names = config.get('user_names') or {}
+        names[user_id] = display_name
+        if alt_user_id:
+            names[alt_user_id] = display_name
+        config['user_names'] = names
+    db.update_channel(channel['id'], {'config': config})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/routes', methods=['POST'])
+def api_add_shared_route(channel_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    data = request.get_json() or {}
+    user_id = re.sub(r'[+\s-]', '', str(data.get('user_id') or ''))
+    agent_id = data.get('agent_id') or ''
+    if not user_id or not user_id.isdigit():
+        return jsonify({'error': 'user_id must be digits (phone number or group ID)'}), 400
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    _add_shared_route(channel, user_id, agent_id, data.get('name') or '')
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/routes/<user_id>', methods=['DELETE'])
+def api_delete_shared_route(channel_id, user_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    config = channel.get('config') or {}
+    routes = config.get('routes') or {}
+    if user_id not in routes:
+        return jsonify({'error': 'Route not found'}), 404
+    del routes[user_id]
+    config['routes'] = routes
+    db.update_channel(channel_id, {'config': config})
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox', methods=['GET'])
+def api_shared_channel_inbox(channel_id):
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    return jsonify({'inbox': db.get_inbox(channel_id)})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox/<entry_id>/assign', methods=['POST'])
+def api_assign_inbox_entry(channel_id, entry_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    entry = db.get_inbox_entry(entry_id)
+    if not entry or entry.get('channel_id') != channel_id:
+        return jsonify({'error': 'Inbox entry not found'}), 404
+    data = request.get_json() or {}
+    agent_id = data.get('agent_id') or ''
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    display_name = data.get('name') or entry.get('push_name') or ''
+    _add_shared_route(channel, entry['external_user_id'], agent_id,
+                      display_name, entry.get('alt_user_id') or '')
+    db.delete_inbox_entry(entry_id)
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox/<entry_id>', methods=['DELETE'])
+def api_dismiss_inbox_entry(channel_id, entry_id):
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    if not db.delete_inbox_entry(entry_id):
+        return jsonify({'error': 'Inbox entry not found'}), 404
+    return jsonify({'success': True})

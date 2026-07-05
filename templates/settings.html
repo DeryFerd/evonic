@@ -13,6 +13,7 @@ block content %}
         <button class="tab-btn" onclick="showTab('models')">Models</button>
         <button class="tab-btn" onclick="showTab('hmads')">HMADS</button>
         <button class="tab-btn" onclick="showTab('users')">Users</button>
+        <button class="tab-btn" onclick="showTab('shared_channel')">Shared Channel</button>
         <button class="tab-btn" onclick="showTab('logs')">Logs</button>
     </div>
 
@@ -560,6 +561,11 @@ block content %}
     <!-- Users Tab -->
     <div id="users-tab" class="tab-content">
         {% include 'partials/users.html' %}
+    </div>
+
+    <!-- Shared Channel Tab -->
+    <div id="shared_channel-tab" class="tab-content">
+        {% include 'partials/shared_channel.html' %}
     </div>
 </div>
 
@@ -1825,6 +1831,10 @@ block content %}
         } else if (tabName === "users") {
             if (window.usersTab) {
                 usersTab.init();
+            }
+        } else if (tabName === "shared_channel") {
+            if (window.sharedChannel) {
+                sharedChannel.init();
             }
         }
     }

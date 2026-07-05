@@ -5,6 +5,7 @@ from typing import Dict, Type, Optional
 from backend.channels.base import BaseChannel
 from backend.channels.telegram import TelegramChannel
 from backend.channels.whatsapp import WhatsAppChannel
+from backend.channels.whatsapp_shared import SharedWhatsAppChannel
 from backend.channels.discord import DiscordChannel
 from models.db import db
 
@@ -14,6 +15,7 @@ _logger = logging.getLogger(__name__)
 CHANNEL_TYPES: Dict[str, Type[BaseChannel]] = {
     'telegram': TelegramChannel,
     'whatsapp': WhatsAppChannel,
+    'whatsapp_shared': SharedWhatsAppChannel,
     'discord': DiscordChannel,
 }
 
@@ -36,11 +38,12 @@ class ChannelManager:
             _logger.info("Skipping disabled channel %s", channel_id)
             return False
 
-        # Don't start channels for disabled agents
-        agent = db.get_agent(channel_data['agent_id'])
-        if agent and not agent.get('enabled', True):
-            _logger.info("Skipping channel %s — agent %s is disabled", channel_id, channel_data['agent_id'])
-            return False
+        # Don't start channels for disabled agents (shared channels have no agent)
+        if channel_data.get('agent_id'):
+            agent = db.get_agent(channel_data['agent_id'])
+            if agent and not agent.get('enabled', True):
+                _logger.info("Skipping channel %s — agent %s is disabled", channel_id, channel_data['agent_id'])
+                return False
 
         chan_type = channel_data.get('type')
         cls = CHANNEL_TYPES.get(chan_type)
@@ -96,6 +99,14 @@ class ChannelManager:
                     except Exception as e:
                         _logger.error("Failed to start channel %s (type: %s): %s",
                                       ch['id'], ch.get('type', 'unknown'), e)
+        # Shared channels are not bound to any agent (agent_id IS NULL)
+        for ch in db.get_shared_channels():
+            if ch.get('enabled'):
+                try:
+                    self.start_channel(ch['id'])
+                except Exception as e:
+                    _logger.error("Failed to start shared channel %s (type: %s): %s",
+                                  ch['id'], ch.get('type', 'unknown'), e)
         _logger.info("Finished starting all enabled channels")
 
     def stop_all(self):

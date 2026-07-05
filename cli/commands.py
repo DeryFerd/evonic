@@ -3913,7 +3913,7 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         _wa_channels = []
         for agent in _wa_db.get_agents():
             for ch in _wa_db.get_channels(agent['id']):
-                if ch.get('type') == 'whatsapp' and ch.get('enabled'):
+                if ch.get('type') in ('whatsapp', 'whatsapp_shared') and ch.get('enabled'):
                     _wa_channels.append((agent, ch))
 
         if not _wa_channels:

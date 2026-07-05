@@ -1181,7 +1181,7 @@ def api_list_channels(agent_id):
     for ch in channels:
         ch['running'] = channel_manager.is_running(ch['id'])
         ch['is_primary'] = ch['id'] == primary_cid
-        if ch.get('type') == 'whatsapp' and ch['running']:
+        if ch.get('type') in ('whatsapp', 'whatsapp_shared') and ch['running']:
             instance = channel_manager.get_channel_instance(ch['id'])
             if instance:
                 try:
@@ -1371,8 +1371,9 @@ def api_generate_pair_code(agent_id, channel_id):
 def api_whatsapp_qr(agent_id, channel_id):
     """Return QR code data for WhatsApp channel auth."""
     from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
     instance = channel_manager.get_channel_instance(channel_id)
-    if not instance or instance.get_channel_type() != 'whatsapp':
+    if not isinstance(instance, WhatsAppChannel):
         return jsonify({'error': 'WhatsApp channel not running'}), 404
     return jsonify(instance.get_qr())
 
@@ -1381,8 +1382,9 @@ def api_whatsapp_qr(agent_id, channel_id):
 def api_whatsapp_bridge_status(agent_id, channel_id):
     """Return Baileys bridge connection status."""
     from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
     instance = channel_manager.get_channel_instance(channel_id)
-    if not instance or instance.get_channel_type() != 'whatsapp':
+    if not isinstance(instance, WhatsAppChannel):
         return jsonify({'status': 'not_running'})
     return jsonify(instance.get_bridge_status())
 
@@ -1391,26 +1393,39 @@ def api_whatsapp_bridge_status(agent_id, channel_id):
 def api_whatsapp_disconnected_count():
     """Count running WhatsApp channels whose bridge is not connected."""
     from backend.channels.registry import channel_manager
+
+    def _bridge_down_status(ch):
+        if ch.get('type') not in ('whatsapp', 'whatsapp_shared'):
+            return None
+        if not channel_manager.is_running(ch['id']):
+            return None
+        instance = channel_manager.get_channel_instance(ch['id'])
+        if not instance:
+            return None
+        try:
+            status = instance.get_bridge_status().get('status')
+        except Exception:
+            return None
+        return status if status in ('disconnected', 'qr_pending') else None
+
     affected = []
     for agent in db.get_agents():
         for ch in db.get_channels(agent['id']):
-            if ch.get('type') != 'whatsapp':
-                continue
-            if not channel_manager.is_running(ch['id']):
-                continue
-            instance = channel_manager.get_channel_instance(ch['id'])
-            if not instance:
-                continue
-            try:
-                status = instance.get_bridge_status().get('status')
-            except Exception:
-                continue
-            if status in ('disconnected', 'qr_pending'):
+            status = _bridge_down_status(ch)
+            if status:
                 affected.append({
                     'id': agent['id'],
                     'name': agent.get('name') or agent['id'],
                     'status': status,
                 })
+    for ch in db.get_shared_channels():
+        status = _bridge_down_status(ch)
+        if status:
+            affected.append({
+                'id': None,
+                'name': ch.get('name') or 'Shared Channel',
+                'status': status,
+            })
     return jsonify({'count': len(affected), 'agents': affected})
 
 
@@ -1419,9 +1434,10 @@ def api_whatsapp_callback(channel_id):
     """Receive incoming WhatsApp messages from the Baileys sidecar."""
     import hmac
     from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
     import threading
     instance = channel_manager.get_channel_instance(channel_id)
-    if not instance or instance.get_channel_type() != 'whatsapp':
+    if not isinstance(instance, WhatsAppChannel):
         return jsonify({'error': 'Channel not found'}), 404
     # Validate Bearer token set by the sidecar at startup
     auth_header = request.headers.get('Authorization', '')

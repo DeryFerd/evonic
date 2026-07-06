@@ -1669,6 +1669,24 @@ def run_tool_loop(agent: Dict[str, Any],
                 from backend.agent_runtime.approval import approval_registry
                 APPROVAL_TIMEOUT = 300  # 5 minutes
 
+                # API consumers (AgentAPI plugin) have no human to approve.
+                # Auto-reject immediately to prevent sessions from hanging.
+                if external_user_id and external_user_id.startswith('api:'):
+                    _logger.info(
+                        "approval auto-rejected for API session %s (agent=%s tool=%s)",
+                        session_id, agent_id, fn_name,
+                    )
+                    tool_result = {
+                        'error': 'Tool execution rejected: API consumers cannot approve tool calls.',
+                        'level': 'rejected',
+                        'original_reasons': tool_result.get('reasons', []),
+                    }
+                    # Record the auto-rejection as a completed tool_call result
+                    _tc_result = {_tc['id']: tool_result}
+                    messages.append({'role': 'tool', 'tool_call_id': _tc['id'],
+                                     'content': json.dumps(tool_result)})
+                    continue
+
                 pending = approval_registry.create(
                     session_id=session_id,
                     agent_id=agent_id,

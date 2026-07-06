@@ -71,6 +71,7 @@ class Scheduler:
                 CronTrigger(hour=3, minute=0),
                 id='builtin:attachments_cleanup',
                 replace_existing=True,
+                misfire_grace_time=3600,
             )
         except Exception as e:  # pragma: no cover - defensive guard
             log.warning("Failed to register attachments cleanup job: %s", e)
@@ -81,6 +82,7 @@ class Scheduler:
                 CronTrigger(hour=3, minute=0),
                 id='builtin:sefton_tidy',
                 replace_existing=True,
+                misfire_grace_time=3600,
             )
         except Exception as e:  # pragma: no cover
             log.warning("Failed to register sefton tidy job: %s", e)

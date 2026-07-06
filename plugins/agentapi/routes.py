@@ -283,11 +283,9 @@ def create_blueprint():
         # --- Build external_user_id ---
         external_user_id = _generate_external_user_id(token_row, agent_id, request)
 
-        # --- Clear session for stateless default (skip if X-Session-Id given) ---
-        if not request.headers.get('X-Session-Id', '').strip():
-            from models.db import db as _chat_db
-            _sess_id = _chat_db.get_or_create_session(agent_id, external_user_id, None)
-            _chat_db.clear_session(_sess_id, agent_id=agent_id)
+        # Sessions are stateful by default — Evonic manages history &
+        # auto-summarization. Use X-Session-Id to isolate conversations.
+        # X-Clear-Session header can force a fresh session on demand.
 
         # --- Call agent ---
         from backend.agent_runtime import agent_runtime
@@ -342,10 +340,8 @@ def create_blueprint():
         # filter events by session.
         session_id = _db.get_or_create_session(agent_id, external_user_id, None)
 
-        # Clear session for stateless default (skip if X-Session-Id given)
-        from flask import request as _flask_req
-        if not _flask_req.headers.get('X-Session-Id', '').strip():
-            _db.clear_session(session_id, agent_id=agent_id)
+        # Sessions are stateful by default — Evonic manages history &
+        # auto-summarization. Use X-Session-Id to isolate conversations.
 
         chat_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())

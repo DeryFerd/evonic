@@ -4075,7 +4075,7 @@ function closeQRModal() {
 
 function _startQRPolling() {
     _stopQRPolling();
-    _qrPollInterval = setInterval(_pollQR, 3000);
+    _qrPollInterval = setInterval(_pollQR, 10000);
     _pollQR(); // immediate first call
 }
 

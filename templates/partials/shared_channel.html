@@ -228,7 +228,7 @@
                     }).catch(function() {});
             };
             fetchQr();
-            sharedChannel._qrTimer = setInterval(fetchQr, 3000);
+            sharedChannel._qrTimer = setInterval(fetchQr, 10000);
         },
 
         create: function() {

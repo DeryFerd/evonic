@@ -357,20 +357,33 @@ class ToolRegistry:
         if plugin_owner:
             module = self._exec_plugin_tool_module(
                 plugin_owner, os.path.dirname(tool_path), tool_name, tool_path)
-        else:
-            # Temporarily add skill backend dir to sys.path for relative imports
-            added_path = False
-            if skill_backend_dir and skill_backend_dir not in sys.path:
-                sys.path.insert(0, skill_backend_dir)
-                added_path = True
+        elif skill_backend_dir:
+            # Skill tools: use a unique namespace (like plugin_tools_{plugin_id})
+            # so relative imports (from ._utils import ...) resolve against the
+            # skill's own backend/tools/ dir, not the main backend/tools/ package.
+            pkg_name = f"skill_tools_{skill_id}"
+            pkg = sys.modules.get(pkg_name)
+            if pkg is None:
+                pkg = types.ModuleType(pkg_name)
+                pkg.__package__ = pkg_name
+                sys.modules[pkg_name] = pkg
+            pkg.__path__ = [os.path.dirname(tool_path)]
 
+            mod_name = f"{pkg_name}.{tool_name}"
+            spec = importlib.util.spec_from_file_location(mod_name, tool_path)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[mod_name] = module
             try:
-                spec = importlib.util.spec_from_file_location(f"tools.{tool_name}", tool_path)
-                module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-            finally:
-                if added_path:
-                    sys.path.remove(skill_backend_dir)
+            except Exception:
+                sys.modules.pop(mod_name, None)
+                raise
+        else:
+            # Core tools: use tools.{tool_name} namespace — relative imports
+            # resolve against the main backend/tools/ package correctly.
+            spec = importlib.util.spec_from_file_location(f"tools.{tool_name}", tool_path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
 
         self._module_cache[cache_key] = {
             'module': module,

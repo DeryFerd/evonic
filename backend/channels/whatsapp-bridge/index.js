@@ -325,6 +325,7 @@ async function startBaileys() {
             postCallback({
                 from: sender, jid, message_id: messageId, text, image,
                 alt_sender: altSender,
+                alt_jid: altJid,
                 quoted_text: quotedText,
                 is_group: isGroup,
                 bot_mentioned: botMentioned,

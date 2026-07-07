@@ -45,6 +45,11 @@ class SharedWhatsAppChannel(WhatsAppChannel):
         else:
             agent_id = _lookup_route(routes, sender, alt_sender)
         if not agent_id:
+            # DIAGNOSTIC: show the active channel_id and its actual route keys
+            # so a route-on-the-wrong-channel (or unsaved route) is obvious.
+            _logger.info(
+                "Shared route MISS: channel=%s sender=%s alt=%s is_group=%s route_keys=%s",
+                self.channel_id, sender, alt_sender, is_group, list(routes.keys()))
             # Capture the unknown sender so the admin can assign them from
             # the Shared Channel settings page (still no reply to the sender).
             p = payload or {}

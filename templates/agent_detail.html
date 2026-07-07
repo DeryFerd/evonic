@@ -4923,7 +4923,7 @@ function openChatDropModal(file) {
     const previewFile = document.getElementById('chat-drop-preview-file');
     const msgInput = document.getElementById('chat-drop-message');
 
-    msgInput.value = '';
+    msgInput.value = (document.getElementById('chat-input') || {}).value || '';
 
     if (file.type.startsWith('image/')) {
         previewImg.src = URL.createObjectURL(file);

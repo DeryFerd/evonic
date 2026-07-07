@@ -219,10 +219,23 @@ async function startBaileys() {
             const sender = isGroup
                 ? (participant.includes('@') ? participant.split('@')[0] : participant)
                 : (from.includes('@') ? from.split('@')[0] : from);
-            // Alternate identifier: when the chat is LID-addressed, Baileys
+            // Alternate identifier: when the chat is LID-addressed, WhatsApp
             // exposes the phone-number JID in senderPn/participantPn. Shared
-            // channels match routes against both digit namespaces.
-            const altJid = (isGroup ? msg.key.participantPn : msg.key.senderPn) || '';
+            // channels match routes against both digit namespaces. Baileys v7
+            // frequently OMITS senderPn on the message key, which breaks
+            // routes keyed on the phone number — so when it's missing, resolve
+            // the phone JID from the signal LID map (getPNForLID does a USync
+            // if needed). Without this, a LID sender only carries its @lid
+            // digits and a phone-keyed route silently misses.
+            let altJid = (isGroup ? msg.key.participantPn : msg.key.senderPn) || '';
+            const lidSource = isGroup ? participant : from;
+            if (!altJid && lidSource.endsWith('@lid') && sock?.signalRepository?.lidMapping) {
+                try {
+                    altJid = (await sock.signalRepository.lidMapping.getPNForLID(lidSource)) || '';
+                } catch (e) {
+                    console.error('[whatsapp-bridge] getPNForLID failed for %s: %s', lidSource, e.message);
+                }
+            }
             const altSender = altJid.includes('@') ? altJid.split('@')[0].split(':')[0] : altJid;
             const messageId = msg.key.id || '';
             const content = unwrapMessage(msg.message);

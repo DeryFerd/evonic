@@ -5003,6 +5003,16 @@ async function sendChat() {
     if (!msg && !file) return;
     input.value = '';
     input.style.height = 'auto';
+    input.style.overflowY = 'hidden';
+    // Re-apply height reset after async input event (queued by value='') fires.
+    // The oninput handler may set height from a stale scrollHeight before the
+    // browser has reflowed the now-empty textarea.
+    requestAnimationFrame(function() {
+        if (!input.value) {
+            input.style.height = 'auto';
+            input.style.overflowY = 'hidden';
+        }
+    });
     window._clearChatDraft();
     hideEditorTip();
     if (file) clearChatFileInput();

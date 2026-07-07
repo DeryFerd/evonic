@@ -907,8 +907,12 @@ class LLMClient:
                     "error_type": "connection_error",
                     "error_detail": f"Could not connect to LLM server at {self.base_url}.",
                 }
-                if attempt < max_retries:
-                    time.sleep(min(2 ** (attempt + 1), 60))
+                # Connection refused/unreachable means the server is down — the
+                # full llm_max_retries exponential backoff (60s+) won't revive
+                # it. Retry once with a short wait, then return so the caller
+                # (llm_loop) can move to its own retry/fallback path quickly.
+                if attempt < min(max_retries, 1):
+                    time.sleep(2)
                     continue
                 return last_error_result
 

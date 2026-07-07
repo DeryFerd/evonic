@@ -761,7 +761,9 @@ def run_tool_loop(agent: Dict[str, Any],
                 # If a fallback model is configured, only retry once then fall through
                 # to fallback logic (line ~573+). Without fallback: retry as usual.
                 if not _has_fallback or timeout_retries < 1:
-                    wait = min(2 ** timeout_retries, 30)
+                    # connection_error = server down; exponential backoff won't
+                    # revive it — keep the wait short so errors surface fast.
+                    wait = 2 if error_type == 'connection_error' else min(2 ** timeout_retries, 30)
                     _logger.warning("%s — auto-retry %d/%d in %ds", error_type, timeout_retries, max_timeout_retries, wait)
                     user_msg = f"Model is busy, retrying... ({timeout_retries}/{max_timeout_retries})"
                     event_stream.emit('llm_retry', {

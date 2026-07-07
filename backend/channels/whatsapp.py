@@ -807,11 +807,8 @@ class WhatsAppChannel(BaseChannel):
         # clear typing state so no phantom indicator survives the send.
         self._clear_typing(external_user_id)
         for chunk in _split_message(text):
-            try:
-                self._bridge_post('/send', {'to': to, 'text': chunk})
+            if self._bridge_send_retry({'to': to, 'text': chunk}, external_user_id):
                 _logger.info("WhatsApp message sent to %s (channel %s)", external_user_id, self.channel_id)
-            except Exception as e:
-                _logger.error("WhatsApp send failed to %s: %s", external_user_id, e)
         # Actively clear any lingering composing presence on the recipient
         self.send_typing(external_user_id, state='paused')
         from backend.event_stream import event_stream
@@ -873,6 +870,46 @@ class WhatsAppChannel(BaseChannel):
             'message': f"[File: {os.path.basename(file_path)}]",
         })
         return True
+
+    def _bridge_send_retry(self, payload: dict, external_user_id: str,
+                           max_attempts: int = 4, delay: float = 3.0) -> bool:
+        """POST /send, retrying while the bridge is momentarily not connected.
+
+        A 503 (bridge reports not-connected) or a connection error means the
+        message was NOT sent — so retrying is duplicate-safe. The bridge
+        normally reconnects within a few seconds (creds are preserved), so a
+        short bounded retry keeps replies from being silently lost during a
+        transient reconnect — the root cause of "agent replied but nothing
+        arrived in WhatsApp". Read timeouts are NOT retried (the send may have
+        gone through, and retrying could duplicate the message).
+        """
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._bridge_post('/send', payload)
+                return True
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else None
+                if status == 503 and attempt < max_attempts:
+                    _logger.warning(
+                        "WhatsApp bridge not connected (503) sending to %s — retry %d/%d",
+                        external_user_id, attempt, max_attempts - 1)
+                    time.sleep(delay)
+                    continue
+                _logger.error("WhatsApp send failed to %s: %s", external_user_id, e)
+                return False
+            except requests.exceptions.ConnectionError as e:
+                if attempt < max_attempts:
+                    _logger.warning(
+                        "WhatsApp bridge connection error sending to %s — retry %d/%d: %s",
+                        external_user_id, attempt, max_attempts - 1, e)
+                    time.sleep(delay)
+                    continue
+                _logger.error("WhatsApp send failed to %s: %s", external_user_id, e)
+                return False
+            except Exception as e:
+                _logger.error("WhatsApp send failed to %s: %s", external_user_id, e)
+                return False
+        return False
 
     def _bridge_post(self, path: str, payload: dict):
         resp = requests.post(

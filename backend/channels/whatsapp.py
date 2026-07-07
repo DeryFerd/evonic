@@ -312,8 +312,12 @@ class WhatsAppChannel(BaseChannel):
                     )
                     node_modules_installed = True
 
-                from config import PORT as EVONIC_PORT
-                session_dir = os.path.join('data', 'whatsapp-sessions', self.channel_id)
+                from config import PORT as EVONIC_PORT, APP_ROOT
+                # Anchor to APP_ROOT (absolute) rather than a CWD-relative path:
+                # if the server is ever launched from a different working dir
+                # (e.g. symlinked release dirs), a relative path would resolve to
+                # an empty auth dir and force a spurious QR re-scan.
+                session_dir = os.path.join(APP_ROOT, 'data', 'whatsapp-sessions', self.channel_id)
                 os.makedirs(session_dir, exist_ok=True)
 
                 callback_url = (

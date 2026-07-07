@@ -24,6 +24,17 @@ let botId = '';   // PN-based JID (e.g. 628xxx:1@s.whatsapp.net)
 let botLid = '';  // LID-based JID (e.g. 123456:1@lid)
 let lastPushedStatus = '';
 
+// Reconnect control — a single-socket guard prevents overlapping sockets from
+// fighting over one credential set (which WhatsApp punishes with a conflict/401
+// that used to wipe the session). Only one restart is ever pending at a time.
+let reconnectAttempts = 0;
+let restartScheduled = false;
+// Set when WhatsApp reports connectionReplaced (440). A 401 arriving right after
+// a replace is conflict fallout — NOT a genuine logout — so we must not wipe on it.
+let sawReplaced = false;
+const BASE_RECONNECT_MS = 3000;
+const MAX_RECONNECT_MS = 60000;
+
 // Group/sender context caches (in-memory; repopulate after restart)
 const groupMetaCache = new Map(); // groupJid -> { subject, ts }
 const GROUP_META_TTL_MS = 60 * 60 * 1000;
@@ -48,6 +59,21 @@ function pushStatus() {
     if (connectionStatus === lastPushedStatus) return;
     lastPushedStatus = connectionStatus;
     postCallback({ event: 'status', status: connectionStatus });
+}
+
+// Schedule exactly one reconnect with exponential backoff. The restartScheduled
+// guard ensures a burst of 'close' events can never fan out into multiple
+// concurrent sockets. startBaileys() tears down the previous socket first.
+function scheduleRestart() {
+    if (restartScheduled || isShuttingDown) return;
+    restartScheduled = true;
+    const delay = Math.min(BASE_RECONNECT_MS * 2 ** reconnectAttempts, MAX_RECONNECT_MS);
+    reconnectAttempts += 1;
+    console.log('[whatsapp-bridge] Reconnecting in %dms (attempt %d)', delay, reconnectAttempts);
+    setTimeout(() => {
+        restartScheduled = false;
+        startBaileys().catch((e) => console.error('[whatsapp-bridge] Baileys restart error:', e));
+    }, delay);
 }
 
 // Unwrap container messages (disappearing / view-once) to reach the real content.
@@ -77,6 +103,15 @@ async function startBaileys() {
 
     fs.default.mkdirSync(AUTH_DIR, { recursive: true });
 
+    // Tear down any prior socket before opening a new one — a lingering socket
+    // with its listeners still attached would race this one over the same creds
+    // and trigger a WhatsApp conflict.
+    if (sock) {
+        try { sock.ev.removeAllListeners(); } catch (_) {}
+        try { sock.end(undefined); } catch (_) {}
+        sock = null;
+    }
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
 
@@ -102,6 +137,8 @@ async function startBaileys() {
         if (connection === 'open') {
             currentQR = null;
             connectionStatus = 'connected';
+            reconnectAttempts = 0;
+            sawReplaced = false;
             botId = sock.user?.id || '';
             botLid = sock.user?.lid || '';
             console.log('[whatsapp-bridge] Connected to WhatsApp (id=%s, lid=%s)', botId, botLid);
@@ -109,19 +146,58 @@ async function startBaileys() {
 
         if (connection === 'close') {
             connectionStatus = 'disconnected';
+            if (isShuttingDown) { pushStatus(); return; }
+
             const statusCode = lastDisconnect?.error?.output?.statusCode;
-            const loggedOut = statusCode === DisconnectReason.loggedOut;
+            const reasonName = Object.keys(DisconnectReason)
+                .find((k) => DisconnectReason[k] === statusCode) || 'unknown';
+            console.log('[whatsapp-bridge] Connection closed (statusCode=%s reason=%s)',
+                statusCode, reasonName);
 
-            if (isShuttingDown) return;
-
-            if (loggedOut) {
-                console.log('[whatsapp-bridge] Logged out — clearing session and restarting');
+            const wipeAndRepair = (why) => {
+                console.log('[whatsapp-bridge] %s — clearing session and re-pairing', why);
                 fs.default.rmSync(AUTH_DIR, { recursive: true, force: true });
-                setTimeout(startBaileys, 3000);
-            } else {
-                console.log('[whatsapp-bridge] Disconnected, reconnecting...');
-                setTimeout(startBaileys, 3000);
+                reconnectAttempts = 0;
+                scheduleRestart();
+            };
+
+            switch (statusCode) {
+                case DisconnectReason.loggedOut: // 401
+                    // A 401 immediately after a connectionReplaced is conflict
+                    // fallout, not a real logout — reconnect instead of wiping.
+                    if (sawReplaced) {
+                        console.log('[whatsapp-bridge] 401 after replace — treating as conflict, keeping creds');
+                        sawReplaced = false;
+                        scheduleRestart();
+                    } else {
+                        // Genuine logout (device removed from the phone): creds
+                        // are dead, so wipe and surface a fresh QR.
+                        wipeAndRepair('Logged out');
+                    }
+                    break;
+
+                case DisconnectReason.badSession: // 500 — auth files corrupt
+                    wipeAndRepair('Bad session');
+                    break;
+
+                case DisconnectReason.connectionReplaced: // 440
+                    // Another socket took over this session. Reconnecting would
+                    // restart the war and end in a false 401 wipe. Keep creds and
+                    // reconnect once after a long backoff instead of hammering.
+                    console.log('[whatsapp-bridge] Connection replaced — backing off, creds preserved');
+                    sawReplaced = true;
+                    reconnectAttempts = Math.max(reconnectAttempts, 3); // ~24s+ delay
+                    scheduleRestart();
+                    break;
+
+                default:
+                    // restartRequired (515), timedOut (408), connectionClosed (428),
+                    // unavailableService (503), network flaps — all transient.
+                    // Keep creds and reconnect with backoff.
+                    scheduleRestart();
             }
+            pushStatus();
+            return;
         }
 
         pushStatus();

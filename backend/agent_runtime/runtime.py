@@ -747,6 +747,14 @@ class AgentRuntime:
                 _resp = result.get('response', '')
                 if task.send_via_channel and _resp and _resp != "(No response)" and task.ctx.channel_id:
                     instance = channel_manager._active.get(task.ctx.channel_id)
+                    # DIAGNOSTIC (shared-channel reply loss): confirm the buffered
+                    # worker resolves a running channel instance and attempts the send.
+                    _logger.info(
+                        "[buffered-send] channel_id=%s instance=%s running=%s user=%s session=%s",
+                        task.ctx.channel_id,
+                        type(instance).__name__ if instance else None,
+                        getattr(instance, 'is_running', None) if instance else None,
+                        task.ctx.external_user_id, task.ctx.session_id)
                     if instance and instance.is_running:
                         try:
                             instance.send_message(task.ctx.external_user_id, result['response'])
@@ -760,6 +768,15 @@ class AgentRuntime:
                                     )
                         except Exception as e:
                             _logger.error("Channel send error for session %s: %s", task.ctx.session_id, e)
+                elif task.send_via_channel:
+                    # DIAGNOSTIC (shared-channel reply loss): the reply was generated
+                    # and saved (so it shows in the web session) but the channel send
+                    # was skipped. Log exactly which precondition failed.
+                    _logger.warning(
+                        "[buffered-send] SKIPPED for session %s user=%s: "
+                        "resp_empty=%s resp_placeholder=%s channel_id=%s",
+                        task.ctx.session_id, task.ctx.external_user_id,
+                        not bool(_resp), _resp == "(No response)", task.ctx.channel_id)
             except Exception as e:
                 _logger.error("Worker error for session %s: %s", task.ctx.session_id, e, exc_info=True)
                 task.result = {

@@ -478,6 +478,18 @@ class WhatsAppChannel(BaseChannel):
             sender, jid, is_group, bot_mentioned, quoted_is_bot,
             (text[:60] if text else ''))
 
+        # Resolve the handling agent (shared channels route per sender/group).
+        # Runs BEFORE the group mention gate so shared channels capture unrouted
+        # groups into the Unassigned inbox on ANY group message — group discovery
+        # must not depend on (fragile, LID-sensitive) @mention detection.
+        agent_id = self._resolve_agent(sender, is_group, jid,
+                                       payload.get('alt_sender') or '',
+                                       payload=payload)
+        if not agent_id:
+            _logger.info("WhatsApp message dropped (no route): sender=%s is_group=%s jid=%s",
+                         sender, is_group, jid)
+            return
+
         # In groups, only respond when @mentioned or when user replies to a bot message
         if is_group and not bot_mentioned and not quoted_is_bot:
             _logger.info("WhatsApp group message dropped (not mentioned): sender=%s text=%s", sender, text[:80] if text else "")
@@ -486,15 +498,6 @@ class WhatsAppChannel(BaseChannel):
         # Strip the @mention tag from the message text
         if bot_mentioned and text:
             text = re.sub(r'@\d+', '', text).strip()
-
-        # Resolve the handling agent (shared channels route per sender/group)
-        agent_id = self._resolve_agent(sender, is_group, jid,
-                                       payload.get('alt_sender') or '',
-                                       payload=payload)
-        if not agent_id:
-            _logger.info("WhatsApp message dropped (no route): sender=%s is_group=%s jid=%s",
-                         sender, is_group, jid)
-            return
 
         # Allowlist check — groups use group ID, DMs use individual user ID
         if not self._gate_sender(sender, is_group, jid, text, push_name, payload):
@@ -792,6 +795,13 @@ class WhatsAppChannel(BaseChannel):
     def _do_send(self, external_user_id: str, text: str):
         # Resolve full JID from map; fall back to external_user_id as-is
         to = self._jid_map.get(external_user_id, external_user_id)
+        _from_map = external_user_id in self._jid_map
+        # DIAGNOSTIC (shared-channel reply loss): shows the exact target JID and
+        # whether it was resolved from _jid_map or fell back to bare digits (which
+        # the bridge turns into <digits>@s.whatsapp.net — wrong for a LID sender).
+        _logger.info(
+            "WhatsApp _do_send: user=%s -> to=%s (from_jid_map=%s, port=%s, channel %s)",
+            external_user_id, to, _from_map, self._bridge_port, self.channel_id)
         text = _strip_markdown(text)
         # Every send path (direct, buffered worker, messaging tool) ends here —
         # clear typing state so no phantom indicator survives the send.

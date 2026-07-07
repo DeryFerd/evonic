@@ -1445,7 +1445,19 @@ def api_whatsapp_callback(channel_id):
     if not hmac.compare_digest(auth_header, expected):
         return jsonify({'error': 'Unauthorized'}), 401
     payload = request.get_json(silent=True) or {}
-    threading.Thread(target=instance.handle_callback, args=(payload,), daemon=True).start()
+
+    def _run_callback():
+        # handle_callback runs in a daemon thread — without this wrapper any
+        # exception is swallowed by threading's default hook and the message
+        # vanishes with no log. Surface it with a full traceback.
+        try:
+            instance.handle_callback(payload)
+        except Exception:
+            logging.getLogger('backend.channels.whatsapp').exception(
+                "WhatsApp callback handler crashed for channel %s (sender=%s)",
+                channel_id, payload.get('from'))
+
+    threading.Thread(target=_run_callback, daemon=True).start()
     return jsonify({'ok': True})
 
 

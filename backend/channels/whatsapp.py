@@ -286,6 +286,11 @@ class WhatsAppChannel(BaseChannel):
         threading.Thread(target=self._start_bridge, daemon=True).start()
         _logger.info("WhatsApp channel %s starting (bridge port %s)", self.channel_id, self._bridge_port)
 
+    @property
+    def bridge_port(self) -> int:
+        """Local port the Baileys sidecar binds — read by the manager to avoid collisions."""
+        return self._bridge_port
+
     def _start_bridge(self):
         """Launch the Baileys sidecar with auto-restart on unexpected exit.
 

@@ -1139,6 +1139,7 @@ def api_list_shared_channels():
     for ch in channels:
         ch['running'] = channel_manager.is_running(ch['id'])
         ch['bridge_status'] = None
+        ch['inbox_count'] = len(db.get_inbox(ch['id']))
         if ch['running']:
             instance = channel_manager.get_channel_instance(ch['id'])
             if instance:

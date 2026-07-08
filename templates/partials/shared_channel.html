@@ -1,8 +1,8 @@
 <div>
     <!-- Header -->
     <div class="settings-pane-head">
-        <h2 class="settings-pane-title">Shared Channel</h2>
-        <p class="settings-pane-desc">One WhatsApp number serving multiple agents. Connect once, then assign incoming users and groups to agents. Unassigned senders get no reply.</p>
+        <h2 class="settings-pane-title">Shared Channels</h2>
+        <p class="settings-pane-desc">Manage multiple shared WhatsApp numbers, each running concurrently. A number can represent a different brand/company and serves multiple agents via its own routing. Pick a number below to connect it and manage its senders and routes.</p>
     </div>
 
     <!-- Connection -->
@@ -11,6 +11,8 @@
             <i data-lucide="plug-zap"></i>
             <h3>Connection</h3>
         </div>
+        <!-- Channel switcher (dropdown) — rendered by JS, hidden when no channels -->
+        <div id="sc-switcher" class="hidden mb-3"></div>
         <div id="sc-channels"></div>
     </section>
 
@@ -21,7 +23,7 @@
             <h3>Unassigned Senders</h3>
             <span id="sc-inbox-count" class="text-[11px] font-semibold bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300 px-2 py-0.5 rounded-full empty:hidden"></span>
         </div>
-        <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">People and groups that messaged the shared number but have no agent yet. Names are self-reported by the sender — edit before assigning if needed.</p>
+        <p class="text-xs text-gray-400 dark:text-gray-500 mb-3">People and groups that messaged the selected number but have no agent yet. Names are self-reported by the sender — edit before assigning if needed.</p>
         <div id="sc-inbox-list" class="space-y-2">
             <p class="text-xs text-gray-400 text-center py-3">No unassigned senders.</p>
         </div>
@@ -56,23 +58,67 @@
     </section>
 </div>
 
+<!-- Create number modal -->
+<div id="sc-create-modal" class="modal">
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md mx-4 flex flex-col">
+        <div class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0">
+            <h3 class="text-lg font-semibold text-gray-900 dark:text-gray-100">Add WhatsApp Number</h3>
+            <button type="button" onclick="closeModal('sc-create-modal')" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none">&times;</button>
+        </div>
+        <form id="sc-create-form" onsubmit="sharedChannel.create(event)" class="p-6">
+            <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="sc-create-name-modal">Name / Brand</label>
+            <input type="text" id="sc-create-name-modal" placeholder="e.g. Company B WhatsApp"
+                class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100">
+            <p class="text-[11px] text-gray-400 dark:text-gray-500 mt-1.5">A label to tell numbers apart (e.g. per company). You'll scan the QR to link this number after creating.</p>
+        </form>
+        <div class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0">
+            <button type="button" onclick="closeModal('sc-create-modal')" class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition">Cancel</button>
+            <button type="submit" form="sc-create-form" class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition">Create</button>
+        </div>
+    </div>
+</div>
+
 <script>
 (function() {
     window.sharedChannel = {
-        channel: null,      // the first (currently only) shared channel
+        channels: [],       // all shared channels
+        activeId: null,     // id of the channel currently shown in the detail
         agentsById: {},
         _pollTimer: null,
         _qrTimer: null,
         // Render signatures — polls skip re-rendering when nothing changed,
         // so user input in the forms is never clobbered mid-typing.
+        _switcherSig: null,
         _chanSig: null,
         _inboxSig: null,
         _routesSig: null,
 
         resetSigs: function() {
+            sharedChannel._switcherSig = null;
             sharedChannel._chanSig = null;
             sharedChannel._inboxSig = null;
             sharedChannel._routesSig = null;
+        },
+
+        // The channel object currently selected in the dropdown.
+        active: function() {
+            var id = sharedChannel.activeId;
+            for (var i = 0; i < sharedChannel.channels.length; i++) {
+                if (sharedChannel.channels[i].id === id) return sharedChannel.channels[i];
+            }
+            return null;
+        },
+
+        // Derive display status flags/label from a channel record.
+        statusOf: function(c) {
+            var status = c.bridge_status || (c.running ? 'starting' : 'stopped');
+            var connected = c.running && status === 'connected';
+            var connecting = c.running && !connected;
+            var label = connected ? 'Connected'
+                : (connecting
+                    ? (status === 'qr_pending' ? 'Waiting for QR scan' : 'Connecting...')
+                    : 'Not connected');
+            return { status: status, connected: connected, connecting: connecting, label: label };
         },
 
         init: function() {
@@ -113,10 +159,16 @@
 
         load: function() {
             fetch('/api/shared-channels').then(function(r) { return r.json(); }).then(function(data) {
-                var channels = data.channels || [];
-                sharedChannel.channel = channels[0] || null;
+                sharedChannel.channels = data.channels || [];
+                // Keep the current selection if it still exists; otherwise fall
+                // back to the first channel (or none).
+                var stillThere = sharedChannel.active();
+                if (!stillThere) {
+                    sharedChannel.activeId = sharedChannel.channels.length ? sharedChannel.channels[0].id : null;
+                }
+                sharedChannel.renderSwitcher();
                 sharedChannel.renderChannel();
-                if (sharedChannel.channel) {
+                if (sharedChannel.active()) {
                     sharedChannel.startPolling();
                     document.getElementById('sc-inbox-section').classList.remove('hidden');
                     document.getElementById('sc-routes-section').classList.remove('hidden');
@@ -130,15 +182,73 @@
             });
         },
 
+        renderSwitcher: function() {
+            var el = document.getElementById('sc-switcher');
+            var chans = sharedChannel.channels;
+            if (chans.length === 0) {
+                if (sharedChannel._switcherSig !== 'empty') {
+                    el.innerHTML = '';
+                    el.classList.add('hidden');
+                    sharedChannel._switcherSig = 'empty';
+                }
+                return;
+            }
+            var sig = JSON.stringify(chans.map(function(c) {
+                return [c.id, c.name, c.running, c.bridge_status, c.inbox_count];
+            })) + '|' + sharedChannel.activeId;
+            var sel = document.getElementById('sc-channel-select');
+            // Don't rebuild while the dropdown is focused/open — avoid closing it
+            // under the user's cursor mid-selection.
+            if (sig === sharedChannel._switcherSig || (sel && document.activeElement === sel)) return;
+            sharedChannel._switcherSig = sig;
+            el.classList.remove('hidden');
+            var opts = chans.map(function(c) {
+                var st = sharedChannel.statusOf(c);
+                var dot = st.connected ? '●' : (st.connecting ? '◐' : '○');
+                var count = c.inbox_count ? ' (' + c.inbox_count + ')' : '';
+                var label = dot + ' ' + (c.name || 'Shared WhatsApp') + ' — ' + st.label + count;
+                return '<option value="' + sharedChannel.escAttr(c.id) + '"' +
+                    (c.id === sharedChannel.activeId ? ' selected' : '') + '>' +
+                    sharedChannel.esc(label) + '</option>';
+            }).join('');
+            el.innerHTML =
+                '<div class="flex items-center gap-2 flex-wrap">' +
+                '<label class="text-xs font-medium text-gray-500 dark:text-gray-400 flex-shrink-0">Number</label>' +
+                '<select id="sc-channel-select" onchange="sharedChannel.selectChannel(this.value)" ' +
+                'class="flex-1 min-w-[220px] px-3 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' + opts + '</select>' +
+                '<button onclick="sharedChannel.openCreate()" class="inline-flex items-center gap-1 h-8 text-xs font-medium px-3 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/30 transition-colors flex-shrink-0"><i data-lucide="plus"></i>Add Number</button>' +
+                '</div>';
+            if (window.lucide) { try { window.lucide.createIcons(); } catch (e) {} }
+        },
+
+        openCreate: function() {
+            openModal('sc-create-modal');
+            var i = document.getElementById('sc-create-name-modal');
+            if (i) { i.value = ''; i.focus(); }
+        },
+
+        selectChannel: function(id) {
+            if (id === sharedChannel.activeId) return;
+            sharedChannel.activeId = id;
+            // A different channel's detail must render fresh (and its QR poller reset).
+            if (sharedChannel._qrTimer) { clearInterval(sharedChannel._qrTimer); sharedChannel._qrTimer = null; }
+            sharedChannel._chanSig = null;
+            sharedChannel._inboxSig = null;
+            sharedChannel._routesSig = null;
+            sharedChannel.renderChannel();
+            sharedChannel.loadInbox();
+            sharedChannel.renderRoutes();
+        },
+
         renderChannel: function() {
             var el = document.getElementById('sc-channels');
-            var ch = sharedChannel.channel;
-            var status = ch ? (ch.bridge_status || (ch.running ? 'starting' : 'stopped')) : '';
-            var sig = ch ? [ch.id, ch.name, ch.running, status].join('|') : 'empty';
+            var ch = sharedChannel.active();
+            var st = ch ? sharedChannel.statusOf(ch) : null;
+            var sig = ch ? [ch.id, ch.name, ch.running, st.status].join('|') : 'empty';
             if (sig === sharedChannel._chanSig) {
                 // Nothing changed — leave the DOM (and any typing) alone,
                 // but keep the QR poller alive while waiting for a scan.
-                if (ch && ch.running && status !== 'connected') { sharedChannel.pollQr(); }
+                if (ch && st.connecting) { sharedChannel.pollQr(); }
                 return;
             }
             sharedChannel._chanSig = sig;
@@ -152,21 +262,16 @@
                     '<div class="mx-auto w-12 h-12 rounded-2xl bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400 flex items-center justify-center mb-3">' + phoneIcon + '</div>' +
                     '<p class="text-sm font-medium text-gray-800 dark:text-gray-100">No shared channel yet</p>' +
                     '<p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-4">Create one and scan the QR code with the WhatsApp account you want to share.</p>' +
-                    '<div class="flex gap-2 max-w-md mx-auto">' +
-                    '<input type="text" id="sc-create-name" placeholder="Name, e.g. Company WhatsApp" class="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-sm dark:bg-gray-700 dark:text-gray-100 dark:border-gray-600 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">' +
-                    '<button onclick="sharedChannel.create()" class="btn-primary flex-shrink-0" style="padding:6px 14px">Create Shared WhatsApp</button>' +
-                    '</div></div></div>';
+                    '<button onclick="sharedChannel.openCreate()" class="btn-primary" style="padding:6px 14px">Create Shared WhatsApp</button>' +
+                    '</div></div>';
                 return;
             }
             // Three UI states: not running → Connect; running but the
             // WhatsApp account isn't linked yet → QR + Cancel; linked → Stop.
-            var connected = ch.running && status === 'connected';
-            var connecting = ch.running && !connected;
+            var connected = st.connected;
+            var connecting = st.connecting;
             var dot = connected ? 'bg-emerald-500' : (connecting ? 'bg-amber-400 animate-pulse' : 'bg-gray-300 dark:bg-gray-600');
-            var statusLabel = connected ? 'Connected'
-                : (connecting
-                    ? (status === 'qr_pending' ? 'Waiting for QR scan' : 'Connecting...')
-                    : 'Not connected');
+            var statusLabel = st.label;
             var iconTone = connected
                 ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400'
                 : 'bg-gray-100 text-gray-400 dark:bg-gray-700 dark:text-gray-500';
@@ -210,8 +315,9 @@
         pollQr: function() {
             if (sharedChannel._qrTimer) return;
             var fetchQr = function() {
-                if (!sharedChannel.channel) return;
-                fetch('/api/shared-channels/' + sharedChannel.channel.id + '/qr')
+                var ch = sharedChannel.active();
+                if (!ch) return;
+                fetch('/api/shared-channels/' + ch.id + '/qr')
                     .then(function(r) { return r.json(); })
                     .then(function(data) {
                         var img = document.getElementById('sc-qr-image');
@@ -231,21 +337,29 @@
             sharedChannel._qrTimer = setInterval(fetchQr, 10000);
         },
 
-        create: function() {
-            var name = (document.getElementById('sc-create-name').value || '').trim() || 'Shared WhatsApp';
+        create: function(ev) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            var input = document.getElementById('sc-create-name-modal');
+            var name = ((input && input.value) || '').trim() || 'Shared WhatsApp';
             fetch('/api/shared-channels', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: name })
             }).then(function(r) { return r.json(); }).then(function(data) {
                 if (data.error) { alert(data.error); return; }
+                if (input) input.value = '';
+                closeModal('sc-create-modal');
+                // Focus the newly created channel in the switcher.
+                if (data.channel && data.channel.id) { sharedChannel.activeId = data.channel.id; }
                 sharedChannel.resetSigs();
                 sharedChannel.load();
             });
         },
 
         toggle: function(enabled) {
-            fetch('/api/shared-channels/' + sharedChannel.channel.id, {
+            var ch = sharedChannel.active();
+            if (!ch) return;
+            fetch('/api/shared-channels/' + ch.id, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ enabled: enabled })
@@ -256,16 +370,21 @@
         },
 
         remove: function() {
+            var ch = sharedChannel.active();
+            if (!ch) return;
             if (!confirm('Delete this shared channel? The WhatsApp session and all routes will be removed.')) return;
-            fetch('/api/shared-channels/' + sharedChannel.channel.id, { method: 'DELETE' })
+            fetch('/api/shared-channels/' + ch.id, { method: 'DELETE' })
                 .then(function(r) { return r.json(); }).then(function() {
+                    sharedChannel.activeId = null;  // load() will pick the next remaining channel
                     sharedChannel.resetSigs();
                     sharedChannel.load();
                 });
         },
 
         loadInbox: function() {
-            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox')
+            var ch = sharedChannel.active();
+            if (!ch) return;
+            fetch('/api/shared-channels/' + ch.id + '/inbox')
                 .then(function(r) { return r.json(); })
                 .then(function(data) { sharedChannel.renderInbox(data.inbox || []); });
         },
@@ -317,9 +436,11 @@
         },
 
         assign: function(entryId) {
+            var ch = sharedChannel.active();
+            if (!ch) return;
             var agentId = document.getElementById('sc-assign-agent-' + entryId).value;
             var name = document.getElementById('sc-assign-name-' + entryId).value.trim();
-            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox/' + entryId + '/assign', {
+            fetch('/api/shared-channels/' + ch.id + '/inbox/' + entryId + '/assign', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ agent_id: agentId, name: name })
@@ -331,7 +452,9 @@
         },
 
         dismiss: function(entryId) {
-            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/inbox/' + entryId, { method: 'DELETE' })
+            var ch = sharedChannel.active();
+            if (!ch) return;
+            fetch('/api/shared-channels/' + ch.id + '/inbox/' + entryId, { method: 'DELETE' })
                 .then(function(r) { return r.json(); }).then(function() {
                     sharedChannel._inboxSig = null;
                     sharedChannel.loadInbox();
@@ -339,11 +462,12 @@
         },
 
         renderRoutes: function() {
-            var config = (sharedChannel.channel && sharedChannel.channel.config) || {};
+            var ch = sharedChannel.active();
+            var config = (ch && ch.config) || {};
             var routes = config.routes || {};
             var names = config.user_names || {};
             var list = document.getElementById('sc-routes-list');
-            var sig = JSON.stringify([routes, names]);
+            var sig = JSON.stringify([sharedChannel.activeId, routes, names]);
             if (sig === sharedChannel._routesSig) return;
             sharedChannel._routesSig = sig;
             var ids = Object.keys(routes);
@@ -368,12 +492,14 @@
         },
 
         addRoute: function() {
+            var ch = sharedChannel.active();
+            if (!ch) return;
             var input = document.getElementById('sc-route-user-input');
             var userId = input.value.trim().replace(/[+\s-]/g, '');
             if (!userId || !/^\d+$/.test(userId)) { alert('Enter a phone number (digits only).'); return; }
             var agentId = document.getElementById('sc-route-agent-select').value;
             var name = document.getElementById('sc-route-name-input').value.trim();
-            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/routes', {
+            fetch('/api/shared-channels/' + ch.id + '/routes', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ user_id: userId, agent_id: agentId, name: name })
@@ -387,8 +513,10 @@
         },
 
         removeRoute: function(userId) {
+            var ch = sharedChannel.active();
+            if (!ch) return;
             if (!confirm('Remove the route for ' + userId + '?')) return;
-            fetch('/api/shared-channels/' + sharedChannel.channel.id + '/routes/' + encodeURIComponent(userId), { method: 'DELETE' })
+            fetch('/api/shared-channels/' + ch.id + '/routes/' + encodeURIComponent(userId), { method: 'DELETE' })
                 .then(function(r) { return r.json(); }).then(function() {
                     sharedChannel.resetSigs();
                     sharedChannel.load();

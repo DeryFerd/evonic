@@ -45,6 +45,10 @@ function _walkSanitize(node) {
                     child.setAttribute('href', '#');
                 }
                 child.setAttribute('rel', 'noopener noreferrer');
+                // Open external links in a new tab
+                if (/^https?:\/\//i.test(href)) {
+                    child.setAttribute('target', '_blank');
+                }
             }
             _walkSanitize(child);
         }

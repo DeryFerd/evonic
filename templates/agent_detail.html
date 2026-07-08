@@ -226,9 +226,28 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
             </div>
         </div>
     </div>
-    <!-- Tabs (vertical button list, left panel) + tab contents (right) -->
-    <div class="flex flex-1 min-h-0 gap-4">
-    <div class="flex flex-col gap-1 w-40 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 overflow-y-auto" style="-webkit-overflow-scrolling: touch;">
+    <!-- Tabs: responsive — horizontal scrollable (mobile), vertical left panel (desktop) -->
+    <div class="flex flex-col lg:flex-row flex-1 min-h-0 gap-4">
+    <!-- Mobile tab bar (hidden on desktop) -->
+    <div class="flex lg:hidden gap-1 mb-2 border-b border-gray-200 dark:border-gray-700 overflow-x-auto flex-shrink-0" style="-webkit-overflow-scrolling: touch;">
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600" onclick="showTab('chat')" data-tab="chat">Chat</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('general')" data-tab="general">Settings</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('knowledge')" data-tab="knowledge">Knowledge</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('tools')" data-tab="tools">Tools</button>
+        {# Always rendered (hidden for super) so softSwitchAgent can toggle without a full reload #}
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700{{ ' hidden' if agent.is_super else '' }}" onclick="showTab('skills')" data-tab="skills">Skills</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('channels')" data-tab="channels">Channels</button>
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('portals')" data-tab="portals">Portals</button>
+        {% if agent.artifacts_enabled %}
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('artifacts')" data-tab="artifacts">Artifacts</button>
+        {% endif %}
+{% for _tab in plugin_agent_tabs %}
+        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700"
+            onclick="showTab('{{ _tab.id }}')" data-tab="{{ _tab.id }}">{{ _tab.label }}</button>
+{% endfor %}
+    </div>
+    <!-- Desktop vertical tab panel (hidden on mobile) -->
+    <div class="hidden lg:flex flex-col gap-1 w-40 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 overflow-y-auto" style="-webkit-overflow-scrolling: touch;">
         <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-indigo-500 text-indigo-600" onclick="showTab('chat')" data-tab="chat">Chat</button>
         <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('general')" data-tab="general">Settings</button>
         <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('knowledge')" data-tab="knowledge">Knowledge</button>

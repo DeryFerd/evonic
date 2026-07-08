@@ -111,16 +111,6 @@ html.dark {
 .settings-nav-item.active svg {
     opacity: 1;
 }
-.settings-nav-item.active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 7px;
-    bottom: 7px;
-    width: 3px;
-    border-radius: 3px;
-    background: var(--st-accent);
-}
 .settings-nav-item.search-dim {
     opacity: 0.35;
 }
@@ -702,9 +692,6 @@ html.dark .test-tips-success li {
     .settings-nav-item.active {
         border-color: var(--st-accent);
         background: var(--st-accent-soft);
-    }
-    .settings-nav-item.active::before {
-        display: none;
     }
     .setting-row {
         flex-direction: column;

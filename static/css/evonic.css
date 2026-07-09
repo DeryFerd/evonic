@@ -1379,6 +1379,12 @@ html.dark .sidebar-toggle-btn:hover {
     }
 }
 
+@media (max-width: 768px) {
+    .sidebar-toggle-btn {
+        margin-left: -1rem;
+    }
+}
+
 .agent-bubble-popup {
     position: fixed;
     z-index: 10000;

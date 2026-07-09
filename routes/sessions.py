@@ -223,8 +223,11 @@ def api_session_reply(session_id):
             return jsonify({'error': 'Session not found'}), 404
         agent_id = session['agent_id']
 
-        # Check file size against agent config
+        # Check if attachments are enabled for this agent
         cfg = db.get_agent_attachment_config(agent_id)
+        if not cfg.get('enabled'):
+            return jsonify({'error': 'File attachments are not enabled for this agent. Enable them in agent settings.'}), 400
+
         max_bytes = cfg.get('max_size_mb', 20) * 1024 * 1024
         file.seek(0, os.SEEK_END)
         fsize = file.tell()

@@ -397,6 +397,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
 let allSessions = [];
 let currentSessionId = null;
 let currentAgentId = null;
+let currentAttachmentsEnabled = true;
 let lastChatTs = 0;
 let pollTimer = null;
 let sidebarPollTimer = null;
@@ -805,6 +806,7 @@ async function selectSession(sessionId) {
     const s = data.session;
     const messages = data.messages || [];
     currentAgentId = s.agent_id || null;
+    currentAttachmentsEnabled = s.attachments_enabled == null ? true : !!s.attachments_enabled;
 
     // Remember last visited session
     try { sessionStorage.setItem(_LAST_SESSION_KEY, sessionId); } catch (_) {}
@@ -1817,10 +1819,10 @@ function updateReplyPlaceholder() {
             ? 'Type a reply as A (right side)...'
             : 'Type a reply as B (left side)...';
     }
-    // Show/hide attach button based on perspective
+    // Show/hide attach button based on perspective and agent's attachments_enabled setting
     const attachBtn = document.getElementById('attach-btn');
     if (attachBtn) {
-        if (_chatPerspective === 'A') {
+        if (_chatPerspective === 'A' && currentAttachmentsEnabled) {
             attachBtn.classList.remove('hidden');
         } else {
             attachBtn.classList.add('hidden');

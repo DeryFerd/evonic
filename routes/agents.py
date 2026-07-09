@@ -1542,8 +1542,11 @@ def api_chat(agent_id):
         # Get/create session for attachment storage
         session_id = db.get_or_create_session(agent_id, user_id)
 
-        # Check file size against agent config
+        # Check if attachments are enabled for this agent
         cfg = db.get_agent_attachment_config(agent_id)
+        if not cfg.get('enabled'):
+            return jsonify({'error': 'File attachments are not enabled for this agent. Enable them in agent settings.'}), 400
+
         max_bytes = cfg.get('max_size_mb', 20) * 1024 * 1024
         file.seek(0, os.SEEK_END)
         fsize = file.tell()

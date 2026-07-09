@@ -274,6 +274,7 @@ class ChatDelegationMixin:
         agent = self.get_agent(session.get('agent_id') or agent_id)
         session['agent_name'] = (agent['name'] if agent
                                  else (session.get('agent_id') or 'Unknown'))
+        session['attachments_enabled'] = bool(agent.get('attachments_enabled', 1)) if agent else True
         # Resolve the peer agent name for inter-agent sessions
         # (external_user_id = '__agent__<peer_id>'), mirroring get_all_sessions so
         # explorer/sub-agent captions can show the real parent name instead of 'Unknown'.
@@ -396,7 +397,8 @@ class ChatDelegationMixin:
                      si.message_count, si.last_message, si.last_message_role,
                      COALESCE(ag.name, si.agent_id) AS agent_name,
                      ch.type AS channel_type, ch.name AS channel_name,
-                     peer.name AS peer_agent_name"""
+                     peer.name AS peer_agent_name,
+                     ag.attachments_enabled"""
         data_sql = ("SELECT " + columns
                     + " FROM " + base_from
                     + " WHERE " + where_sql

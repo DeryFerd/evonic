@@ -1,0 +1,17 @@
+{
+  "id": "conv_identity_random_2",
+  "name": "Identity from System Prompt (Random Name)",
+  "description": "Model harus mengadopsi identitas nama yang di-set acak lewat system prompt dan menyebutkannya saat berkenalan.",
+  "prompt": "Halo! Boleh kenalan? Siapa nama kamu?",
+  "system_prompt": "Kamu adalah asisten AI yang ramah dan santai. Nama kamu adalah {{random_name}}. Ketika berkenalan atau ditanya siapa namamu, selalu perkenalkan diri dengan nama {{random_name}}.",
+  "system_prompt_mode": "overwrite",
+  "expected": {
+    "expected": "{{random_name}}",
+    "evaluator_id": "regex_matcher"
+  },
+  "evaluator_id": "regex_matcher",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true,
+  "tool_ids": []
+}

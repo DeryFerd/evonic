@@ -976,15 +976,52 @@ class EvaluationEngine:
             self._log(f'[PY-MOCK] Exception: {str(e)}')
             return {"error": f"Python mock failed: {str(e)}"}
 
+    # Pool of names for the {{random_name}} placeholder (see _apply_placeholders)
+    _RANDOM_NAMES = [
+        "Andini", "Bagas", "Citra", "Damar", "Elang", "Fitri", "Gilang", "Hana",
+        "Intan", "Joko", "Kirana", "Lestari", "Mahesa", "Nadia", "Oka", "Prita",
+        "Rangga", "Sari", "Tegar", "Wulan",
+    ]
+
+    def _substitute_placeholders(self, obj: Any, mapping: Dict[str, str]) -> Any:
+        """Recursively replace placeholder tokens in every string within obj."""
+        if isinstance(obj, str):
+            for token, value in mapping.items():
+                obj = obj.replace(token, value)
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._substitute_placeholders(v, mapping) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._substitute_placeholders(v, mapping) for v in obj]
+        return obj
+
+    def _apply_placeholders(self, test: Dict[str, Any]) -> None:
+        """Substitute dynamic placeholders (e.g. {{random_name}}) across the test in place.
+
+        A single random value is chosen per test run and applied consistently to the
+        prompt, system_prompt and expected — so a randomly-assigned identity can still be
+        verified. Mutates `test` in place (it is a fresh dict from test_manager.list_tests).
+        """
+        import random
+        if "{{random_name}}" not in json.dumps(test, ensure_ascii=False):
+            return
+        mapping = {"{{random_name}}": random.choice(self._RANDOM_NAMES)}
+        for key in ("prompt", "system_prompt", "expected"):
+            if key in test and test[key] is not None:
+                test[key] = self._substitute_placeholders(test[key], mapping)
+        self._log(f'[PLACEHOLDER] random_name -> {mapping["{{random_name}}"]}')
+
     def _run_single_configurable_test(self, test: Dict[str, Any], domain: str,
                                        level: int, model_name: str, run_id: int, run_llm_client=None) -> TestResult:
         """Run a single configurable test"""
         _client = run_llm_client or llm_client
         test_id = test['id']
+        # Resolve dynamic placeholders (e.g. {{random_name}}) before reading fields
+        self._apply_placeholders(test)
         prompt = test['prompt']
         expected = test.get('expected', {})
         weight = test.get('weight', 1.0)
-        
+
         # Initialize variables for tool calling
         loop_result = None
         tools = None

@@ -322,7 +322,8 @@ def _spawn_kb_tidy(agent: dict) -> str:
 
     timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
     _kb_model_id = (db.get_setting('kb_organizer_model_id', '')
-                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None)
+                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL')
+                    or agent.get('model_id') or None)
     _default_model_id = (db.get_default_model() or {}).get('id')
     _fallback_model_id = (_default_model_id
                           if _kb_model_id and _default_model_id
@@ -1260,12 +1261,14 @@ def _spawn_kb_organizer(agent: dict, source_text: str, recent_text: str = "",
     # result that arrives a few seconds late. Tune via EVOMEM_KB_ORGANIZER_TIMEOUT.
     timeout = int(os.environ.get('EVOMEM_KB_ORGANIZER_TIMEOUT', '600'))
     _kb_model_id = (db.get_setting('kb_organizer_model_id', '')
-                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL') or None)
+                    or os.environ.get('EVOMEM_KB_ORGANIZER_MODEL')
+                    or agent.get('model_id') or None)
     # When a distinct organizer model is configured, fall back to the global
     # default model if that model fails at runtime (the runtime's per-agent
     # fallback machinery picks this up via explorer.fallback_model). When no
-    # organizer model is set, the organizer already runs on the global default,
-    # so a fallback equal to the primary would be pointless.
+    # organizer model is set, the organizer uses the parent agent's default
+    # model (or the global default if the agent has none), so a fallback
+    # equal to the primary would be pointless.
     _default_model_id = (db.get_default_model() or {}).get('id')
     _fallback_model_id = (_default_model_id
                           if _kb_model_id and _default_model_id

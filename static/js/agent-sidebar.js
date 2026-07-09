@@ -529,10 +529,9 @@ function _onTurnComplete(payload) {
     showBubblePopup(payload.agent_id, payload.agent_name, payload.response, payload.session_id, payload.external_user_id);
 }
 
-/** Subscribe via RealtimeClient for real-time busy state updates and turn-complete notifications */
+/** Subscribe via shared RealtimeClient for real-time busy state updates and turn-complete notifications */
 var _busySSE = null;
 var _busyReconnectTimer = null;
-var _busyRealtimeHandlersBound = false;
 var _busyClearTimers = {};  // agent_id -> setTimeout id for minimum busy-hold debounce
 var BUSY_HOLD_MS = 300;    // minimum visible duration for the spinning ring
 
@@ -567,23 +566,23 @@ function dispatchBusyChanged(payload) {
 }
 
 function subscribeBusySSE() {
-    if (typeof RealtimeClient === 'undefined') {
+    if (typeof getSharedRealtime === 'undefined') {
         if (_busySSE) return;
         try {
-            _statusSSE = new EventSource('/api/agents/status/stream');
-            _statusSSE.addEventListener('agent_busy_changed', function (e) {
+            _busySSE = new EventSource('/api/agents/status/stream');
+            _busySSE.addEventListener('agent_busy_changed', function (e) {
                 try {
                     updateBusyAvatar(JSON.parse(e.data));
                 } catch (_) {}
             });
-            _statusSSE.addEventListener('agent_turn_complete', function (e) {
+            _busySSE.addEventListener('agent_turn_complete', function (e) {
                 try {
                     _onTurnComplete(JSON.parse(e.data));
                 } catch (_) {}
             });
-            es.addEventListener('error', function () {
-                es.close();
-                if (_busySSE === es) _busySSE = null;
+            _busySSE.addEventListener('error', function () {
+                _busySSE.close();
+                _busySSE = null;
                 resyncBusyState();
                 if (_busyReconnectTimer) clearTimeout(_busyReconnectTimer);
                 _busyReconnectTimer = setTimeout(function () {
@@ -598,18 +597,14 @@ function subscribeBusySSE() {
         return;
     }
 
-    var rt = window._evRealtime = window._evRealtime || new RealtimeClient({
-        channels: 'status'
+    var rt = getSharedRealtime();
+    // Backward compat: pages that poll for window._evRealtime (e.g. agent_detail.html)
+    window._evRealtime = rt;
+    rt.on('status', 'agent_busy_changed', function (payload) {
+        updateBusyAvatar(payload);
+        dispatchBusyChanged(payload);
     });
-    if (!_busyRealtimeHandlersBound) {
-        rt.on('status', 'agent_busy_changed', function (payload) {
-            updateBusyAvatar(payload);
-            dispatchBusyChanged(payload);
-        });
-        rt.on('status', 'agent_turn_complete', _onTurnComplete);
-        _busyRealtimeHandlersBound = true;
-    }
-    rt.start();
+    rt.on('status', 'agent_turn_complete', _onTurnComplete);
 }
 
 function resyncBusyState() {
@@ -637,13 +632,8 @@ function closeBusyRealtime() {
         } catch (_) {}
         _busySSE = null;
     }
-    if (window._evRealtime) {
-        window._evRealtime.stop();
-    }
 }
 
-window.addEventListener('pagehide', closeBusyRealtime);
-window.addEventListener('beforeunload', closeBusyRealtime);
 window.addEventListener('pageshow', function () {
     resyncBusyState();
     subscribeBusySSE();
@@ -697,6 +687,8 @@ function initSidebar() {
     var sidebar = document.getElementById('agent-sidebar');
     if (!sidebar) return;
 
-    fetchSidebarAgents();
+    fetchSidebarAgents().then(function () {
+        resyncBusyState();
+    });
     subscribeBusySSE();
 }

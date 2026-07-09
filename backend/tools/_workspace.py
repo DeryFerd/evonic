@@ -188,6 +188,11 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
     if not file_path:
         return file_path
 
+    # Expand ~ and ~user — bash/shell does this automatically, but Python's
+    # os.path.isabs() returns False for tilde-prefixed paths, causing them to
+    # be treated as relative and joined with the workspace base (wrong).
+    file_path = os.path.expanduser(file_path)
+
     if file_path.startswith('/workspace'):
         workspace_root = (agent or {}).get('workspace') or fallback_workspace
         rel = file_path[len('/workspace'):].lstrip('/')

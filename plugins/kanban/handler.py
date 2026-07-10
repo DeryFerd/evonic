@@ -1659,10 +1659,11 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
 
     # ── sync _progress_reminder_armed from just_called (compensate for async) ──
     if agent_id in _active_tasks:
-        for fn in just_called:
-            if fn not in KANBAN_ALLOWED_TOOLS:
+        if just_called:
+            if any(fn not in KANBAN_ALLOWED_TOOLS for fn in just_called):
                 _progress_reminder_armed[agent_id] = True
-                break
+            else:
+                _progress_reminder_armed[agent_id] = False
 
     # ── pending: agent picked task but hasn't started it yet ────────────────────
     if agent_id in _pending_tasks:

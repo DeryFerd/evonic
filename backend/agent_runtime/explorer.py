@@ -175,8 +175,8 @@ def build_config(
         '_db_agent_id': explorer_id,  # own id → no parent model/tools/KB
         'system_prompt': skill_cfg.get('system_prompt', '') or '',
         '_explorer_tool_ids': explorer_tool_ids,
-        'model_id': skill_cfg.get('model_id') or None,
-        'fallback_model_id': skill_cfg.get('fallback_model_id') or None,
+        'model_id': (parent_agent.get('model_id') if skill_cfg.get('inherit_parent_model') else skill_cfg.get('model_id')) or None,
+        'fallback_model_id': (parent_agent.get('fallback_model_id') if skill_cfg.get('inherit_parent_model') else skill_cfg.get('fallback_model_id')) or None,
         'workspace': path,          # boundary root for Grep/Read/Glob
         'agent_messaging_enabled': True,
         'builtin_tools_enabled': True,

@@ -1619,6 +1619,32 @@ def run_tool_loop(agent: Dict[str, Any],
 
         # Phase 3: Process each tool in original order.
         for i, (_tc, fn_name, args, _pt) in enumerate(_tool_records):
+            # --- Stop fast path ---
+            # If /stop landed mid-batch, don't execute the remaining tool calls.
+            # Emit a synthetic "stopped" result for each so the assistant's
+            # tool_calls stay paired with tool responses (provider requires it);
+            # Check B after this loop then ends the turn cleanly.
+            if stop_event.is_set() and i not in _parse_failed:
+                result_str = json.dumps({'error': 'Execution stopped by user'})
+                db.add_chat_message(session_id, 'tool', result_str,
+                                    tool_call_id=_tc['id'], agent_id=db_agent_id)
+                chatlog.append({'type': 'tool_output', 'session_id': session_id,
+                                'content': result_str,
+                                'tool_call_id': _tc['id'], 'error': True,
+                                'function': fn_name})
+                messages.append({"role": "tool", "tool_call_id": _tc['id'],
+                                 "content": result_str})
+                timeline.append({"type": "tool_result", "tool": fn_name,
+                                 "error": True})
+                event_stream.emit('tool_executed', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id,
+                    'channel_id': channel_id,
+                    'tool_name': fn_name, 'tool_args': {},
+                    'tool_result': {'error': True}, 'has_error': True,
+                })
+                continue
+
             # --- Parse-failure fast path ---
             if i in _parse_failed:
                 result_str = _parse_failed[i]

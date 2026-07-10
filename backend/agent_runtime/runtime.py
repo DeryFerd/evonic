@@ -1521,6 +1521,8 @@ class AgentRuntime:
 
         # Clear any stale stop flag so a previous /stop doesn't kill this new request
         self._get_stop_event(ctx.session_id).clear()
+        from backend.tools.lib.process_tracker import process_tracker
+        process_tracker.clear_stop(ctx.session_id)
 
         # Send typing indicator now that processing is actually starting
         if ctx.channel_id:

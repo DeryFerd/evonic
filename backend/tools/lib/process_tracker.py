@@ -44,9 +44,40 @@ class ProcessTracker:
     ``kill_method`` (e.g. ``'killpg'`` for local process-group killing).
     """
 
+    # How long a stop marker stays "pending" after kill() — long enough to
+    # catch a subprocess that registers microseconds after a stop, short
+    # enough to auto-heal if clear_stop() is never called.
+    _STOP_PENDING_TTL = 5.0
+
     def __init__(self):
         self._processes: dict = {}
+        self._stop_pending: dict = {}
         self._lock = threading.Lock()
+
+    def mark_stop(self, session_id: str) -> None:
+        """Record that a stop was requested for *session_id* (time-boxed).
+
+        Used to abort a subprocess that starts in the tiny window between
+        :meth:`kill` running and the backend calling :meth:`register`.
+        """
+        with self._lock:
+            self._stop_pending[session_id] = __import__('time').time()
+
+    def clear_stop(self, session_id: str) -> None:
+        """Clear a pending-stop marker (called when a new request legitimately starts)."""
+        with self._lock:
+            self._stop_pending.pop(session_id, None)
+
+    def is_stop_pending(self, session_id: str) -> bool:
+        """Return True if a stop was requested for *session_id* within the TTL window."""
+        with self._lock:
+            ts = self._stop_pending.get(session_id)
+            if ts is None:
+                return False
+            if __import__('time').time() - ts > self._STOP_PENDING_TTL:
+                self._stop_pending.pop(session_id, None)
+                return False
+            return True
 
     def register(self, session_id: str, proc, pid: int,
                  container_id: str = None, kill_method: str = None) -> None:
@@ -95,12 +126,35 @@ class ProcessTracker:
         - If ``kill_method='killpg'`` was provided, sends SIGKILL to the
           entire process group via ``os.killpg()``.
         """
+        # Mark the stop as pending FIRST so a subprocess registering in the
+        # tiny race window right after this call is aborted before it runs.
+        self.mark_stop(session_id)
+
         with self._lock:
             info = self._processes.pop(session_id, None)
         if info is None:
             return
         proc = info['proc']
         pid = info['pid']
+
+        # --- Effective in-container kill FIRST (Docker) ---
+        # Killing the `docker exec` CLIENT proc below does NOT stop the bash
+        # running INSIDE the container — it becomes an orphan reparented to
+        # PID 1. The step that actually halts a polling/waiting script is
+        # ``kill -9 -1`` inside the container, so run it up-front for a
+        # near-instant stop. ``kill -9 -1`` SIGKILLs every process except
+        # PID 1 (the sleep-infinity sentinel), so the container stays alive.
+        container_id = info.get('container_id')
+        if container_id:
+            try:
+                __import__('subprocess').run(
+                    ['docker', 'exec', container_id, 'sh', '-c',
+                     'kill -9 -1 2>/dev/null || true'],
+                    timeout=3,
+                )
+            except Exception:
+                pass  # Best-effort — the client reap below is the fallback
+
         try:
             logger.info(
                 '[process_tracker] Killing pid=%s for session %s',
@@ -123,23 +177,6 @@ class ProcessTracker:
                 '[process_tracker] Error killing pid=%s for session %s: %s',
                 pid, session_id[:12], e,
             )
-
-        # --- Backend-specific orphan / process-group cleanup ---
-
-        # If container_id is known, kill orphan processes inside the
-        # Docker container.  ``kill -9 -1`` sends SIGKILL to every process
-        # in the container *except* PID 1 (the sleep-infinity sentinel)
-        # and the killing process itself — the container stays alive.
-        container_id = info.get('container_id')
-        if container_id:
-            try:
-                __import__('subprocess').run(
-                    ['docker', 'exec', container_id, 'sh', '-c',
-                     'kill -9 -1 2>/dev/null || true'],
-                    timeout=5,
-                )
-            except Exception:
-                pass  # Best-effort cleanup
 
         # If kill_method is 'killpg', kill the entire process group.
         # This ensures that for local backends the parent bash process

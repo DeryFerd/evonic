@@ -421,6 +421,9 @@ class DockerBackend(ExecutionBackend):
     def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
         # on_output (live streaming) is not supported for Docker exec; output is
         # returned batched. Accepted for API compatibility.
+        # Abort if a /stop landed in the race window just before this call.
+        if process_tracker.is_stop_pending(self._session_id):
+            return {'error': 'Execution stopped by user', 'exit_code': -9, 'execution_time': 0.0}
         container_id, err = _get_or_create_container(self._session_id, agent_id=self._agent_id, workspace=self._workspace)
         if err:
             return {'error': err}
@@ -461,6 +464,9 @@ class DockerBackend(ExecutionBackend):
         }
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
+        # Abort if a /stop landed in the race window just before this call.
+        if process_tracker.is_stop_pending(self._session_id):
+            return {'error': 'Execution stopped by user', 'exit_code': -9, 'execution_time': 0.0}
         with _pool_lock:
             info = _containers.get(self._session_id, {})
             is_first = info.get('first_call', False)

@@ -733,6 +733,17 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
         "Look facts up instead of guessing or asking the user for something you may "
         "already know."
     )
+    parts.append(
+        "- If you are not sure about a thing or what the user wants, check first "
+        "using the `recall` tool \u2014 the information might already be there."
+    )
+    parts.append(
+        "- **Recall before filesystem search**: When you need to locate a project "
+        "directory, binary, configuration file, or any file path, you MUST use "
+        "`recall` first to check if the location is already stored in long-term "
+        "memory. Only after confirming the information is not in memory should you "
+        "resort to filesystem exploration."
+    )
 
     # List available skills with SYSTEM.md so the agent knows what it can load
     skills_mgr = skills_manager

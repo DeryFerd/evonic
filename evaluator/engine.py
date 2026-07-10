@@ -1808,7 +1808,13 @@ class EvaluationEngine:
             )})
 
             try:
-                force_response = _client.chat_completion(force_messages, tools=None, temperature=0.0)
+                # temperature 0.2 (not 0.0): pure greedy decoding loops on this prompt —
+                # a large repetitive context of research results — and without a
+                # max_tokens cap it runs to self.max_tokens doubled by thinking mode
+                # (observed: 40960-token runaways pinning the GPU for ~10 minutes).
+                force_response = _client.chat_completion(
+                    force_messages, tools=None, temperature=0.2, max_tokens=4096
+                )
                 force_info = _client.extract_content_with_thinking(force_response)
                 final_response = force_info.get("content", "").strip()
                 force_duration = force_response.get("duration_ms", 0)

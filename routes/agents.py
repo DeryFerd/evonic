@@ -2450,6 +2450,18 @@ def api_chat_approve(agent_id):
     return jsonify({'ok': True, 'decision': decision})
 
 
+@agents_bp.route('/api/approvals/pending', methods=['GET'])
+def api_approvals_pending():
+    """Return tool approvals currently blocking an agent (in-memory registry).
+
+    Pull-based safety-net for the web approval modal: the SSE 'approval_required'
+    push is best-effort and can be lost in transit, so the UI polls this endpoint
+    (while a tab is visible and an agent is busy) to guarantee the modal appears.
+    """
+    from backend.agent_runtime.approval import approval_registry
+    return jsonify({'pending': approval_registry.list_pending()})
+
+
 @agents_bp.route('/api/agents/busy', methods=['GET'])
 def api_agents_busy():
     """Return all agents currently processing an LLM turn."""

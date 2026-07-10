@@ -47,7 +47,7 @@ RING_SIZES = {
 
 RING_STRATEGIES = {
     'chat': 'drop_oldest',
-    'approvals': 'drop_newest',   # last known state matters
+    'approvals': 'drop_oldest',   # on overflow keep the newest approval, never drop it
     'status': 'drop_oldest',
     'update': 'drop_oldest',
     'workplace': 'drop_oldest',

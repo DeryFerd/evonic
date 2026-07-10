@@ -252,6 +252,83 @@ document.addEventListener('evonic:approval-resolved', function(e) {
     var _enabled = false;
     var _realtimeHandlersBound = false;
 
+    // --- Polling safety-net -------------------------------------------------
+    // SSE 'approval_required' delivery is best-effort: a single dropped event
+    // (ring overflow, producer race, transient stall) leaves the modal missing
+    // for the whole 300s the agent blocks. This poll guarantees the modal shows
+    // regardless of SSE. It runs only while the tab is visible AND at least one
+    // agent is busy (an approval-blocked agent stays busy for its whole turn),
+    // so it costs nothing when the workspace is idle.
+    var POLL_INTERVAL_MS = 3000;
+    var _pollTimer = null;
+    var _busyAgents = {};   // agent_id -> true
+
+    function _anyBusy() {
+        for (var k in _busyAgents) { if (_busyAgents[k]) return true; }
+        return false;
+    }
+
+    // Seed busy state from the REST snapshot (covers page loads / tab wakeups
+    // where we missed the live agent_busy_changed events).
+    function _seedBusy() {
+        fetch('/api/agents/busy', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+                if (!d || !d.busy) return;
+                _busyAgents = {};
+                Object.keys(d.busy).forEach(function (aid) { _busyAgents[aid] = true; });
+            })
+            .catch(function () {});
+    }
+
+    function _pollPending() {
+        if (document.visibilityState !== 'visible') return;
+        if (!_anyBusy() && !_open) return;   // idle and nothing shown → skip the fetch
+        fetch('/api/approvals/pending', { headers: { 'Accept': 'application/json' } })
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (d) {
+                if (!d) return;
+                var pend = d.pending || [];
+                var ids = {};
+                pend.forEach(function (p) { if (p.approval_id) ids[p.approval_id] = p; });
+                // Close a modal whose approval is no longer pending — covers a
+                // missed 'approval_resolved' event and server-side timeout.
+                if (_open && _currentData && _currentData.approval_id &&
+                    !ids[_currentData.approval_id]) {
+                    closeModal();
+                    return;
+                }
+                // Open the modal for a pending approval that isn't shown yet —
+                // covers a missed 'approval_required' event.
+                if (!_open && pend.length > 0) {
+                    _currentData = pend[0];
+                    populateModal(pend[0]);
+                    openModal();
+                }
+            })
+            .catch(function () {});
+    }
+
+    function _startPoll() {
+        if (_pollTimer) return;
+        _seedBusy();
+        _pollTimer = setInterval(_pollPending, POLL_INTERVAL_MS);
+    }
+
+    function _stopPoll() {
+        if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+    }
+
+    function _bindBusyTracking(rt) {
+        // Track agent busy/idle from the shared 'status' channel so the poll
+        // only fires while a turn is in progress.
+        rt.on('status', 'agent_busy_changed', function (data) {
+            if (!data || !data.agent_id) return;
+            if (data.busy) _busyAgents[data.agent_id] = true;
+            else delete _busyAgents[data.agent_id];
+        });
+    }
+
     function _connectSSE() {
         if (!_enabled) return;
         if (_sse) return;
@@ -271,6 +348,7 @@ document.addEventListener('evonic:approval-resolved', function(e) {
                         closeModal();
                     }
                 });
+                _bindBusyTracking(rt);
                 _realtimeHandlersBound = true;
             }
             // Shared connection — lifecycle managed by getSharedRealtime()
@@ -341,12 +419,14 @@ document.addEventListener('evonic:approval-resolved', function(e) {
 
     function _startSSE() {
         _enabled = true;
+        _startPoll();   // pull-based safety-net, independent of the SSE connection
         if (_sse) return;
         _connectSSE();
     }
 
     function _closeSSE() {
         _enabled = false;
+        _stopPoll();
         if (_reconnectTimer) {
             clearTimeout(_reconnectTimer);
             _reconnectTimer = null;
@@ -367,6 +447,7 @@ document.addEventListener('evonic:approval-resolved', function(e) {
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') {
             _startSSE();
+            _seedBusy();   // refresh busy state after being backgrounded
         }
     });
     window.addEventListener('pagehide', _closeSSE);

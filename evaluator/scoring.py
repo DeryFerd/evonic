@@ -233,7 +233,8 @@ JANGAN menyebut nama model. JANGAN gunakan emoji. JANGAN gunakan bullet/list. La
             response = llm_client.chat_completion(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                enable_thinking=False
+                enable_thinking=False,
+                max_tokens=1024
             )
 
             if response.get("success") and response.get("response"):

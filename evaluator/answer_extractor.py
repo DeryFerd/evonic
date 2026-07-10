@@ -309,12 +309,19 @@ class AnswerExtractor:
         
         # LAYER 1: PASS 2 - Call LLM to extract clean answer
         messages = [{"role": "user", "content": prompt}]
-        
+
         try:
+            # max_tokens is mandatory here: the prompt embeds the FULL pass-1
+            # response, so when pass 1 ran away the extraction inherits a huge
+            # repetitive context and (at temperature 0.0, no cap) runs to the
+            # model's thinking-doubled budget too. Four of these in parallel
+            # were observed occupying every llama-server slot, queueing the
+            # whole eval behind them. The extracted answer is short by design.
             llm_response = self.client.chat_completion(
                 messages,
                 temperature=self.temperature,
-                tools=None
+                tools=None,
+                max_tokens=1024
             )
             
             # Use extract_content_with_thinking to handle both:

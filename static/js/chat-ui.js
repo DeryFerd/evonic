@@ -769,6 +769,10 @@ function _getOrCreateWikilinkModal() {
         var t = $(this).attr('data-wikilink');
         if (t) document.dispatchEvent(new CustomEvent('evonic:wikilink-click', { detail: { title: t, _fromModal: true } }));
     });
+    $modal.find('.wikilink-modal-body').on('click', 'a[href^="http://"], a[href^="https://"]', function (e) {
+        e.preventDefault();
+        window.open(this.href, '_blank', 'noopener,noreferrer');
+    });
     $(document).on('keydown.wikilinkModal', function (e) {
         if (e.key === 'Escape' && !$modal.hasClass('hidden')) _closeModal();
     });

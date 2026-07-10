@@ -2574,7 +2574,9 @@ async function openKBLink(title) {
         prev._wikilinkBound = true;
         prev.addEventListener('click', function (e) {
             const a = e.target.closest('.kb-wikilink');
-            if (a) { e.preventDefault(); openKBLink(a.getAttribute('data-wikilink')); }
+            if (a) { e.preventDefault(); openKBLink(a.getAttribute('data-wikilink')); return; }
+            const ext = e.target.closest('a[href^="http://"], a[href^="https://"]');
+            if (ext) { e.preventDefault(); window.open(ext.href, '_blank', 'noopener,noreferrer'); }
         });
     }
 })();

@@ -111,8 +111,9 @@ def check_long_running(script: str) -> dict | None:
             f"Do NOT retry the original command or try to wrap it yourself. "
             f"Instead, execute the value of 'run_script' below as your next bash call — "
             f"it wraps your command in tmux/screen with logging to '{log_file}'. "
-            f"After starting, use 'monitor_script' to watch output and "
-            f"'check_status_script' to poll for completion."
+            f"Once started, the process is monitored automatically and you will be "
+            f"notified when it finishes — do NOT poll for completion in a loop. "
+            f"Use 'monitor_script' only to peek at output."
         ),
         "run_script": run_script,
         "log_file": log_file,

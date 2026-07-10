@@ -1846,6 +1846,26 @@ def api_chat_agent_state(agent_id):
     else:
         payload = {'mode': None, 'active_model': None, 'loaded_skills': loaded_skills}
 
+    # Background processes tracked for this session (Session State panel).
+    if session_id:
+        background_processes = []
+        try:
+            from backend.agent_runtime.background_jobs import background_jobs
+            for j in background_jobs.list_for_session(session_id):
+                background_processes.append({
+                    'job_id': j.job_id,
+                    'command': j.command,
+                    'kind': j.kind,
+                    'status': j.status,
+                    'exit_code': j.exit_code,
+                    'started_at': j.started_at,
+                    'finished_at': j.finished_at,
+                    'log_file': j.log_file,
+                })
+        except Exception:
+            pass
+        payload['background_processes'] = background_processes
+
     # ?include=summary piggybacks the session summary on this response so the
     # UI gets state + summary in one round trip instead of two requests.
     if request.args.get('include') == 'summary':

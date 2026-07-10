@@ -5497,6 +5497,36 @@ function closeMobileChatSummary() {
     document.getElementById('mobile-chat-summary-overlay').classList.add('hidden');
 }
 
+// Render the "Background Processes" section for the Session State panel.
+// Shared shape with sessions.html — spinner while running, ✓/✗ when done.
+function buildBgProcessesHtml(procs) {
+    if (!Array.isArray(procs) || procs.length === 0) return '';
+    const spinnerSvg = '<svg class="animate-spin text-amber-500" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.2"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 60"/></svg>';
+    let html = '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Background Processes</div><ul class="space-y-0.5">';
+    for (const p of procs) {
+        let icon, iconCls, textCls = 'text-gray-700 dark:text-gray-200';
+        if (p.status === 'running') {
+            icon = spinnerSvg; iconCls = 'text-amber-500';
+        } else if (p.status === 'done' && (p.exit_code === 0 || p.exit_code === null || p.exit_code === undefined)) {
+            icon = '✓'; iconCls = 'text-green-500';
+            textCls = 'text-gray-400 dark:text-gray-500';
+        } else {
+            icon = '✗'; iconCls = 'text-red-500';
+            textCls = 'text-gray-400 dark:text-gray-500';
+        }
+        let elapsed;
+        if (p.status === 'running') {
+            const secs = Math.max(0, Math.floor(Date.now() / 1000 - p.started_at));
+            elapsed = secs < 60 ? `${secs}s` : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60)}m`);
+        } else {
+            elapsed = (p.exit_code !== null && p.exit_code !== undefined) ? `exit ${p.exit_code}` : p.status;
+        }
+        html += `<li class="flex items-start gap-1.5"><span class="${iconCls} inline-flex items-center justify-center w-4 h-4 text-xs flex-shrink-0">${icon}</span><span class="${textCls} text-xs truncate" title="${esc(p.command)}">${esc(p.command)}</span><span class="text-gray-400 dark:text-gray-500 text-xs flex-shrink-0 ml-auto">${esc(String(elapsed))}</span></li>`;
+    }
+    html += '</ul></div>';
+    return html;
+}
+
 let _refreshSessionStateTimer = null;
 const _refreshSessionStateImpl = async function() {
     try {
@@ -5540,6 +5570,7 @@ const _refreshSessionStateImpl = async function() {
             }
             headerHtml += '</ul></div>';
         }
+        headerHtml += buildBgProcessesHtml(stateData.background_processes);
 
         // Build skill badges from agent state
         const skills = Array.isArray(stateData.loaded_skills) ? stateData.loaded_skills : [];

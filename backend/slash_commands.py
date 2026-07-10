@@ -1056,9 +1056,20 @@ def _register_builtins():
 
         jobs = background_jobs.active_for_session(session_id)
         if not jobs:
+            # Background processes are auto-watched at spawn now, so there is
+            # usually nothing left to detach — report what is being monitored.
+            watched = [j for j in background_jobs.list_for_session(session_id)
+                       if j.detached and j.status == 'running']
+            if watched:
+                names = ", ".join(f"`{j.command}`" for j in watched)
+                return (
+                    f"Already monitored automatically: {names}.\n"
+                    "You'll be notified when they finish. Check anytime with /jobs."
+                )
             return (
-                "No detachable background process found. /detach only works for "
-                "builds/downloads launched via the long-running guard (tmux/screen)."
+                "No background process found for this session. Background "
+                "processes (tmux/screen/nohup) are monitored automatically "
+                "when started — check with /jobs."
             )
 
         # End the current polling turn so the agent stops waiting and can chat.

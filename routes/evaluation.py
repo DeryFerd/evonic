@@ -219,9 +219,10 @@ def api_incomplete_runs():
 
 @evaluation_bp.route('/api/reset', methods=['POST'])
 def api_reset():
-    """Reset engine state to idle"""
+    """Reset engine state to idle and clear incomplete runs"""
     try:
         evaluation_engine.reset_state()
+        db.clear_incomplete_runs()
         return jsonify({
             'success': True,
             'message': 'State reset'

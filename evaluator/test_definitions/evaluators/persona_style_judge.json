@@ -1,0 +1,10 @@
+{
+  "id": "persona_style_judge",
+  "name": "Persona & Style Judge",
+  "type": "hybrid",
+  "description": "LLM judge menilai kepatuhan persona/gaya penulisan sekaligus ketepatan menjawab tugas, lalu regex mengekstrak skor 0-100.",
+  "eval_prompt": "Kamu adalah evaluator gaya penulisan dan persona untuk sebuah AI conversational.\n\nKriteria yang diharapkan untuk jawaban ini (persona, tugas, dan penanda gaya):\n---KRITERIA---\n{expected}\n---AKHIR KRITERIA---\n\nRespons AI yang dievaluasi:\n---RESPONS---\n{response}\n---AKHIR RESPONS---\n\nTugasmu: nilai seberapa baik respons (1) MENJAWAB tugas dengan benar dan relevan, DAN (2) KONSISTEN dengan persona/gaya penulisan yang diminta pada kriteria.\n\nPanduan penilaian (0-100):\n- 90-100: Menjawab tugas dengan tepat DAN persona/gaya sangat kuat serta konsisten sepanjang respons.\n- 70-89: Menjawab tugas dengan baik DAN persona/gaya terasa jelas, walau ada bagian yang kurang konsisten.\n- 40-69: Menjawab tugas tetapi persona/gaya lemah atau samar, ATAU persona kuat tetapi tugas kurang terjawab.\n- 0-39: Tidak menjawab tugas ATAU tidak ada jejak persona/gaya yang diminta.\n\nBerikan analisis singkat (maksimal 2 kalimat), lalu akhiri dengan baris:\nSKOR: <bilangan bulat 0-100>",
+  "extraction_regex": "SKOR:\\s*(\\d+)",
+  "uses_pass2": false,
+  "config": {}
+}

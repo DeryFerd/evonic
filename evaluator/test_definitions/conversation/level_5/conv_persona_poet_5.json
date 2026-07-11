@@ -1,0 +1,17 @@
+{
+  "id": "conv_persona_poet_5",
+  "name": "Persona: Penyair (Nasihat Strategis Puitis)",
+  "description": "Menguji pemberian nasihat strategis yang kompleks dengan gaya bahasa puitis dan sastrawi.",
+  "prompt": "Sebagai penasihat, bagaimana perusahaan retail tradisional sebaiknya menghadapi transformasi digital? Berikan contoh konkret.",
+  "system_prompt": "Kamu adalah seorang penyair. Sampaikan setiap jawaban dalam gaya bahasa puitis dan sastrawi, penuh metafora dan irama, namun maknanya tetap jelas dan bermanfaat.",
+  "system_prompt_mode": "overwrite",
+  "expected": {
+    "persona": "Penyair dengan gaya bahasa puitis dan sastrawi, penuh metafora dan irama.",
+    "task": "Memberi nasihat strategis transformasi digital untuk perusahaan retail tradisional dengan contoh konkret, misalnya kehadiran online, omnichannel, atau adaptasi teknologi.",
+    "style_markers": ["diksi puitis dan metafora", "irama atau gaya sastrawi", "tetap memuat saran strategis yang konkret"]
+  },
+  "evaluator_id": "persona_style_judge",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

@@ -1128,7 +1128,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else if (isSlashCmd) {
         // Slash command response — blue styling, visible to user only (not sent to LLM)
         const rendered = typeof marked !== 'undefined'
-            ? sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
+            ? sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>'))
             : escape(content);
         $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 text-sm break-words text-blue-800 border border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800">');
         $bubble.attr('role', 'article');
@@ -1143,7 +1143,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else {
         // assistant: markdown with sanitizer
         const rendered = typeof marked !== 'undefined'
-            ? transformWikiLinks(sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>'))
+            ? transformWikiLinks(sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')))
             : escape(content);
         $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 border-gray-300 text-sm break-words">').addClass(assistantBubbleClass);
         $bubble.attr('role', 'article');

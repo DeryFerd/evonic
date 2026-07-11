@@ -170,6 +170,9 @@ def api_dashboard_data():
         'total': len(all_schedules),
         'active': sum(1 for s in all_schedules if s.get('enabled')),
     }
+    # Display-only fields for the dashboard "Scheduled Tasks" widget (5 most recent).
+    _sched_fields = ('id', 'name', 'enabled', 'trigger_type', 'next_run_at', 'owner_type', 'owner_id')
+    schedules = [{k: s.get(k) for k in _sched_fields} for s in all_schedules[:5]]
 
     # Plugin-provided dashboard cards (zero core-plugin coupling)
     plugin_cards = plugin_manager.get_dashboard_cards()
@@ -183,6 +186,7 @@ def api_dashboard_data():
         'skill_stats': skill_stats,
         'plugin_stats': plugin_stats,
         'schedule_stats': schedule_stats,
+        'schedules': schedules,
         'plugin_cards': plugin_cards,
     })
 

@@ -92,9 +92,13 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
             continue
         cands = [_norm(n) for n in _doc_names(d)]
         if not any(want == c or (c and (want in c or c in want)) for c in cands):
-            continue
+            # For update actions: fall back to slug matching when title/alias is missing
+            if not (action == "update" and slug and (d.get("slug") or "").strip() == slug):
+                continue
         if type_set is not None and (d.get("type") or "") not in type_set:
-            continue
+            # For update actions: skip type check when type is not provided (slug is the key)
+            if not (action == "update" and not d.get("type")):
+                continue
         if action == "update" and slug and (d.get("slug") or "").strip() != slug:
             continue
         return d

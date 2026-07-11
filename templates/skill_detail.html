@@ -76,41 +76,44 @@
             </div>
         </div>
 
-        <!-- Right: System Prompt -->
-        <div id="system-md-editor" class="hidden">
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
-                <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4">System Prompt (SYSTEM.md)</h3>
-                <textarea id="system-md-content" rows="12"
-                          class="w-full p-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 rounded-md text-xs font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
-                          placeholder="Loading SYSTEM.md..."></textarea>
-                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1.5">Defines the skill's persona and behavior. Saved directly to the skill's SYSTEM.md file.</p>
-                <div class="flex justify-between items-center mt-3">
-                    <span id="system-md-status" class="text-xs text-green-600 hidden">Saved</span>
-                    <button onclick="saveSystemPrompt()" id="save-system-prompt-btn"
-                            class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-md text-sm font-medium transition-colors">
-                        Save
-                    </button>
+        <!-- Right: System Prompt + Tools stacked -->
+        <div class="flex flex-col gap-6">
+            <!-- System Prompt -->
+            <div id="system-md-editor" class="hidden">
+                <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
+                    <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4">System Prompt (SYSTEM.md)</h3>
+                    <textarea id="system-md-content" rows="12"
+                              class="w-full p-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 rounded-md text-xs font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
+                              placeholder="Loading SYSTEM.md..."></textarea>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1.5">Defines the skill's persona and behavior. Saved directly to the skill's SYSTEM.md file.</p>
+                    <div class="flex justify-between items-center mt-3">
+                        <span id="system-md-status" class="text-xs text-green-600 hidden">Saved</span>
+                        <button onclick="saveSystemPrompt()" id="save-system-prompt-btn"
+                                class="px-4 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-md text-sm font-medium transition-colors">
+                            Save
+                        </button>
+                    </div>
                 </div>
             </div>
-        </div>
-    </div>
 
-    <!-- Tools (full width) -->
-    <div>
-        <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
-            <div class="flex justify-between items-center mb-4">
-                <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Tools <span id="tool-count" class="text-sm font-normal text-gray-400 dark:text-gray-500"></span></h3>
-            </div>
-            <div class="mb-3">
-                <input type="text" id="tool-filter" placeholder="Filter tools..."
-                       oninput="filterTools()"
-                       class="w-full p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
-            </div>
-            <div id="tools-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-                <p class="text-sm text-gray-400 dark:text-gray-500">Loading...</p>
-            </div>
-            <div id="tools-empty-filter" class="hidden text-center py-6 text-gray-400 dark:text-gray-500">
-                <p class="text-sm">No tools match your filter</p>
+            <!-- Tools -->
+            <div>
+                <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Tools <span id="tool-count" class="text-sm font-normal text-gray-400 dark:text-gray-500"></span></h3>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" id="tool-filter" placeholder="Filter tools..."
+                               oninput="filterTools()"
+                               class="w-full p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                    </div>
+                    <div id="tools-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+                        <p class="text-sm text-gray-400 dark:text-gray-500">Loading...</p>
+                    </div>
+                    <div id="tools-empty-filter" class="hidden text-center py-6 text-gray-400 dark:text-gray-500">
+                        <p class="text-sm">No tools match your filter</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -464,23 +467,19 @@ async function loadSystemPrompt() {
     const status = document.getElementById('system-md-status');
     const textarea = document.getElementById('system-md-content');
     const btn = document.getElementById('save-system-prompt-btn');
-    const settingsColumn = document.getElementById('settings-column');
 
     try {
         const res = await fetch(`/api/skills/${SKILL_ID}/system-prompt`);
         const data = await res.json();
         if (!data.has_system_md) {
             section.classList.add('hidden');
-            if (settingsColumn) settingsColumn.classList.add('lg:col-span-2');
             return;
         }
         section.classList.remove('hidden');
-        if (settingsColumn) settingsColumn.classList.remove('lg:col-span-2');
         textarea.value = data.content || '';
     } catch(e) {
         console.error('Failed to load SYSTEM.md:', e);
         section.classList.add('hidden');
-        if (settingsColumn) settingsColumn.classList.add('lg:col-span-2');
     }
 }
 

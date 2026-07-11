@@ -259,32 +259,38 @@ document.addEventListener('evonic:approval-resolved', function(e) {
     // regardless of SSE. It runs only while the tab is visible AND at least one
     // agent is busy (an approval-blocked agent stays busy for its whole turn),
     // so it costs nothing when the workspace is idle.
-    var POLL_INTERVAL_MS = 3000;
+    var POLL_INTERVAL_MS = 3000;   // pending-approval poll cadence while busy
+    var BUSY_REFRESH_MS = 9000;    // server busy-state refresh cadence (SSE-independent)
     var _pollTimer = null;
-    var _busyAgents = {};   // agent_id -> true
+    var _busyAgents = {};          // agent_id -> true
+    var _lastBusyRefresh = 0;
 
     function _anyBusy() {
         for (var k in _busyAgents) { if (_busyAgents[k]) return true; }
         return false;
     }
 
-    // Seed busy state from the REST snapshot (covers page loads / tab wakeups
-    // where we missed the live agent_busy_changed events).
-    function _seedBusy() {
-        fetch('/api/agents/busy', { headers: { 'Accept': 'application/json' } })
+    // Refresh busy state from the server. This is the robustness anchor: busy
+    // detection must NOT depend on the 'status' SSE channel, because the exact
+    // failure this poll guards against (SSE not delivering) also drops the
+    // agent_busy_changed events. Polling /api/agents/busy on a slow cadence means
+    // we still learn an agent is busy — and then start polling for its approval —
+    // even when SSE is fully dead. Returns a promise so the tick can chain on it.
+    function _refreshBusy() {
+        _lastBusyRefresh = Date.now();
+        return fetch('/api/agents/busy', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
-                if (!d || !d.busy) return;
                 _busyAgents = {};
-                Object.keys(d.busy).forEach(function (aid) { _busyAgents[aid] = true; });
+                if (d && d.busy) {
+                    Object.keys(d.busy).forEach(function (aid) { _busyAgents[aid] = true; });
+                }
             })
             .catch(function () {});
     }
 
-    function _pollPending() {
-        if (document.visibilityState !== 'visible') return;
-        if (!_anyBusy() && !_open) return;   // idle and nothing shown → skip the fetch
-        fetch('/api/approvals/pending', { headers: { 'Accept': 'application/json' } })
+    function _fetchPending() {
+        return fetch('/api/approvals/pending', { headers: { 'Accept': 'application/json' } })
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (d) {
                 if (!d) return;
@@ -309,9 +315,27 @@ document.addEventListener('evonic:approval-resolved', function(e) {
             .catch(function () {});
     }
 
+    // Timer tick. Two cadences:
+    //  • Slow (BUSY_REFRESH_MS): an SSE-independent safety sweep — refresh busy
+    //    state AND check pending approvals UNCONDITIONALLY. This is what makes the
+    //    net truly robust: an approval is caught even if SSE is dead and even if
+    //    the agent's busy flag lapsed (e.g. a long turn whose 600s busy-TTL
+    //    expired while it sat blocked on the approval).
+    //  • Fast (POLL_INTERVAL_MS): while an agent is busy or a modal is open, poll
+    //    pending so the modal appears/closes within ~3s.
+    // Idle + visible costs two tiny in-memory reads every ~9s; nothing when hidden.
+    function _pollPending() {
+        if (document.visibilityState !== 'visible') return;
+        if ((Date.now() - _lastBusyRefresh) >= BUSY_REFRESH_MS) {
+            _refreshBusy().then(_fetchPending);
+            return;
+        }
+        if (_anyBusy() || _open) _fetchPending();
+    }
+
     function _startPoll() {
         if (_pollTimer) return;
-        _seedBusy();
+        _refreshBusy();
         _pollTimer = setInterval(_pollPending, POLL_INTERVAL_MS);
     }
 
@@ -447,7 +471,7 @@ document.addEventListener('evonic:approval-resolved', function(e) {
     document.addEventListener('visibilitychange', function() {
         if (document.visibilityState === 'visible') {
             _startSSE();
-            _seedBusy();   // refresh busy state after being backgrounded
+            _refreshBusy();   // refresh busy state after being backgrounded
         }
     });
     window.addEventListener('pagehide', _closeSSE);

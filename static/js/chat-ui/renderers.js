@@ -20,6 +20,7 @@ const ALLOWED_ATTRS = {
     a:    ['href', 'title', 'target'],
     code: ['class'],
     pre:  ['class'],
+    span: ['class', 'style', 'aria-hidden'],
     img:  ['src', 'alt', 'class', 'loading'],
 };
 
@@ -68,6 +69,59 @@ function escape(text) {
     const div = document.createElement('div');
     div.textContent = String(text == null ? '' : text);
     return div.innerHTML;
+}
+
+// -- KaTeX math rendering ----------------------------------------------------------
+
+// Renders LaTeX math delimiters ($...$ and $$...$$) in HTML content.
+// Runs after marked.parse() and sanitize(), before DOM insertion.
+// Protects code blocks (<pre><code>) from accidental math rendering.
+function renderMath(html) {
+    if (typeof katex === 'undefined') return html;
+
+    const codeBlocks = [];
+    // Protect <pre><code> blocks
+    let safe = (html || '').replace(
+        /<pre\b[^>]*>[\s\S]*?<\/pre>/gi,
+        function (match) {
+            codeBlocks.push(match);
+            return '\u0000CODE' + (codeBlocks.length - 1) + '\u0000';
+        }
+    );
+
+    // Protect inline <code> blocks
+    safe = safe.replace(
+        /<code\b[^>]*>[\s\S]*?<\/code>/gi,
+        function (match) {
+            codeBlocks.push(match);
+            return '\u0000CODE' + (codeBlocks.length - 1) + '\u0000';
+        }
+    );
+
+    // Render display math $$...$$ first
+    safe = safe.replace(/\$\$([\s\S]*?)\$\$/g, function (match, formula) {
+        try {
+            return katex.renderToString(formula, { displayMode: true, throwOnError: false });
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // Render inline math $...$ (must not be preceded or followed by $)
+    safe = safe.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, function (match, formula) {
+        try {
+            return katex.renderToString(formula, { displayMode: false, throwOnError: false });
+        } catch (e) {
+            return match;
+        }
+    });
+
+    // Restore code blocks
+    safe = safe.replace(/\u0000CODE(\d+)\u0000/g, function (match, idx) {
+        return codeBlocks[parseInt(idx, 10)] || match;
+    });
+
+    return safe;
 }
 
 function truncateLine(text, max) {
@@ -140,7 +194,7 @@ function renderKBDocPreview(content) {
     const parts = kbSplitFrontmatter(content);
     const cardHtml = parts.fm !== null ? kbRenderFrontmatter(parts.fm) : '';
     const bodyHtml = typeof marked !== 'undefined'
-        ? transformWikiLinks(sanitize(marked.parse(parts.body)))
+        ? transformWikiLinks(sanitize(renderMath(marked.parse(parts.body))))
         : escape(parts.body);
     return cardHtml + bodyHtml;
 }
@@ -1045,7 +1099,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else if (isBashExec) {
         // Bash exec (!) command output — dark terminal with hacker green text
         const rendered = typeof marked !== 'undefined'
-            ? sanitize(marked.parse((content || ''))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
+            ? sanitize(renderMath(marked.parse((content || '')))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
             : escape(content);
         $bubble = $('<div class="chat-prose terminal-output rounded-2xl px-4 py-2.5 text-sm break-words">');
         $bubble.css({
@@ -1074,7 +1128,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else if (isSlashCmd) {
         // Slash command response — blue styling, visible to user only (not sent to LLM)
         const rendered = typeof marked !== 'undefined'
-            ? sanitize(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
+            ? sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>')
             : escape(content);
         $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 text-sm break-words text-blue-800 border border-blue-200 dark:bg-blue-950 dark:text-blue-200 dark:border-blue-800">');
         $bubble.attr('role', 'article');
@@ -1089,7 +1143,7 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
     } else {
         // assistant: markdown with sanitizer
         const rendered = typeof marked !== 'undefined'
-            ? transformWikiLinks(sanitize(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>'))
+            ? transformWikiLinks(sanitize(renderMath(marked.parse((content || '').replace(/[\u201c\u201d\u00ab\u00bb]/g, '"'))).replace(/<table/g, '<div class="table-wrapper"><table').replace(/<\/table>/g, '</table></div>'))
             : escape(content);
         $bubble = $('<div class="chat-prose rounded-2xl px-4 py-2.5 border-gray-300 text-sm break-words">').addClass(assistantBubbleClass);
         $bubble.attr('role', 'article');

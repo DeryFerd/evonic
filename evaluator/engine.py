@@ -2002,15 +2002,31 @@ class EvaluationEngine:
 
         test_results = db.get_test_results(run_id)
 
+        # Get run info early so we can scope the matrix to the domains
+        # that were actually selected for this run.
+        run_info = db.get_evaluation_run(run_id)
+
+        # Parse the run's selected domains (None/empty means all domains)
+        selected_domains = None
+        if run_info and run_info.get('selected_domains'):
+            try:
+                selected_domains = json.loads(run_info['selected_domains'])
+            except (json.JSONDecodeError, TypeError):
+                selected_domains = None
+
         # Organize by domain and level
         matrix = {}
-        
+
         # Get domains from test definitions or use legacy
         if self.use_configurable_tests:
             domains = [d['id'] for d in test_manager.list_domains()]
         else:
             domains = ["conversation", "math", "tool_calling", "reasoning"]
-        
+
+        # Only display domains that were selected for this run
+        if selected_domains:
+            domains = [d for d in domains if d in selected_domains]
+
         for domain in domains:
             matrix[domain] = {}
             for level in range(1, 6):
@@ -2041,8 +2057,7 @@ class EvaluationEngine:
                     "model_name": result.get("model_name")
                 }
 
-        # Get run info for model name
-        run_info = db.get_evaluation_run(run_id)
+        # Get model name from the run info fetched earlier
         model_name = run_info.get("model_name") if run_info else None
         
         # Determine status

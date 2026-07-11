@@ -82,11 +82,12 @@ html.dark {
 .chat-prose blockquote { border-left: 3px solid rgba(0,0,0,0.15); padding-left: 0.75em; margin: 0.4em 0; opacity: 0.85; }
 .chat-prose h1, .chat-prose h2, .chat-prose h3 { font-weight: 600; margin: 0.4em 0 0.2em; }
 .chat-prose a { text-decoration: underline; }
-.chat-prose table { border-collapse: collapse; margin: 0.4em 0; font-size: 0.85em; min-width: max-content; }
+
+.chat-prose table { display: block; width: max-content; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-collapse: collapse; margin: 0.4em 0; font-size: 0.85em; }
 .chat-prose th, .chat-prose td { border: 1px solid rgba(0,0,0,0.12); padding: 0.3em 0.6em; white-space: nowrap; }
 .chat-prose th { background: rgba(0,0,0,0.04); font-weight: 600; }
 
-.chat-prose .table-wrapper { overflow: hidden; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.chat-prose .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 
 .bot-bubble .chat-prose code { background: rgba(0,0,0,0.08); }
 .bot-bubble .chat-prose pre { background: rgba(0,0,0,0.06); }

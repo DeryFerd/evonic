@@ -65,10 +65,9 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
     given), and — for updates — its ``slug`` matches the expected slug (when given).
     """
     slug = entity.get("slug")
-    # edit/rename/dedupe target an existing doc by slug — match on that.
-    if action in _SLUG_KEYED_ACTIONS:
-        if not slug:
-            return None
+
+    # Pass 1: Exact Slug Match (Primary)
+    if slug:
         for d in docs:
             if not isinstance(d, dict):
                 continue
@@ -76,8 +75,8 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
                 continue
             if (d.get("slug") or "").strip() == slug:
                 return d
-        return None
 
+    # Pass 2: Fuzzy Title/Alias Match (Fallback)
     want = _norm(entity.get("title"))
     if not want:
         return None
@@ -85,6 +84,7 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
     if isinstance(types, str):
         types = [types]
     type_set = set(types) if types else None
+
     for d in docs:
         if not isinstance(d, dict):
             continue
@@ -92,15 +92,11 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
             continue
         cands = [_norm(n) for n in _doc_names(d)]
         if not any(want == c or (c and (want in c or c in want)) for c in cands):
-            # For update actions: fall back to slug matching when title/alias is missing
-            if not (action == "update" and slug and (d.get("slug") or "").strip() == slug):
-                continue
+            continue
         if type_set is not None and (d.get("type") or "") not in type_set:
             # For update actions: skip type check when type is not provided (slug is the key)
             if not (action == "update" and not d.get("type")):
                 continue
-        if action == "update" and slug and (d.get("slug") or "").strip() != slug:
-            continue
         return d
     return None
 

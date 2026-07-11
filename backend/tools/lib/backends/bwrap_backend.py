@@ -382,11 +382,13 @@ class BwrapBackend(LocalBackend):
     """
 
     def __init__(self, session_id: str = '', workspace: str = None,
-                 agent_id: str = '', agent_name: str = '', is_subagent: bool = False):
+                 agent_id: str = '', agent_name: str = '', is_subagent: bool = False,
+                 is_explorer: bool = False):
         super().__init__(session_id=session_id, workspace=workspace, run_as_user=None)
         self._agent_id = agent_id
         self._hostname = _sanitize_hostname(agent_name or agent_id)
         self._is_subagent = is_subagent
+        self._is_explorer = is_explorer
         self._dirs_ready = False
 
     # ------------------------------------------------------------------
@@ -462,9 +464,11 @@ class BwrapBackend(LocalBackend):
         return prefix
 
     def _workdir(self) -> str:
-        # Sub-agents run with cwd = /workspace/.scratch so their relative-path
-        # writes stay out of the project root.
-        return '/workspace/.scratch' if self._is_subagent else '/workspace'
+        # Normal sub-agents run with cwd = /workspace/.scratch so their
+        # relative-path writes stay out of the project root.  Explorer
+        # sub-agents have their own explicit workspace and must NOT be
+        # redirected to .scratch/.
+        return '/workspace/.scratch' if (self._is_subagent and not self._is_explorer) else '/workspace'
 
     # ------------------------------------------------------------------
     # Keeper lifecycle

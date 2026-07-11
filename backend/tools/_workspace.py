@@ -218,7 +218,7 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
             # never clutter the project root.  Absolute paths pass through
             # unchanged (mirrors the shell cwd redirect for sub-agents).
             base = os.path.abspath(workspace)
-            if (agent or {}).get('is_subagent'):
+            if (agent or {}).get('is_subagent') and not (agent or {}).get('is_explorer'):
                 base = os.path.join(base, '.scratch')
             resolved = os.path.join(base, file_path)
             # Boundary check for relative path traversal (e.g. ../../etc/passwd)

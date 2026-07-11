@@ -309,7 +309,7 @@ def execute(agent, args: dict) -> dict:
     # When sandbox is enabled, the agent has a workplace, or run-as-user is
     # set, route file I/O through the execution backend (Docker container,
     # SSH remote, sudo -u <user>, etc.).
-    sandbox_enabled = (agent or {}).get('sandbox_enabled', 0)
+    sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
     run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
     if sandbox_enabled or has_workplace or run_as_user:

@@ -393,13 +393,15 @@ class DockerBackend(ExecutionBackend):
     """Executes bash/python inside a persistent Docker container."""
 
     def __init__(self, session_id: str, agent_id: str = '', workspace: str = None,
-                 is_subagent: bool = False):
+                 is_subagent: bool = False, is_explorer: bool = False):
         self._session_id = session_id
         self._agent_id = agent_id
         self._workspace = workspace
-        # Sub-agents run with cwd = /workspace/.scratch so their relative-path
-        # writes stay out of the project root (the container's mounted workspace).
-        self._workdir = '/workspace/.scratch' if is_subagent else None
+        # Normal sub-agents run with cwd = /workspace/.scratch so their
+        # relative-path writes stay out of the project root.  Explorer
+        # sub-agents have their own explicit workspace and must NOT be
+        # redirected to .scratch/.
+        self._workdir = '/workspace/.scratch' if (is_subagent and not is_explorer) else None
 
     # ------------------------------------------------------------------
     # Path resolution — translate host paths to /workspace mount point

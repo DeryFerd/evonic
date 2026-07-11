@@ -5,6 +5,7 @@ Pure data preparation — no LLM calls, no threading.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -148,6 +149,31 @@ def _build_portal_info(agent_id: str) -> list:
     return lines
 
 
+def _resolve_workspace(agent: Dict[str, Any]) -> str:
+    """Return the effective workspace directory for this agent.
+
+    Resolution order:
+    1. Sandbox agents: always /workspace (the Docker container mount)
+    2. Agents with workplace: use workplace.config.workspace_path
+    3. Fallback: agent.workspace field from DB
+    """
+    if agent.get('sandbox_enabled'):
+        return '/workspace'
+    wp_id = agent.get('workplace_id')
+    if wp_id:
+        try:
+            wp = db.get_workplace(wp_id)
+            if wp:
+                cfg = wp.get('config', {})
+                if isinstance(cfg, str):
+                    cfg = json.loads(cfg)
+                ws = cfg.get('workspace_path')
+                if ws:
+                    return ws
+        except Exception:
+            pass
+    return agent.get('workspace') or '/workspace'
+
 
 # Allowed doc `type` frontmatter values (mirrors Rust validate::VALID_TYPES and
 # evomem_writer.DOC_TYPES). Used for write-time validation + KB-graph node colors.
@@ -259,7 +285,7 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
                 if tool_prompt:
                     if not agent.get('sandbox_enabled'):
                         tool_prompt = tool_prompt.replace('/workspace/shared/agents/', '')
-                        tool_prompt = tool_prompt.replace('/workspace', 'the agents working directory')
+                        tool_prompt = tool_prompt.replace('/workspace', _resolve_workspace(agent))
                     parts.append(tool_prompt)
 
     # Message Wrapper Protocol
@@ -496,6 +522,10 @@ def _cache_key_valid(agent: Dict[str, Any], cache_entry: Dict[str, Any]) -> bool
     if agent.get('run_as_user') != cache_entry.get('run_as_user'):
         return False
 
+    # Check workspace — changing via /cd must invalidate the cache
+    if _resolve_workspace(agent) != cache_entry.get('workspace'):
+        return False
+
     return True
 
 
@@ -540,6 +570,7 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
             'sandbox_enabled': agent.get('sandbox_enabled', 0),
             'vars_hash': vars_hash,
             'run_as_user': agent.get('run_as_user'),
+            'workspace': _resolve_workspace(agent),
         }
 
     prompt = static_prompt
@@ -656,6 +687,15 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
                 )
         except Exception:
             _logger.warning("Failed to lookup workplace for agent %s", aid, exc_info=True)
+
+    # CWD awareness: tell non-sandbox agents their actual working directory.
+    # Sandbox agents already know they run at /workspace from the Sandbox
+    # Environment section. Tunnel/remote agents need this since their tool
+    # descriptions no longer show a generic placeholder.
+    if not agent.get('sandbox_enabled'):
+        workspace = _resolve_workspace(agent)
+        if workspace:
+            prompt += f"\n\nYour current working directory is `{workspace}`.\n"
 
     # Always append the empty-response recovery instruction
     prompt += (
@@ -894,6 +934,7 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     # (workplace/remote) aren't running in Docker, so sanitize these.
     if not agent.get('sandbox_enabled'):
         # Ordered replacements — most specific first to avoid partial matches
+        workspace = _resolve_workspace(agent)
         replacements = [
             ('in an isolated Docker container', 'in an isolated execution environment'),
             ('in a sandboxed Docker container', 'in a sandboxed execution environment'),
@@ -903,10 +944,11 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
             ('tear down the container', 'tear down the environment'),
             ('destroys the shared runpy container', 'destroys the shared runpy environment'),
             ('local/Docker execution', 'local execution'),
-            ('/workspace', 'the agents working directory'),
+            ('/workspace', workspace),
         ]
         for tool in tools:
-            func = tool.get('function', {})
+            func = copy.deepcopy(tool.get('function', {}))
+            tool['function'] = func
             # Patch function-level description
             if 'description' in func:
                 desc = func['description']

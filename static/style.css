@@ -68,7 +68,7 @@ html.dark {
 .prose hr { border: none; border-top: 1px solid #d1d5db; margin: 0.75em 0; }
 
 /* Chat bubble markdown prose (compact, used in both agent Test Chat and Sessions) */
-.chat-prose { line-height: 1.5; overflow: hidden; }
+.chat-prose { line-height: 1.5; }
 .chat-prose p { margin: 0.25em 0; }
 .chat-prose p:first-child { margin-top: 0; }
 .chat-prose p:last-child { margin-bottom: 0; }
@@ -86,7 +86,7 @@ html.dark {
 .chat-prose th, .chat-prose td { border: 1px solid rgba(0,0,0,0.12); padding: 0.3em 0.6em; white-space: nowrap; }
 .chat-prose th { background: rgba(0,0,0,0.04); font-weight: 600; }
 /* Wrap table in scrollable container so it never overflows the bubble */
-.chat-prose .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.chat-prose .table-wrapper { overflow: hidden; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 /* Bot bubble prose — light mode defaults */
 .bot-bubble .chat-prose code { background: rgba(0,0,0,0.08); }
 .bot-bubble .chat-prose pre { background: rgba(0,0,0,0.06); }

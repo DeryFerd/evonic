@@ -68,7 +68,7 @@ html.dark {
 .prose a { color: #4f46e5; text-decoration: underline; }
 .prose hr { border: none; border-top: 1px solid #d1d5db; margin: 0.75em 0; }
 
-.chat-prose { line-height: 1.5; overflow: hidden; }
+.chat-prose { line-height: 1.5; }
 .chat-prose p { margin: 0.25em 0; }
 .chat-prose p:first-child { margin-top: 0; }
 .chat-prose p:last-child { margin-bottom: 0; }
@@ -86,7 +86,7 @@ html.dark {
 .chat-prose th, .chat-prose td { border: 1px solid rgba(0,0,0,0.12); padding: 0.3em 0.6em; white-space: nowrap; }
 .chat-prose th { background: rgba(0,0,0,0.04); font-weight: 600; }
 
-.chat-prose .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.chat-prose .table-wrapper { overflow: hidden; overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 
 .bot-bubble .chat-prose code { background: rgba(0,0,0,0.08); }
 .bot-bubble .chat-prose pre { background: rgba(0,0,0,0.06); }

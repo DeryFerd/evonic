@@ -1,0 +1,23 @@
+{
+  "id": "conv_startup_en_3",
+  "name": "Startup Definition (English)",
+  "description": "Test ability to explain the startup concept in English",
+  "prompt": "Explain what is meant by a 'startup' in the context of a technology business.",
+  "expected": {
+    "keywords": [
+      "startup",
+      "technology",
+      "business",
+      "innovation",
+      "company",
+      "scale",
+      "growth"
+    ],
+    "type": "explanatory",
+    "language": "en"
+  },
+  "evaluator_id": "keyword",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

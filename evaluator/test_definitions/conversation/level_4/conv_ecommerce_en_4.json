@@ -1,0 +1,23 @@
+{
+  "id": "conv_ecommerce_en_4",
+  "name": "E-commerce Advice (English)",
+  "description": "Test ability to provide business advice for e-commerce in English",
+  "prompt": "I'm considering starting an e-commerce business in Indonesia. Can you give advice on suitable platforms and effective marketing strategies?",
+  "expected": {
+    "keywords": [
+      "e-commerce",
+      "tokopedia",
+      "shopee",
+      "marketing",
+      "digital",
+      "marketplace",
+      "strategy"
+    ],
+    "type": "advisory",
+    "language": "en"
+  },
+  "evaluator_id": "keyword",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

@@ -35,6 +35,14 @@ class KeywordEvaluator(BaseEvaluator):
         "dari", "ke", "di", "bisa", "dapat", "tidak", "ada", "seperti",
         "sebagai", "oleh", "karena", "tetapi", "jika", "maka", "agar"
     ]
+
+    # English function words for fluency check (used when a test sets language "en")
+    ENGLISH_WORDS = [
+        "the", "and", "with", "for", "that", "this", "you", "your", "are",
+        "is", "was", "have", "has", "can", "will", "would", "should", "there",
+        "which", "because", "also", "such", "from", "into", "about", "these",
+        "they", "their", "them", "some", "when", "then", "while", "however"
+    ]
     
     def __init__(self, domain: str = "conversation"):
         self.domain = domain
@@ -58,8 +66,10 @@ class KeywordEvaluator(BaseEvaluator):
         """
         # Get expected keywords - prefer test-defined over hardcoded
         keywords = []
+        language = "id"
         if expected and isinstance(expected, dict):
             keywords = expected.get("keywords", [])
+            language = expected.get("language", "id")
         if not keywords:
             keywords = self.KEYWORDS.get(self.domain, {}).get(level, [])
 
@@ -68,9 +78,9 @@ class KeywordEvaluator(BaseEvaluator):
 
         # Score correctness (content quality)
         correctness = self._score_correctness(response, level, expected)
-        
-        # Score fluency (Indonesian language)
-        fluency = self._score_fluency(response)
+
+        # Score fluency (language quality for the test's language)
+        fluency = self._score_fluency(response, language)
         
         # Calculate weighted score
         weights = {"relevance": 0.3, "correctness": 0.4, "fluency": 0.3}
@@ -142,16 +152,22 @@ class KeywordEvaluator(BaseEvaluator):
 
         return 0.5
     
-    def _score_fluency(self, response: str) -> float:
-        """Score Indonesian language fluency"""
+    def _score_fluency(self, response: str, language: str = "id") -> float:
+        """Score language fluency for the test's language (default Indonesian)"""
         if not response.strip():
             return 0.0
-        
+
         response_lower = response.lower()
-        
-        # Count Indonesian words
-        found_words = sum(1 for word in self.INDONESIAN_WORDS if word in response_lower)
-        word_score = min(found_words / 8, 1.0)  # At least 8 Indonesian words
+
+        # Count function words for the target language.
+        # English uses whole-word matching (short function words would over-match
+        # as substrings); Indonesian keeps the original substring behavior.
+        if language == "en":
+            tokens = set(re.findall(r"[a-z']+", response_lower))
+            found_words = sum(1 for word in self.ENGLISH_WORDS if word in tokens)
+        else:
+            found_words = sum(1 for word in self.INDONESIAN_WORDS if word in response_lower)
+        word_score = min(found_words / 8, 1.0)  # At least 8 function words
         
         # Sentence count
         sentences = [s.strip() for s in re.split(r'[.!?]+', response) if s.strip()]

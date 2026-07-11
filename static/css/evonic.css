@@ -68,7 +68,7 @@ html.dark {
 .prose a { color: #4f46e5; text-decoration: underline; }
 .prose hr { border: none; border-top: 1px solid #d1d5db; margin: 0.75em 0; }
 
-.chat-prose { line-height: 1.5; }
+.chat-prose { line-height: 1.5; overflow: hidden; }
 .chat-prose p { margin: 0.25em 0; }
 .chat-prose p:first-child { margin-top: 0; }
 .chat-prose p:last-child { margin-bottom: 0; }

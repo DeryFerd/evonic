@@ -78,6 +78,15 @@ function escape(text) {
 // Protects code blocks (<pre><code>) from accidental math rendering.
 function renderMath(html) {
     if (typeof katex === 'undefined') return html;
+    try {
+        return _renderMathImpl(html);
+    } catch (e) {
+        // Never let math rendering break the message pipeline
+        return html;
+    }
+}
+
+function _renderMathImpl(html) {
 
     const codeBlocks = [];
     // Protect <pre><code> blocks

@@ -4,8 +4,13 @@
 # or available in PATH.
 #
 # Usage:
-#     ./scripts/build_tailwind.sh          # development build
+#     ./scripts/build_tailwind.sh          # one-off development build
 #     ./scripts/build_tailwind.sh --minify # production build (minified)
+#     ./scripts/build_tailwind.sh --watch  # rebuild on every template/JS change (dev)
+#
+# In --watch mode, leave this running in a terminal next to Flask; any new
+# Tailwind class you use in templates/ or static/js/ is compiled automatically
+# on save (then hard-refresh the browser). No more "class silently missing".
 
 set -euo pipefail
 
@@ -26,8 +31,15 @@ else
 fi
 
 MINIFY=""
-if [ "${1:-}" = "--minify" ]; then
-    MINIFY="-m"
+WATCH=""
+case "${1:-}" in
+    --minify) MINIFY="-m" ;;
+    --watch)  WATCH="--watch" ;;
+esac
+
+if [ -n "$WATCH" ]; then
+    echo "Watching templates/ and static/js/ for Tailwind classes (Ctrl-C to stop)..."
+    exec $TW -i "$INPUT" -o "$OUTPUT" --watch
 fi
 
 echo "Building Tailwind CSS..."

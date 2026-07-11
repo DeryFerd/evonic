@@ -167,6 +167,74 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
 .kb-node-match circle  { stroke: #f97316 !important; animation: kb-pulse-border 1.2s ease-in-out infinite; }
 
 .tab-btn { cursor: pointer; }
+
+/* Agent detail tabs — aligned with the System Settings nav rail
+   (icon + hover/select highlight). Vertical rail on desktop,
+   horizontal bar on mobile. Layout lives here (not Tailwind) because
+   this project's Tailwind is precompiled and lacks these lg: variants. */
+.agent-tabs {
+    display: flex;
+    gap: 2px;
+    flex-shrink: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border-color);
+    -webkit-overflow-scrolling: touch;
+}
+@media (min-width: 1024px) {
+    .agent-tabs {
+        flex-direction: column;
+        width: 12rem;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding-bottom: 0;
+        margin-bottom: 0;
+        padding-right: 12px;
+        border-bottom: none;
+        border-right: 1px solid var(--border-color);
+    }
+}
+.agent-tab {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-align: left;
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+.agent-tab svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    opacity: 0.75;
+    transition: opacity 0.15s ease;
+}
+.agent-tab:hover {
+    background: var(--bg-hover);
+    color: var(--text-heading);
+}
+.agent-tab.active {
+    background: rgba(99, 102, 241, 0.10);
+    color: #4f46e5;
+}
+.agent-tab.active svg { opacity: 1; }
+html.dark .agent-tab.active {
+    background: rgba(129, 140, 248, 0.14);
+    color: #a5b4fc;
+}
+.agent-tab.hidden { display: none; }
+@media (min-width: 1024px) { .agent-tab { width: 100%; } }
 </style>
 <div class="px-2 py-1 md:py-4 flex-1 min-h-0 flex flex-col h-[calc(100dvh-var(--header-h,56px))]">
     {% if workspace_invalid %}
@@ -229,40 +297,23 @@ html.dark #system-prompt-modal .hover\:text-gray-600:hover { color: #d1d5db; }
     </div>
     <!-- Tabs: responsive — horizontal scrollable (mobile), vertical left panel (desktop) -->
     <div class="flex flex-col lg:flex-row flex-1 min-h-0 gap-4">
-    <!-- Mobile tab bar (hidden on desktop) -->
-    <div class="flex lg:hidden gap-1 mb-2 border-b border-gray-200 dark:border-gray-700 overflow-x-auto flex-shrink-0" style="-webkit-overflow-scrolling: touch;">
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-indigo-500 text-indigo-600" onclick="showTab('chat')" data-tab="chat">Chat</button>
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('general')" data-tab="general">Settings</button>
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('knowledge')" data-tab="knowledge">Knowledge</button>
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('tools')" data-tab="tools">Tools</button>
+    <!-- Tab nav — icon rail (desktop) / horizontal bar (mobile), aligned with System Settings.
+         Uses <div> (not <nav>) to avoid the global mobile top-navbar CSS on `nav`. -->
+    <div class="agent-tabs" role="tablist">
+        <button class="agent-tab tab-btn active" onclick="showTab('chat')" data-tab="chat"><i data-lucide="message-square"></i><span>Chat</span></button>
+        <button class="agent-tab tab-btn" onclick="showTab('general')" data-tab="general"><i data-lucide="sliders-horizontal"></i><span>Settings</span></button>
+        <button class="agent-tab tab-btn" onclick="showTab('knowledge')" data-tab="knowledge"><i data-lucide="book-open"></i><span>Knowledge</span></button>
+        <button class="agent-tab tab-btn" onclick="showTab('tools')" data-tab="tools"><i data-lucide="wrench"></i><span>Tools</span></button>
         {# Always rendered (hidden for super) so softSwitchAgent can toggle without a full reload #}
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700{{ ' hidden' if agent.is_super else '' }}" onclick="showTab('skills')" data-tab="skills">Skills</button>
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('channels')" data-tab="channels">Channels</button>
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('portals')" data-tab="portals">Portals</button>
+        <button class="agent-tab tab-btn{{ ' hidden' if agent.is_super else '' }}" onclick="showTab('skills')" data-tab="skills"><i data-lucide="sparkles"></i><span>Skills</span></button>
+        <button class="agent-tab tab-btn" onclick="showTab('channels')" data-tab="channels"><i data-lucide="radio"></i><span>Channels</span></button>
+        <button class="agent-tab tab-btn" onclick="showTab('portals')" data-tab="portals"><i data-lucide="folder-symlink"></i><span>Portals</span></button>
         {% if agent.artifacts_enabled %}
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('artifacts')" data-tab="artifacts">Artifacts</button>
+        <button class="agent-tab tab-btn" onclick="showTab('artifacts')" data-tab="artifacts"><i data-lucide="package"></i><span>Artifacts</span></button>
         {% endif %}
 {% for _tab in plugin_agent_tabs %}
-        <button class="tab-btn flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-b-2 border-transparent text-gray-500 hover:text-gray-700"
-            onclick="showTab('{{ _tab.id }}')" data-tab="{{ _tab.id }}">{{ _tab.label }}</button>
-{% endfor %}
-    </div>
-    <!-- Desktop vertical tab panel (hidden on mobile) -->
-    <div class="hidden lg:flex flex-col gap-1 w-40 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 overflow-y-auto" style="-webkit-overflow-scrolling: touch;">
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-indigo-500 text-indigo-600" onclick="showTab('chat')" data-tab="chat">Chat</button>
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('general')" data-tab="general">Settings</button>
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('knowledge')" data-tab="knowledge">Knowledge</button>
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('tools')" data-tab="tools">Tools</button>
-        {# Always rendered (hidden for super) so softSwitchAgent can toggle without a full reload #}
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700{{ ' hidden' if agent.is_super else '' }}" onclick="showTab('skills')" data-tab="skills">Skills</button>
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('channels')" data-tab="channels">Channels</button>
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('portals')" data-tab="portals">Portals</button>
-        {% if agent.artifacts_enabled %}
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700" onclick="showTab('artifacts')" data-tab="artifacts">Artifacts</button>
-        {% endif %}
-{% for _tab in plugin_agent_tabs %}
-        <button class="tab-btn text-left flex-shrink-0 whitespace-nowrap px-4 py-2.5 text-sm font-medium border-l-2 border-transparent text-gray-500 hover:text-gray-700"
-            onclick="showTab('{{ _tab.id }}')" data-tab="{{ _tab.id }}">{{ _tab.label }}</button>
+        <button class="agent-tab tab-btn"
+            onclick="showTab('{{ _tab.id }}')" data-tab="{{ _tab.id }}"><i data-lucide="{{ _tab.icon | default('puzzle', true) }}"></i><span>{{ _tab.label }}</span></button>
 {% endfor %}
     </div>
     <div class="flex flex-col flex-1 min-h-0 min-w-0">
@@ -1787,11 +1838,9 @@ function showTab(name) {
         return;
     }
     $('.tab-content').addClass('hidden');
-    $('.tab-btn').removeClass('border-indigo-500 text-indigo-600')
-                 .addClass('border-transparent text-gray-500');
+    $('.tab-btn').removeClass('active');
     $('#tab-' + name).removeClass('hidden');
-    $(`[data-tab="${name}"]`).addClass('border-indigo-500 text-indigo-600')
-                              .removeClass('border-transparent text-gray-500');
+    $(`[data-tab="${name}"]`).addClass('active');
 
     if (name === 'knowledge') {
         if (kbGraphMode === 'graph') {

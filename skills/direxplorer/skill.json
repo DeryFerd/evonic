@@ -8,6 +8,7 @@
   "tools_file": "tools.json",
   "lazy_tools": false,
   "default_enabled": true,
+  "core": true,
   "requirements": {
     "binaries": [
       {

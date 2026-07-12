@@ -1394,6 +1394,24 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
         except Exception:
             pass  # Never block task completion on recorder failure
 
+        # --- Session Archiver: save byte-exact LLM trace on task completion ---
+        # Must happen BEFORE state is cleared so we capture the full task
+        # execution. Clears the LLM trace afterward so the next clear_session()
+        # (e.g. when next kanban task triggers) finds zero records and skips
+        # gracefully instead of double-archiving.
+        try:
+            import config as _cfg
+            if bool(_cfg.SESSION_ARCHIVE):
+                _sid = agent_state.session_id if agent_state else None
+                if _sid:
+                    from models.session_archive import SessionArchiver
+                    SessionArchiver.archive_session(agent_id, _sid)
+                    from models.llm_trace import llm_trace_manager
+                    llm_trace_manager.get(agent_id, _sid).clear()
+                    llm_trace_manager.evict(agent_id, _sid)
+        except Exception:
+            pass  # Never block task completion on archive failure
+
         _active_tasks.pop(agent_id, None)
         _pending_tasks.pop(agent_id, None)
         _paused_tasks.pop(agent_id, None)

@@ -181,6 +181,7 @@ def build_config(
         'agent_messaging_enabled': True,
         'builtin_tools_enabled': True,
         'enabled': True,
+        'message_wrapper_enabled': False,   # explorers don't have remember()/recall() — wrapper wastes tokens
         # Inherit the delegator's EXECUTION ENVIRONMENT so the explorer runs the
         # same way the delegator does (sandbox on/off, remote workplace/tunnel,
         # run-as user). Prompt/tools/model are still the explorer's own.

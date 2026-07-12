@@ -69,6 +69,19 @@ class SkillsManager:
             self._json_file_cache[path] = cached
         return copy.deepcopy(cached[1])
 
+    def _is_core_skill(self, skill_id: str) -> bool:
+        """Check if a skill is a core skill.
+
+        Reads the ``core`` flag from the skill manifest first, then falls
+        back to the hardcoded ``CORE_SKILL_IDS`` set so that legacy skills
+        without the manifest marker are still protected.
+        """
+        if skill_id in CORE_SKILL_IDS:
+            return True
+        manifest_path = os.path.join(SKILLS_DIR, skill_id, 'skill.json')
+        manifest = self._read_json_cached(manifest_path)
+        return bool(isinstance(manifest, dict) and manifest.get('core', False))
+
     def is_skill_enabled(self, skill_id: str) -> bool:
         """Check if a skill is enabled.
 
@@ -108,7 +121,7 @@ class SkillsManager:
                 manifest['_dir'] = skill_dir
                 manifest['tool_count'] = len(self._load_tool_defs(skill_dir, manifest))
                 manifest['enabled'] = self.is_skill_enabled(name)
-                manifest['protected'] = name in CORE_SKILL_IDS
+                manifest['protected'] = self._is_core_skill(name)
                 skills.append(manifest)
             except KeyError:
                 continue
@@ -145,7 +158,7 @@ class SkillsManager:
         with open(manifest_path, encoding='utf-8') as f:
             manifest = json.load(f)
         manifest['enabled'] = self.is_skill_enabled(skill_id)
-        manifest['protected'] = skill_id in CORE_SKILL_IDS
+        manifest['protected'] = self._is_core_skill(skill_id)
         tool_defs = self._load_tool_defs(skill_dir, manifest)
         manifest['_dir'] = skill_dir
         manifest['tools'] = [
@@ -346,7 +359,7 @@ class SkillsManager:
         if not re.match(r'^[a-zA-Z0-9_-]+$', skill_id):
             return {'error': 'Invalid skill id'}
 
-        if skill_id in CORE_SKILL_IDS:
+        if self._is_core_skill(skill_id):
             return {'error': f'Cannot uninstall core skill "{skill_id}" (required by the Explore agent).'}
 
         skill_dir = os.path.join(SKILLS_DIR, skill_id)
@@ -390,7 +403,7 @@ class SkillsManager:
         if not os.path.isfile(manifest_path):
             return {'error': f'Skill not found: {skill_id}'}
 
-        if not enabled and skill_id in CORE_SKILL_IDS:
+        if not enabled and self._is_core_skill(skill_id):
             return {'error': f'Cannot disable core skill "{skill_id}" (required by the Explore agent).'}
 
         with open(manifest_path, encoding='utf-8') as f:

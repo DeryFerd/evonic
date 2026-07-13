@@ -118,7 +118,7 @@ def _find_closest_attachment(agent_id: str, orig_path: str) -> Optional[str]:
             ratio = difflib.SequenceMatcher(None, orig_basename.lower(), fname.lower()).ratio()
             if ratio > best_ratio:
                 best_ratio = ratio
-                best_path = os.path.join(dirpath, fname)
+                best_path = os.path.abspath(os.path.join(dirpath, fname))
     if best_ratio > 0.7 and best_path:
         return best_path
     return None

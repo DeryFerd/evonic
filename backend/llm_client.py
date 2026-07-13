@@ -1044,6 +1044,10 @@ class LLMClient:
             if not cleaned and embedded_final:
                 cleaned = embedded_final
             # Check for Qwen-style XML tool calls that may appear in
+            # Fallback: when cleaned is empty and no embedded_final, the model
+            # put its entire response in reasoning_content (e.g. Qwen via llama.cpp).
+            if not cleaned and not embedded_final and not tool_calls:
+                cleaned = reasoning_text
             # reasoning_content instead of content (common with Qwen-based models).
             # Two forms: (a) trailing after </think> or </thinking> in embedded_final,
             # (b) directly in reasoning_text when content is empty.

@@ -261,7 +261,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                            style="max-height: 150px;"
                            onkeydown="chatInputKeydown(event)"
                            oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
-                    <button type="button" id="reply-btn" onclick="doSendReply()" class="px-4 py-2.5 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition-colors flex-shrink-0">Send</button>
+                    <button type="button" id="reply-btn" onclick="doSendReply()" title="Send" class="p-2.5 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
                 </div>
             </div>
         </div>
@@ -1525,7 +1525,7 @@ async function doSendReply() {
     if (!text && !file) return;
 
     const $btn = $('#reply-btn');
-    $btn.prop('disabled', true).text('Sending...');
+    $btn.prop('disabled', true);
 
     // Optimistically render the outgoing message so it appears before the thinking bubble.
     // Perspective 'A' = sending as user role; 'B' = sending as assistant role.
@@ -1583,7 +1583,7 @@ async function doSendReply() {
         }).catch(err => ({ error: err.responseJSON?.error || 'Request failed' }));
     }
 
-    $btn.prop('disabled', false).text('Send');
+    $btn.prop('disabled', false);
     if (res.error) {
         _pendingReplyText = null;
         _pendingFileUpload = false;

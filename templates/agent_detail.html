@@ -1045,7 +1045,7 @@ html.dark .agent-tab.active {
                             style="max-height: 150px;"
                             onkeydown="chatInputKeydown(event)"
                             oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
-                        <button onclick="handleChatBtn()" id="chat-send-btn" class="bg-indigo-500 hover:bg-indigo-600 text-white px-5 py-2 rounded-md text-sm transition-colors">Send</button>
+                        <button onclick="handleChatBtn()" id="chat-send-btn" title="Send" class="bg-indigo-500 hover:bg-indigo-600 text-white p-2.5 rounded-md text-sm transition-colors flex items-center justify-center"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
                     </div>
                 </div>
             </div>

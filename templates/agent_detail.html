@@ -4795,7 +4795,10 @@ window.addEventListener('beforeunload', () => {
 function startIdlePoll() {
     if (chatIdleTimer) return; // already running
     chatIdleTimer = setInterval(async () => {
-        if (_chatBusy || chatUI.hasActiveStream()) return; // skip during active turn or SSE stream
+        // Skip during user-initiated busy state, or when there's an SSE stream
+        // that's NOT from the idle poll (tracked via _pollThinkingId).
+        if (_chatBusy) return;
+        if (chatUI.hasActiveStream() && !_pollThinkingId) return;
         try {
             const sid = await _getChatSessionId();
             const qs = sid
@@ -4803,7 +4806,10 @@ function startIdlePoll() {
                 : `user_id=web_test&after_ts=${lastChatTs}&limit=20`;
             const res = await fetch(`/api/agents/${AGENT_ID}/chat?${qs}`);
             const data = await res.json();
-            if (_chatBusy || chatUI.hasActiveStream()) return; // re-check: user may have sent a message while fetching
+            // Re-check: user may have sent a message while fetching.
+            // Don't block if the only active stream is our own idle-poll bubble.
+            if (_chatBusy) return;
+            if (chatUI.hasActiveStream() && !_pollThinkingId) return;
             const entries = data.entries || [];
             if (!entries.length) return;
             const wasAtBottom = chatUI.isNearBottom(80);

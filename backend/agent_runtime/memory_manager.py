@@ -2167,7 +2167,7 @@ def _extract_from_fact_async(agent_id: str, session_id: str, content: str) -> No
     threading.Thread(target=_run, daemon=True).start()
 
 
-def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
+def search_memories(agent_id: str, query: str, limit: int = 5) -> dict:
     """Search memories by keyword. Used by the `recall` built-in tool.
 
     Primary + fallback: tries evomem first if configured, falls back to FTS5.
@@ -2184,8 +2184,9 @@ def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
                     return {
                         "engine": "evomem",
                         "memories": [
-                            {"id": h.get("slug"),
-                             "content": h.get("snippet") or h.get("title"),
+                            {"slug": h.get("slug"),
+                             "snippet": h.get("snippet") or h.get("title"),
+                             "source_file": f"/_self/kb/{h.get('slug')}.md",
                              "category": h.get("source_dir") or "evomem",
                              "created_at": h.get("updated_at"),
                              "evidence": h.get("evidence"),
@@ -2193,6 +2194,8 @@ def search_memories(agent_id: str, query: str, limit: int = 10) -> dict:
                             for h in hits
                         ],
                         "count": len(hits),
+                        "hint": ("Results are snippets from KB documents. To read "
+                                 "the full document, call read_file(file_path=<source_file>)."),
                     }
 
         # === Fallback: FTS5 ===
@@ -2229,15 +2232,19 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
                 facts = [
                     {"fact": (f.get("lead") or f.get("title") or "").strip(),
                      "source": f.get("slug", "?"),
+                     "source_file": (f"/_self/kb/{f.get('slug')}.md"
+                                     if f.get("slug") else None),
                      "evidence": f.get("evidence", "?")}
-                    for f in result["facts"]
+                    for f in result["facts"][:5]
                 ]
                 gaps = [g.get("message", "") for g in result.get("gaps", [])
                         if isinstance(g, dict) and g.get("message")]
                 vlog("think[%s]: %d facts, %d gaps for %r",
                      agent_id, len(facts), len(gaps), query[:60])
                 return {"engine": "evomem", "query": query,
-                        "facts": facts, "gaps": gaps, "count": len(facts)}
+                        "facts": facts, "gaps": gaps, "count": len(facts),
+                        "hint": ("Each fact is synthesized from a KB document. To read "
+                                 "the full source, call read_file(file_path=<source_file>).")}
         # Fallback: keyword search
         vlog("think[%s]: no synthesis -> keyword fallback for %r", agent_id, query[:60])
         return search_memories(agent_id, query)

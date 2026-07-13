@@ -8,6 +8,7 @@
 
 import { Lightbox } from './lightbox.js';
 import { setupImageForLazy, createLazyImage, retrofitImageForLazy } from './lazy-image.js';
+import { buildAttachmentCard } from './artifacts.js';
 
 // ── Sanitizer ─────────────────────────────────────────────────────────────────
 
@@ -1169,13 +1170,10 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
             var title = $(this).attr('data-wikilink');
             if (title) document.dispatchEvent(new CustomEvent('evonic:wikilink-click', { detail: { title: title } }));
         });
-        // Render non-image file badge with download link
+        // Render non-image file (send_file) as a type-aware, previewable card.
+        // Images stay inline via the markdown body.
         if (meta.attachment_info && !meta.attachment_info.is_image) {
-            const info = meta.attachment_info;
-            const $badge = $('<div class="flex items-center gap-1.5 mb-1 px-2 py-1 rounded text-xs text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700">')
-                .append($('<svg class="w-3.5 h-3.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h6.879a1.5 1.5 0 0 1 1.06.44l4.122 4.12A1.5 1.5 0 0 1 17 7.622V16.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16.5v-13Z"/></svg>'))
-                .append($('<a class="truncate underline hover:no-underline" href="/api/attachments/' + info.attachment_id + '/download" download>').text(info.filename));
-            $bubble.prepend($badge);
+            $bubble.prepend($('<div class="mb-2">').append(buildAttachmentCard(meta.attachment_info)));
         }
     }
 

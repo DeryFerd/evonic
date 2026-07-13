@@ -529,6 +529,26 @@ def create_blueprint():
             kanban_db.log_task_updated(task_id, f'assignee: {task.get("assignee")} → {agent_id}')
             task['assignee'] = agent_id
 
+        # Block trigger if task has unmet dependencies
+        try:
+            if kanban_db.has_unmet_dependencies(task_id):
+                unmet = kanban_db.get_unmet_dependencies(task_id)
+                blocking = ', '.join(f"#{t['id']} '{t['title']}'" for t in unmet)
+                return jsonify({
+                    'error': (
+                        f"Task #{task_id} has unmet dependencies. "
+                        f"The following tasks must be completed first: {blocking}."
+                    )
+                }), 409
+        except Exception as dep_exc:
+            return jsonify({
+                'error': (
+                    f"Task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later."
+                )
+            }), 500
+
         # Trigger the agent using the same notify path as the kanban scheduler
         try:
             from plugins.kanban.handler import _notify_agent, _load_config

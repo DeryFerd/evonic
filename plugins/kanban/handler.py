@@ -905,8 +905,16 @@ def _scan_and_notify(sdk=None) -> dict:
                     'reason': 'blocked_by_dependency',
                 })
                 continue
-        except Exception:
-            pass
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id}: {dep_exc} — treating as blocked', 'error', sdk)
+            results['details'].append({
+                'task_id': task_id,
+                'title': title,
+                'agent_id': assignee,
+                'success': False,
+                'reason': 'blocked_by_dependency',
+            })
+            continue
 
         notify_result = _notify_agent(assignee, task, channel_type, sdk)
         if notify_result.get('success'):
@@ -1177,8 +1185,16 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                         f"Please work on those tasks first."
                     ),
                 }
-        except Exception:
-            pass
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id} during pick: {dep_exc}', 'error')
+            return {
+                'result': 'error',
+                'message': (
+                    f"Cannot pick task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later or contact an administrator if the issue persists."
+                ),
+            }
         _pending_tasks[agent_id] = str(task_id)
         _task_state_since[agent_id] = time.time()
         _awaiting_approval.discard(agent_id)
@@ -1234,8 +1250,16 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                         f"Please work on those tasks first."
                     ),
                 }
-        except Exception:
-            pass
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id} during activate: {dep_exc}', 'error')
+            return {
+                'result': 'error',
+                'message': (
+                    f"Cannot activate task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later or contact an administrator if the issue persists."
+                ),
+            }
         # Gate: autopilot=OFF requires explicit user approval before activation
         autopilot = _is_autopilot(agent_id)
         if not autopilot and str(_approval_granted.get(agent_id)) != task_id:

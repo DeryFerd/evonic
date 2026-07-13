@@ -1323,7 +1323,7 @@ class AgentRuntime:
         # No buffering — queue immediately and wait for result
         task = _QueueTask(agent, SessionContext(session_id, external_user_id, channel_id,
                                                 session_db_agent_id=db_agent_id if is_subagent else None),
-                          send_via_channel=False)
+                          send_via_channel=bool(channel_id))
         self._message_queue.put(task)
         task.event.wait()
         return task.result

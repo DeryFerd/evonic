@@ -18,6 +18,7 @@ when `vision_enabled = 0`, the tool returns an error.
 from __future__ import annotations
 
 import base64
+import difflib
 import mimetypes
 import os
 from typing import Any, Dict, Optional
@@ -96,6 +97,33 @@ def _resolve_vision_models(agent: dict) -> tuple[list, Optional[str]]:
     )
 
 
+def _find_closest_attachment(agent_id: str, orig_path: str) -> Optional[str]:
+    """Search the agent's data/attachments directory for a close filename match.
+
+    Uses difflib.SequenceMatcher on the basenames.  Returns the first file
+    whose similarity ratio exceeds 0.7, or None if no good match is found.
+    """
+    if not agent_id:
+        return None
+    orig_basename = os.path.basename(orig_path)
+    if not orig_basename:
+        return None
+    attachment_dir = os.path.join("data", "attachments", agent_id)
+    if not os.path.isdir(attachment_dir):
+        return None
+    best_ratio = 0.0
+    best_path: Optional[str] = None
+    for dirpath, _dirnames, filenames in os.walk(attachment_dir):
+        for fname in filenames:
+            ratio = difflib.SequenceMatcher(None, orig_basename.lower(), fname.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_path = os.path.join(dirpath, fname)
+    if best_ratio > 0.7 and best_path:
+        return best_path
+    return None
+
+
 def execute(agent: dict, args: dict) -> Any:
     """Analyze an image file and return a text description.
 
@@ -141,6 +169,9 @@ def execute(agent: dict, args: dict) -> Any:
                 path = resolved
 
     if not os.path.isfile(path):
+        suggestion = _find_closest_attachment(agent_id, path)
+        if suggestion:
+            return f"Error: File not found: {path}. Did you mean: {suggestion}?"
         return f"Error: File not found: {path}"
 
     # If the agent operates in a remote workplace (SSH/tunnel/etc.), ensure the

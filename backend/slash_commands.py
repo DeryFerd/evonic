@@ -310,15 +310,51 @@ def _register_builtins():
             f"Please investigate the session log above and report back to the owner."
         )
 
+        # Clear the target agent's investigation session before delivering the
+        # request, so stale/unrelated history from a previous investigation does
+        # not pollute the LLM context. Resolve the exact session notify_agent
+        # will deliver into (target agent + this sender's agent-message user id).
+        _AGENT_MSG_PREFIX = "__agent__"
+        target_external_user_id = f"{_AGENT_MSG_PREFIX}{agent_id}"
+        try:
+            target_session_id = db.get_or_create_session(
+                target_agent_id, target_external_user_id, None)
+            db.clear_session(target_session_id, target_agent_id)
+
+            # Reset per-session agent state so the investigation starts fresh
+            # (plan mode, no stale tasks). Do NOT touch the target's global
+            # agent_state or logs — those are not specific to this session.
+            from backend.agent_runtime import agent_runtime
+            agent_runtime._session_skill_mds.pop(target_session_id, None)
+            agent_runtime._session_skill_tools.pop(target_session_id, None)
+
+            from backend.agent_state import AgentState
+            import json
+            fresh = AgentState()
+            db.upsert_session_state(target_session_id, json.dumps({
+                'mode': fresh.mode,
+                'tasks': fresh.tasks,
+                'next_task_id': fresh._next_task_id,
+                'plan_file': fresh.plan_file,
+                'states': fresh.states,
+                'auto_trivial': fresh.auto_trivial,
+            }), agent_id=target_agent_id)
+
+            from backend.event_stream import event_stream
+            event_stream.emit('session_clear', {
+                'session_id': target_session_id, 'agent_id': target_agent_id})
+        except Exception:
+            # Clearing is best-effort; still deliver the investigation request.
+            pass
+
         # Deliver via notify_agent (same mechanism as send_agent_message)
         from backend.agent_runtime.notifier import notify_agent
 
-        _AGENT_MSG_PREFIX = "__agent__"
         result = notify_agent(
             agent_id=target_agent_id,
             tag="SYSTEM/Owner",
             message=message,
-            external_user_id=f"{_AGENT_MSG_PREFIX}{agent_id}",
+            external_user_id=target_external_user_id,
             channel_id=None,
             dedup=False,
             metadata={

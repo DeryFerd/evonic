@@ -180,6 +180,7 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
         'plan_file': data.get('plan_file'),
         'states': data.get('states', {}),
         'auto_trivial': data.get('auto_trivial', False),
+        'atg': data.get('atg'),
     })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
 from backend.tools import tool_registry
@@ -441,6 +442,14 @@ def run_tool_loop(agent: Dict[str, Any],
     # Create LLMClient with resolved model config
     llm = LLMClient(model_config=agent_model_config) if agent_model_config else llm_client
 
+    # ATG: give the compile_task_graph builtin access to the resolved LLM.
+    # Compiler calls acquire llm_lock per call (same discipline as the main call).
+    if agent_context.get('enable_atg'):
+        agent_context['_atg_runtime'] = {
+            'llm': llm, 'llm_lock': llm_lock,
+            'llm_log_path': llm_log_path, 'tools': tools,
+        }
+
     # Resolve thinking budget: only active when explicitly set per-model (thinking_budget > 0).
     # Models with thinking_budget=0 have no cap — intended for large models that benefit
     # from extended reasoning. Set thinking_budget per-model in Settings for small models.
@@ -566,6 +575,60 @@ def run_tool_loop(agent: Dict[str, Any],
     # Cache agent injection guard config once per run_tool_loop call
     # to avoid redundant DB reads in the loop iterations and tool result scans.
     _agent_ig_config = _get_agent_config_ig(agent_id)
+
+    # ── ATG branch point ──────────────────────────────────────────────────
+    # When the agent has a compiled task graph awaiting execution, run it
+    # first: the executor front-loads the tool work (parallel waves, per-node
+    # state) and hands a summary to this loop, whose next LLM call composes
+    # the final answer. Any failure degrades to the plain loop below —
+    # this block never replaces the loop's exit paths.
+    _atg_ms = agent_context.get('agent_state')
+    if (agent_context.get('enable_atg') and _atg_ms is not None
+            and not getattr(_atg_ms, 'auto_trivial', False)
+            and _atg_ms.mode == 'execute'
+            and isinstance(getattr(_atg_ms, 'atg', None), dict)
+            and _atg_ms.atg.get('status') in ('compiled', 'executing')):
+        _atg_outcome = None
+        try:
+            from backend.agent_runtime import atg as _atg_pkg
+            _atg_outcome = _atg_pkg.run_dag_execution(
+                agent=agent, agent_context=agent_context, ms=_atg_ms,
+                stop_event=stop_event, builtin_exec=builtin_exec,
+                real_exec=real_exec, chatlog=chatlog, tool_trace=tool_trace,
+                timeline=timeline, session_id=session_id,
+                persist_cb=lambda: _persist_agent_state_split(
+                    _atg_ms, agent_id, session_id, db_agent_id))
+        except Exception:
+            _logger.exception("ATG execution crashed — falling back to plain loop")
+        if _atg_outcome is not None:
+            try:
+                _persist_agent_state_split(_atg_ms, agent_id, session_id, db_agent_id)
+            except Exception:
+                _logger.exception("ATG state persist failed")
+            if _atg_outcome.stopped:
+                stop_event.clear()
+                _logger.info("Stop signal received during ATG execution for session %s", session_id)
+                stop_msg = "Agent stopped by user request."
+                _atg_stop_dur = round(time.time() - _loop_start_time, 1)
+                db.add_chat_message(session_id, 'assistant', stop_msg, agent_id=db_agent_id,
+                                    metadata={"timeline": timeline, "stopped": True,
+                                              "thinking_duration": _atg_stop_dur})
+                chatlog.append({'type': 'final', 'session_id': session_id, 'content': stop_msg,
+                                'metadata': {'stopped': True, 'thinking_duration': _atg_stop_dur}})
+                chatlog.append({'type': 'turn_end', 'session_id': session_id,
+                                'thinking_duration': _atg_stop_dur})
+                event_stream.emit('final_answer', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'answer': stop_msg, 'tool_trace': tool_trace, 'timeline': timeline,
+                })
+                return stop_msg, tool_trace, timeline
+            if _atg_outcome.summary_for_llm:
+                messages.append({"role": "system", "content": _atg_outcome.summary_for_llm})
+            # Stats land in the final assistant message metadata (timeline) so
+            # A/B evaluation and the UI can read per-run ATG figures.
+            timeline.append({"type": "atg_stats", "status": _atg_outcome.status,
+                             **_atg_outcome.stats})
 
     while _iteration < max_tool_iterations:
         _llm_call_count += 1
@@ -2085,7 +2148,7 @@ def run_tool_loop(agent: Dict[str, Any],
             })
 
             # Persist agent state immediately for state-changing built-in tools
-            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state'):
+            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state', 'compile_task_graph'):
                 _ms = agent_context.get('agent_state')
                 if _ms is not None:
                     _persist_agent_state_split(_ms, agent_id, session_id, db_agent_id)

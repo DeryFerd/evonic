@@ -804,6 +804,7 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
         'id': agent['id'],
         'is_super': bool(agent.get('is_super')),
         'workplace_id': agent.get('workplace_id'),
+        'enable_atg': bool(agent.get('enable_atg')) and bool(agent.get('enable_agent_state')),
     }
     if agent.get('builtin_tools_enabled', True):
         tools.extend(tool_registry.get_builtin_tools(agent_context))

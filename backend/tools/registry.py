@@ -46,6 +46,9 @@ class ToolRegistry:
         self._builtins['builtin:set_mode'] = _builtin_set_mode_factory
         self._builtins['builtin:update_tasks'] = _builtin_update_tasks_factory
         self._builtins['builtin:save_plan'] = _builtin_save_plan_factory
+        # ATG task-graph compiler — exposed only when agent_context['enable_atg']
+        # (see get_builtin_tools gate)
+        self._builtins['builtin:compile_task_graph'] = _builtin_compile_task_graph_factory
         # State machine gate tool — always available, handlers registered by system/plugins
         self._builtins['builtin:state'] = _builtin_state_factory
         # Long-term memory tools. `recall` covers keyword search, brain-layer
@@ -268,6 +271,10 @@ class ToolRegistry:
         agent_id = agent_context.get('id', '')
         tools = []
         for builtin_id, factory in self._builtins.items():
+            # ATG tool is opt-in per agent — never expose the def otherwise,
+            # so non-flagged agents keep a byte-identical tool list.
+            if builtin_id == 'builtin:compile_task_graph' and not agent_context.get('enable_atg'):
+                continue
             tool_def, _ = factory(agent_context)
             if should_suppress_builtin(agent_id, builtin_id, tool_def):
                 continue
@@ -685,6 +692,128 @@ def _builtin_save_plan_factory(agent_context: dict):
         return {
             "result": "Plan saved. Make sure to present this plan to user first.",
             "plan_file": relative_path
+        }
+
+    return tool_def, executor
+
+
+def _builtin_compile_task_graph_factory(agent_context: dict):
+    """Factory for the built-in 'compile_task_graph' tool (ATG).
+
+    Compiles a complex task into a DAG of atomic tool-use nodes via recursive
+    LLM decomposition (arXiv 2607.01942), stores it in agent_state.atg, and
+    writes a markdown rendering as the linked plan file — so the existing
+    save_plan/set_mode approval flow works unchanged. Exposed only when
+    agent_context['enable_atg'] (gated in get_builtin_tools).
+    """
+    import os
+    import re as _re
+
+    agent_id = agent_context.get('id', '')
+    _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    plan_dir = os.path.join(_base_dir, 'agents', agent_id, 'plan')
+
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "compile_task_graph",
+            "description": (
+                "Compile a complex multi-step task into an executable task graph "
+                "(DAG of atomic tool-use steps with explicit dependencies). "
+                "Prefer this over a free-form save_plan for complex tasks: after "
+                "exploring, call compile_task_graph with the task goal. The graph "
+                "is saved as your plan file — present it to the user and wait for "
+                "approval before set_mode('execute'). Independent steps will run "
+                "in parallel and failures are repaired locally during execution."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": "The full task goal to compile, in one or two sentences."
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Optional findings from your exploration that the compiler "
+                            "should know (relevant file paths, constraints, decisions)."
+                        )
+                    }
+                },
+                "required": ["goal"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        if not agent_context.get('enable_atg'):
+            return {"error": "ATG is not enabled for this agent."}
+        ms = agent_context.get('agent_state')
+        if ms is None:
+            return {"error": "Agent state is not enabled for this agent."}
+        runtime = agent_context.get('_atg_runtime')
+        if not runtime:
+            return {"error": "ATG runtime is not available in this context."}
+
+        goal = (arguments.get('goal') or '').strip()
+        if not goal:
+            return {"error": "'goal' must be a non-empty string."}
+
+        from backend.agent_runtime.atg.compiler import (
+            CompilationError, compile_task_graph, render_markdown)
+        try:
+            dag, history = compile_task_graph(
+                goal,
+                runtime.get('tools') or [],
+                runtime['llm'],
+                runtime['llm_lock'],
+                log_file=runtime.get('llm_log_path'),
+                context_excerpt=(arguments.get('context') or '')[:4000],
+            )
+        except CompilationError as e:
+            return {"error": f"Task graph compilation failed: {e}. "
+                             "You can retry with a clearer goal, or fall back to save_plan."}
+
+        waves = dag.waves()
+        ms.atg = {
+            "status": "compiled",
+            "dag": dag.to_dict(),
+            "history": history.to_dict(),
+            "repair_attempts": 0,
+            "stats": {"nodes_total": len(dag.nodes), "waves": len(waves)},
+        }
+
+        try:
+            from backend.event_stream import event_stream
+            event_stream.emit('atg_compiled', {
+                'agent_id': agent_id,
+                'session_id': agent_context.get('session_id'),
+                'nodes': len(dag.nodes), 'waves': len(waves),
+                'refinements': max(0, len(history.entries) - 1),
+            })
+        except Exception:
+            pass
+
+        slug = _re.sub(r'[^a-z0-9]+', '-', goal.lower()).strip('-')[:40] or 'task'
+        filename = f"atg-{slug}.md"
+        os.makedirs(plan_dir, exist_ok=True)
+        try:
+            with open(os.path.join(plan_dir, filename), 'w', encoding='utf-8') as f:
+                f.write(render_markdown(dag, history))
+        except Exception as e:
+            return {"error": f"Failed to write plan file: {e}"}
+        ms.set_plan_file(f"plan/{filename}")
+
+        return {
+            "result": (
+                f"Task graph compiled: {len(dag.nodes)} nodes in {len(waves)} waves. "
+                "Saved as your plan file — present the plan to the user and wait "
+                "for approval before set_mode('execute')."
+            ),
+            "plan_file": f"plan/{filename}",
+            "nodes": len(dag.nodes),
+            "waves": len(waves),
         }
 
     return tool_def, executor

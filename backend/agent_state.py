@@ -99,7 +99,7 @@ class AgentState:
     def __init__(self, mode: str = "plan", tasks: list = None, next_task_id: int = 1,
                  plan_file: str = None, states: dict = None,
                  focus: bool = False, focus_reason: str = None,
-                 auto_trivial: bool = False):
+                 auto_trivial: bool = False, atg: dict = None):
         self.mode = mode
         self.tasks: list[dict] = tasks or []
         self._next_task_id = next_task_id
@@ -114,6 +114,9 @@ class AgentState:
         # the runtime's _busy_agents flag is used instead.
         self.focus: bool = focus
         self.focus_reason: str | None = focus_reason
+        # ATG (Atomic Task Graph) state, set by backend.agent_runtime.atg when
+        # the enable_atg flag is on: {status, dag, history, repair_attempts, stats}
+        self.atg: dict | None = atg
 
     # ── Blocking ────────────────────────────────────────────────────────────
 
@@ -298,6 +301,11 @@ class AgentState:
         else:
             lines.append("**Plan file**: _none — use save_plan(filename, content) to create one_")
 
+        if self.atg:
+            lines.append("")
+            lines.append("### Atomic Task Graph")
+            lines.append(self._render_atg_summary())
+
         if self.tasks:
             lines.append("")
             lines.append("### Task List")
@@ -327,6 +335,20 @@ class AgentState:
                 lines.append(f"- {detail}")
 
         return "\n".join(lines)
+
+    def _render_atg_summary(self) -> str:
+        """Compact one-line ATG status (never the full graph JSON)."""
+        atg = self.atg or {}
+        status = atg.get("status", "unknown")
+        nodes = ((atg.get("dag") or {}).get("nodes") or {})
+        if not nodes:
+            return f"**Status**: {status}"
+        counts = {}
+        for nd in nodes.values():
+            s = nd.get("status", "pending")
+            counts[s] = counts.get(s, 0) + 1
+        counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+        return f"**Status**: {status} — {len(nodes)} nodes ({counts_str})"
 
     def _read_plan_file(self, agent_id: str = None, max_chars: int = _PLAN_FILE_MAX_CHARS) -> str:
         """Read plan file content from disk, capped at max_chars.
@@ -391,6 +413,7 @@ class AgentState:
             "focus": self.focus,
             "focus_reason": self.focus_reason,
             "auto_trivial": self.auto_trivial,
+            "atg": self.atg,
         })
 
     @classmethod
@@ -407,6 +430,7 @@ class AgentState:
                 focus=obj.get("focus", False),
                 focus_reason=obj.get("focus_reason"),
                 auto_trivial=obj.get("auto_trivial", False),
+                atg=obj.get("atg"),
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return cls()

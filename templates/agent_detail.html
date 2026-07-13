@@ -520,6 +520,15 @@ html.dark .agent-tab.active {
                     </div>
                     <div>
                         <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-atg-enabled', checked=agent.enable_atg) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Atomic Task Graph (experimental)</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Compile complex tasks into a dependency graph with parallel execution and localized error repair. Requires Agent State; only applies to tasks classified as complex.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
                             {{ toggle_widget(id='agent-parallel-exec', checked=(agent.disable_parallel_tool_execution if agent.disable_parallel_tool_execution is not none else False)) }}
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Disable Parallel Tool Execution</span>
@@ -2237,6 +2246,7 @@ async function saveAdvanced() {
             message_buffer_seconds: parseFloat(document.getElementById('agent-buffer-seconds').value) || 0,
             send_intermediate_responses: document.getElementById('agent-send-intermediate').checked ? 1 : 0,
             enable_agent_state: document.getElementById('agent-state-enabled').checked ? 1 : 0,
+            enable_atg: document.getElementById('agent-atg-enabled').checked ? 1 : 0,
             disable_parallel_tool_execution: document.getElementById('agent-parallel-exec').checked ? 1 : 0,
             disable_turn_prefetch: document.getElementById('agent-prefetch').checked ? 1 : 0,
             agent_messaging_enabled: document.getElementById('agent-messaging-enabled').checked ? 1 : 0,

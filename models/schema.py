@@ -385,6 +385,7 @@ class SchemaMixin:
                 ("attachment_max_size_mb", "INTEGER DEFAULT 20"),
                 ("audio_enabled", "BOOLEAN DEFAULT 0"),
                 ("video_enabled", "BOOLEAN DEFAULT 0"),
+                ("enable_atg", "BOOLEAN DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")

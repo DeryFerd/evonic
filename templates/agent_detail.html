@@ -1522,8 +1522,9 @@ html.dark .agent-tab.active {
                     </div>
                 </div>
             </div>
-            <input type="text" id="chat-drop-message" placeholder="Add a message (optional)..."
-                   class="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 mb-4">
+            <textarea id="chat-drop-message" placeholder="Add a message (optional)..." rows="1"
+                   class="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 mb-4 resize-none overflow-hidden" style="max-height:150px"
+                   oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
             <div class="flex gap-3 justify-end">
                 <button onclick="closeChatDropModal()" class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm text-gray-600 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
                 <button onclick="submitChatDropModal()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">Send</button>
@@ -5019,7 +5020,11 @@ function openChatDropModal(file) {
         document.getElementById('chat-drop-filesize').textContent = _formatFileSize(file.size);
     }
     modal.classList.remove('hidden');
-    setTimeout(() => msgInput.focus(), 50);
+    setTimeout(() => {
+        msgInput.focus();
+        msgInput.style.height = 'auto';
+        msgInput.style.height = Math.min(msgInput.scrollHeight, 150) + 'px';
+    }, 50);
 }
 
 function closeChatDropModal() {
@@ -5048,9 +5053,9 @@ function submitChatDropModal() {
     sendChat();
 }
 
-// Allow Enter to submit the drop modal
+// Allow Enter to submit the drop modal (Shift+Enter inserts a newline)
 document.addEventListener('keydown', function(e) {
-    if (e.key !== 'Enter') return;
+    if (e.key !== 'Enter' || e.shiftKey) return;
     const modal = document.getElementById('chat-drop-modal');
     if (modal && !modal.classList.contains('hidden')) {
         e.preventDefault();

@@ -55,6 +55,23 @@ If you are busy working on another task and receive a new task notification, you
 
 Postpone is only available for tasks in `pending` state (not yet activated).
 
+## Task Creation
+
+When creating kanban tasks with `kanban_create_task`, follow these rules:
+
+1. **Self-contained descriptions** — Agents working from tasks have no memory of prior conversations. Every task description must include full context: what the overall goal is, what specific work this task covers, and what NOT to do.
+2. **Dependencies** — Use the `dependencies` parameter when tasks depend on others. Never create multiple sequential tasks in one call — split them and link via dependencies.
+3. **One task per independent unit** — If tasks can run in parallel, create separate tasks. If tightly coupled, merge into one.
+4. **No default assignee** — Do not assign tasks unless the user explicitly asks.
+5. **Priority** — `high` for blockers, `medium` for important, `low` for nice-to-haves.
+
+### Task Description Template
+
+Always structure descriptions with:
+- **Main Goal**: The overall objective (same across related tasks)
+- **This Task**: Specific scope, files, and expected outcome
+- **Out of Scope**: What this task should NOT touch
+
 ## Rules
 
 - **The `[Kanban Task]` notification is not approval** — always wait for the human user to say yes before doing any work or calling any non-kanban tool (unless autopilot is ON).

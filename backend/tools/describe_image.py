@@ -131,6 +131,15 @@ def execute(agent: dict, args: dict) -> Any:
     if not path:
         return "Error: 'path' parameter is required. Provide the file path to the image."
 
+    # Resolve /_self/ virtual paths (e.g. /_self/artifacts/foo.webp)
+    agent_id = (agent or {}).get("id", "")
+    if agent_id:
+        from backend.tools._workspace import is_self_path, resolve_self_path, effective_agent_id
+        if is_self_path(path):
+            resolved = resolve_self_path(effective_agent_id(agent), path)
+            if resolved:
+                path = resolved
+
     if not os.path.isfile(path):
         return f"Error: File not found: {path}"
 

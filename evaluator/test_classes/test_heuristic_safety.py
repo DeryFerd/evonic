@@ -664,8 +664,13 @@ def test_sql_approval_info():
 
 
 def test_root_filesystem_scan_detected():
-    """Test that 'find /' and 'tree /' are detected as requires_approval."""
-    # Should be detected
+    """Test that 'find /' and 'tree /' are detected as requires_approval.
+
+    Root scan detection lives in the standalone check_root_filesystem_scan()
+    (an independent performance guard bash.py runs regardless of safety flags),
+    not the pipeline — so it is asserted directly here.
+    """
+    from backend.tools.lib.heuristic_safety import check_root_filesystem_scan
     positive_cases = [
         "find /",
         "find / -name '*.env'",
@@ -675,7 +680,8 @@ def test_root_filesystem_scan_detected():
         "tree / --du",
     ]
     for code in positive_cases:
-        result = check_safety(code, tool_type='bash')
+        result = check_root_filesystem_scan(code)
+        assert result is not None, f"Expected a match for '{code}', got None"
         assert result['level'] == 'requires_approval', \
             f"Expected 'requires_approval' for '{code}', got '{result['level']}' (score={result['score']})"
         assert 'root_filesystem_scan' in result.get('blocked_patterns', []), \
@@ -686,6 +692,7 @@ def test_root_filesystem_scan_detected():
 
 def test_root_filesystem_scan_no_false_positive():
     """Test that non-root find/tree commands are NOT flagged."""
+    from backend.tools.lib.heuristic_safety import check_root_filesystem_scan
     negative_cases = [
         "find /tmp",
         "find /workspace -name '*.py'",
@@ -699,16 +706,18 @@ def test_root_filesystem_scan_no_false_positive():
         "tree .",
     ]
     for code in negative_cases:
-        result = check_safety(code, tool_type='bash')
-        assert result['level'] == 'safe', \
-            f"Expected 'safe' for '{code}', got '{result['level']}' (score={result['score']})"
+        result = check_root_filesystem_scan(code)
+        assert result is None, \
+            f"Expected None (not flagged) for '{code}', got {result}"
 
     print("✅ test_root_filesystem_scan_no_false_positive passed")
 
 
 def test_root_filesystem_scan_approval_info():
     """Test that approval_info for root filesystem scan has correct metadata."""
-    result = check_safety("find / -name '*.env'", tool_type='bash')
+    from backend.tools.lib.heuristic_safety import check_root_filesystem_scan
+    result = check_root_filesystem_scan("find / -name '*.env'")
+    assert result is not None
     assert result['requires_approval'] == True, f"Expected requires_approval=True, got {result}"
     assert result['approval_info'] is not None
     assert result['approval_info']['risk_level'] == 'medium', \

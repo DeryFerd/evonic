@@ -23,6 +23,11 @@ except ImportError:
     get_safety_pipeline = None
     should_skip_safety = lambda agent: True
 
+try:
+    from backend.tools.lib.heuristic_safety import check_root_filesystem_scan
+except ImportError:
+    check_root_filesystem_scan = lambda script: None
+
 
 def _get_long_running_setting() -> bool:
     """Check whether the long-running command guard is enabled.
@@ -87,6 +92,26 @@ def execute(agent: dict, args: dict) -> dict:
                 f"turn. To peek at output meanwhile: {lr['monitor_script']}"
             ),
         }
+
+    # ------------------------------------------------------------------
+    # Root filesystem scan guard (performance concern, e.g. `find /`, `tree /`).
+    # Independent of the safety pipeline on purpose: it fires for ALL agents —
+    # including super agents and agents with safety_checker_enabled=0 — because a
+    # full-root scan is a performance hazard regardless of trust. We still honour
+    # `_skip_safety` (set on the post-approval re-execution) so an approved scan
+    # runs instead of re-prompting forever.
+    # ------------------------------------------------------------------
+    if not should_skip_safety(agent):
+        _rfs = check_root_filesystem_scan(script)
+        if _rfs:
+            return {
+                'error': 'Script requires manual approval before execution',
+                'level': 'requires_approval',
+                'score': _rfs['score'],
+                'reasons': _rfs['reasons'],
+                'blocked_patterns': _rfs['blocked_patterns'],
+                'approval_info': _rfs['approval_info'],
+            }
 
     # ------------------------------------------------------------------
     # HMADS safety check (pipeline: system rules + custom user rules)

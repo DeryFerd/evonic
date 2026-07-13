@@ -260,19 +260,31 @@ class AgentState:
 
     # ── Rendering ────────────────────────────────────────────────────────────
 
-    def render(self, agent_id: str = None) -> str:
+    def render(self, agent_id: str = None, atg_enabled: bool = False) -> str:
         """Render state as a markdown system message for LLM injection.
 
         Args:
             agent_id: If provided, plan file path is resolved relative to
                       agents/<agent-id>/ (with fallback to project root for
                       backward compatibility with old centralized plans).
+            atg_enabled: When True, plan-mode instructions steer the agent to
+                      compile_task_graph() instead of a free-form save_plan().
         """
         if self.mode == "plan":
-            mode_note = (
-                "plan — write tools are **blocked** until user approves. "
-                "You MUST call save_plan() before set_mode('execute')."
-            )
+            if atg_enabled:
+                mode_note = (
+                    "plan — write tools are **blocked** until user approves. "
+                    "After exploring, you MUST call compile_task_graph(goal, context) "
+                    "to compile this task into an executable task graph "
+                    "(it becomes your plan file) before set_mode('execute'). "
+                    "Only use save_plan() instead if the task truly cannot be "
+                    "expressed as tool steps."
+                )
+            else:
+                mode_note = (
+                    "plan — write tools are **blocked** until user approves. "
+                    "You MUST call save_plan() before set_mode('execute')."
+                )
         else:
             mode_note = "execute — write tools are **allowed**"
 

@@ -677,7 +677,9 @@ def run_tool_loop(agent: Dict[str, Any],
         # Inject / update mental state system message before each LLM call
         ms = agent_context.get('agent_state')
         if ms is not None:
-            state_msg = {"role": "system", "content": ms.render(agent_id=agent_id)}
+            state_msg = {"role": "system",
+                         "content": ms.render(agent_id=agent_id,
+                                              atg_enabled=bool(agent_context.get('enable_atg')))}
             state_idx = next(
                 (i for i, m in enumerate(messages)
                  if m.get('role') == 'system' and '## Agent State' in m.get('content', '')),

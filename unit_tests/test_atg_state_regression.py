@@ -37,6 +37,18 @@ def test_render_without_atg_has_no_atg_section():
     assert "Atomic Task Graph" not in AgentState().render()
 
 
+def test_plan_mode_instruction_is_atg_aware():
+    ms = AgentState()  # plan mode
+    plain = ms.render()
+    assert "MUST call save_plan()" in plain
+    assert "compile_task_graph" not in plain
+
+    atg = ms.render(atg_enabled=True)
+    assert "MUST call compile_task_graph" in atg
+    # save_plan stays available as the explicit fallback, never the command
+    assert "MUST call save_plan()" not in atg
+
+
 def test_render_with_atg_is_compact():
     ms = AgentState()
     ms.atg = {"status": "executing",

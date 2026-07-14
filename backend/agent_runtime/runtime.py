@@ -99,7 +99,8 @@ def _should_wrap_user_message(agent: dict) -> bool:
 
 def _apply_wrapper_prefix(messages: list, enabled: bool,
                           is_stale: bool = False,
-                          stale_threshold: int = 25200) -> None:
+                          stale_threshold: int = 25200,
+                          loaded_skills_count: int = 0) -> None:
     """Apply message wrapper prefix to user messages in-place.
 
     Wraps: (a) the LAST (current) user message when it has >= 4 words,
@@ -109,11 +110,14 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
     When is_stale is True, appends a staleness-awareness note to the wrapper
     prefix prompting the agent to assess whether conversation history is
     still relevant.
+
+    When loaded_skills_count > 0, replaces point 3 with a dynamic reminder
+    to check loaded skills before responding.
     """
     if not enabled or not messages:
         return
 
-    # Build effective wrapper prefix — may include staleness notice
+    # Build effective wrapper prefix — may include staleness notice or skill reminder
     effective_prefix = WRAPPER_PREFIX
     if is_stale:
         hours = max(1, stale_threshold // 3600)
@@ -125,6 +129,22 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
             f"context.\n\n"
         )
         effective_prefix = WRAPPER_PREFIX + staleness_note
+
+    # Dynamic point 3: if agent has loaded skills, occasionally remind it to check/unload them
+    # 1:3 probability — injects ~25% of the time to avoid redundancy
+    if loaded_skills_count and loaded_skills_count > 0:
+        import random
+        if random.random() < 0.25:
+            options = [
+                f"[SKILL — {loaded_skills_count} loaded] Use a relevant one if this fits. Otherwise unload it — it's no longer needed.",
+                f"[SKILL — {loaded_skills_count} loaded] Check if any loaded skill applies to this request. If not, unload it before replying.",
+                f"[SKILL — {loaded_skills_count} loaded] Got skills loaded. Use one if relevant, or unload it if it's stale. Then reply naturally.",
+                f"[SKILL — {loaded_skills_count} loaded] Loaded skills ready. Pick the right one or unload the irrelevant ones. Then respond.",
+            ]
+            effective_prefix = WRAPPER_PREFIX + f"\n\n{random.choice(options)}"
+    else:
+        if is_stale:
+            effective_prefix = WRAPPER_PREFIX + staleness_note
 
     for i, msg in enumerate(messages):
         if msg.get('role') == 'user':
@@ -2139,7 +2159,8 @@ class AgentRuntime:
 
         # Apply preference wrapper prefix to user messages if enabled
         _apply_wrapper_prefix(messages, _should_wrap_user_message(agent),
-                              is_stale=is_stale, stale_threshold=stale_threshold)
+                              is_stale=is_stale, stale_threshold=stale_threshold,
+                              loaded_skills_count=len(self._session_skill_tools.get(ctx.session_id, {})))
 
         # Sub-agents run delegated tasks with plan/approval disabled (see force-execute
         # above). Tell the LLM explicitly so it doesn't emit a plan and stop.

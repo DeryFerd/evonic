@@ -1021,131 +1021,124 @@ function _renderBashResult(r) {
     return $wrap;
 }
 
+function _recallText(value) {
+    return value === null || value === undefined ? '' : String(value).trim();
+}
+
+function _recallDate(value) {
+    if (!value) return '';
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? '' : date.toLocaleString();
+}
+
+function _recallHeader(label, count, engine) {
+    const $header = $('<div class="recall-header">');
+    const $title = $('<div class="recall-title">').append($('<span class="recall-dot">'), $('<span>').text(label));
+    const $meta = $('<div class="recall-header-meta">');
+    if (_recallText(engine)) $meta.append($('<span class="recall-chip">').text(engine));
+    if (Number.isFinite(count)) $meta.append($('<span class="recall-count">').text(count));
+    return $header.append($title, $meta);
+}
+
+function _recallEmpty(message) {
+    return $('<div class="recall-empty">').text(message);
+}
+
+function _recallBody(text) {
+    const value = _recallText(text) || 'No preview available.';
+    const $body = $('<div class="recall-body">').text(value);
+    if (value.length <= 360 && value.split('\n').length <= 6) return $body;
+    $body.addClass('is-clamped');
+    const $button = $('<button type="button" class="recall-more">').text('Show more').on('click', function () {
+        const expanded = $body.toggleClass('is-clamped').hasClass('is-clamped') === false;
+        $(this).text(expanded ? 'Show less' : 'Show more');
+    });
+    return $('<div>').append($body, $button);
+}
+
+function _recallMeta(items) {
+    const $meta = $('<div class="recall-meta">');
+    items.filter(item => item.value).forEach(item => $meta.append($('<span>').addClass(item.className || '').text(item.value)));
+    return $meta;
+}
+
 function _renderRecallResult(result) {
-    const $wrap = $('<div>');
-    const memories = result.memories || [];
+    const $wrap = $('<div class="recall-ui">');
+    const memories = Array.isArray(result.memories) ? result.memories : [];
+    $wrap.append(_recallHeader('Memory recall', memories.length, result.engine));
+    if (!memories.length) return $wrap.append(_recallEmpty(_recallText(result.result) || 'No memories found.'));
 
-    if (!memories.length) {
-        const msg = result.result || 'No memories found.';
-        return $('<div class="text-xs text-gray-500 italic px-2 py-1">').text(msg);
-    }
-
-    // Count badge
-    $wrap.append(
-        $('<div class="text-[10px] font-semibold text-purple-600 dark:text-purple-300 mb-1.5">').text(
-            `${memories.length} memory item${memories.length !== 1 ? 's' : ''}`
-        )
-    );
-
-    for (const m of memories) {
-        const $item = $('<div class="mb-1.5 border border-purple-200 rounded px-2 py-1.5 bg-purple-50/50 dark:bg-purple-900/20 dark:border-purple-700">');
-        const $meta = $('<div class="flex items-center gap-2 text-[10px] text-purple-400 mb-0.5">');
-        $meta.append(
-            $('<span class="font-semibold">').text('#' + m.id),
-            $('<span>').text(m.category || 'general')
-        );
-        if (m.created_at) {
-            $meta.append($('<span>').text(new Date(m.created_at).toLocaleString()));
-        }
-        $item.append($meta);
-        $item.append(
-            $('<div class="text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words">').text(m.content)
-        );
-        $wrap.append($item);
-    }
-    return $wrap;
+    const $list = $('<div class="recall-list">');
+    memories.forEach((memory, index) => {
+        const m = memory && typeof memory === 'object' ? memory : {};
+        const identity = _recallText(m.slug) || (m.id !== null && m.id !== undefined ? '#' + m.id : 'Memory ' + (index + 1));
+        const content = _recallText(m.snippet) || _recallText(m.content) || _recallText(m.title);
+        const score = m.score === null || m.score === undefined || m.score === '' ? NaN : Number(m.score);
+        const $top = $('<div class="recall-card-top">').append($('<span class="recall-card-title">').text(identity));
+        const $chips = $('<span class="recall-card-chips">');
+        if (_recallText(m.category)) $chips.append($('<span class="recall-chip">').text(m.category));
+        if (_recallText(m.evidence)) $chips.append($('<span class="recall-chip recall-chip-accent">').text(m.evidence));
+        if (Number.isFinite(score)) $chips.append($('<span class="recall-chip recall-score">').text(score.toFixed(3)));
+        $top.append($chips);
+        const $card = $('<div class="recall-card">').append($top, _recallBody(content));
+        const meta = [
+            {value: _recallText(m.source_file), className: 'recall-path'},
+            {value: _recallDate(m.created_at), className: 'recall-time'}
+        ];
+        if (meta.some(item => item.value)) $card.append(_recallMeta(meta));
+        $list.append($card);
+    });
+    return $wrap.append($list);
 }
 
 function _renderRecallThinkResult(result) {
-    const $wrap = $('<div>');
-    const facts = result.facts || [];
-    const gaps  = result.gaps  || [];
+    const $wrap = $('<div class="recall-ui">');
+    const facts = Array.isArray(result.facts) ? result.facts : [];
+    const gaps = Array.isArray(result.gaps) ? result.gaps : [];
+    $wrap.append(_recallHeader('Memory synthesis', facts.length, result.engine));
 
-    // Header badge
-    const engine = result.engine || '';
-    $wrap.append(
-        $('<div class="text-[10px] font-semibold text-purple-600 dark:text-purple-300 mb-1.5">').text(
-            `🤔 think synthesis${engine ? ' (' + engine + ')' : ''}`
-        )
-    );
-
-    // Query (if present)
-    if (result.query) {
-        $wrap.append($('<div class="text-[10px] text-purple-500 dark:text-purple-400 mb-1.5 italic">').text('Query: "' + result.query + '"'));
-    }
-
-    // Facts
-    if (facts.length) {
-        $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-purple-500 mb-1">').text('Facts (' + facts.length + ')'));
-        for (const f of facts) {
-            const $fact = $('<div class="mb-1 border border-purple-200 rounded px-2 py-1.5 bg-purple-50/50 dark:bg-purple-900/20 dark:border-purple-700">');
-            $fact.append($('<div class="text-xs text-gray-700 dark:text-gray-200 whitespace-pre-wrap break-words">').text(f.fact));
-            if (f.source || f.evidence) {
-                const $src = $('<div class="flex items-center gap-2 text-[10px] text-purple-400 mt-1">');
-                if (f.source)  $src.append($('<span>').text('source: ' + f.source));
-                if (f.evidence) $src.append($('<span class="text-purple-300">').text(f.evidence));
-                $fact.append($src);
-            }
-            $wrap.append($fact);
-        }
-    }
-
-    // Gaps
+    const $list = $('<div class="recall-list">');
+    facts.forEach((fact, index) => {
+        const f = fact && typeof fact === 'object' ? fact : {};
+        const $top = $('<div class="recall-card-top">').append($('<span class="recall-card-title">').text('Fact ' + (index + 1)));
+        if (_recallText(f.evidence)) $top.append($('<span class="recall-chip recall-chip-accent">').text(f.evidence));
+        const $card = $('<div class="recall-card">').append($top, _recallBody(_recallText(f.fact) || _recallText(f.snippet)));
+        const meta = [
+            {value: _recallText(f.source), className: 'recall-source'},
+            {value: _recallText(f.source_file), className: 'recall-path'}
+        ];
+        if (meta.some(item => item.value)) $card.append(_recallMeta(meta));
+        $list.append($card);
+    });
+    if (facts.length) $wrap.append($list);
     if (gaps.length) {
-        $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-orange-500 mb-1 mt-2">').text('Knowledge Gaps (' + gaps.length + ')'));
-        for (const g of gaps) {
-            $wrap.append(
-                $('<div class="mb-1 border border-orange-200 rounded px-2 py-1.5 bg-orange-50/50 dark:bg-orange-900/20 dark:border-orange-700">').append(
-                    $('<div class="text-xs text-orange-700 dark:text-orange-300">').text(g)
-                )
-            );
-        }
+        const $gaps = $('<details class="recall-gaps">').append($('<summary>').text('Knowledge gaps · ' + gaps.length));
+        gaps.forEach(gap => $gaps.append($('<div>').text(_recallText(gap))));
+        $wrap.append($gaps);
     }
-
-    if (!facts.length && !gaps.length) {
-        $wrap.append($('<div class="text-xs text-gray-500 italic">').text('No synthesis results.'));
-    }
-
+    if (!facts.length && !gaps.length) $wrap.append(_recallEmpty('No synthesis results.'));
     return $wrap;
 }
 
 function _renderRecallGraphResult(result) {
-    const $wrap = $('<div>');
-    const edges = result.edges || [];
+    const $wrap = $('<div class="recall-ui">');
+    const edges = Array.isArray(result.edges) ? result.edges : [];
+    $wrap.append(_recallHeader('Knowledge graph', edges.length, result.engine));
+    if (_recallText(result.start)) $wrap.append($('<div class="recall-query">').text('From: ' + result.start));
+    if (!edges.length) return $wrap.append(_recallEmpty(_recallText(result.result) || 'No connections found.'));
 
-    // Header
-    $wrap.append(
-        $('<div class="text-[10px] font-semibold text-purple-600 dark:text-purple-300 mb-1.5">').text('🔗 graph traversal')
-    );
-
-    // Start entity
-    if (result.start) {
-        $wrap.append($('<div class="text-[10px] text-purple-500 dark:text-purple-400 mb-1.5">').text('From: ' + result.start));
-    }
-
-    if (!edges.length) {
-        const msg = result.result || 'No connections found.';
-        return $wrap.add($('<div class="text-xs text-gray-500 italic px-2 py-1">').text(msg));
-    }
-
-    $wrap.append($('<div class="text-[10px] uppercase tracking-wide font-semibold text-purple-500 mb-1">').text('Connections (' + edges.length + ')'));
-
-    for (const e of edges) {
-        const $edge = $('<div class="mb-1 border border-purple-200 rounded px-2 py-1.5 bg-purple-50/50 dark:bg-purple-900/20 dark:border-purple-700">');
-        const $row = $('<div class="flex items-center flex-wrap gap-x-1.5 gap-y-0.5 text-xs">');
-        $row.append(
-            $('<span class="font-semibold text-gray-700 dark:text-gray-200">').text(e.from || '?'),
-            $('<span class="text-[10px] text-purple-500 font-semibold px-1 py-0.5 bg-purple-100 dark:bg-purple-800 rounded">').text(e.edge || '?'),
-            $('<span class="font-semibold text-gray-700 dark:text-gray-200">').text(e.to || '?')
+    const $list = $('<div class="recall-list">');
+    edges.forEach(edge => {
+        const e = edge && typeof edge === 'object' ? edge : {};
+        const $row = $('<div class="recall-edge">').append(
+            $('<span>').text(_recallText(e.from) || 'Unknown source'),
+            $('<span class="recall-relation">').text(_recallText(e.edge) || 'related to'),
+            $('<span>').text(_recallText(e.to) || 'Unknown target')
         );
-        if (e.hop !== undefined) {
-            $row.append($('<span class="text-[10px] text-gray-400">').text('(hop ' + e.hop + ')'));
-        }
-        $edge.append($row);
-        $wrap.append($edge);
-    }
-
-    return $wrap;
+        if (e.hop !== null && e.hop !== undefined) $row.append($('<span class="recall-hop">').text('hop ' + e.hop));
+        $list.append($('<div class="recall-card recall-card-edge">').append($row));
+    });
+    return $wrap.append($list);
 }
 
 function buildToolResultDetail(ev) {

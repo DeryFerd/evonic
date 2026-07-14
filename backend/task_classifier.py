@@ -21,12 +21,17 @@ _logger = logging.getLogger(__name__)
 _TRIVIAL_MAX_WORDS = 15
 _COMPLEX_MIN_WORDS = 80
 
-# Keywords that strongly suggest complexity
+# Keywords that strongly suggest complexity (EN + ID equivalents — sessions
+# are frequently Indonesian/code-switched and would otherwise never hit
+# this deterministic fast-path)
 _COMPLEX_KEYWORDS = {
     "refactor", "redesign", "migrate", "architect", "implement",
     "integrate", "optimize", "review", "analyze", "investigate",
     "debug", "troubleshoot", "upgrade", "overhaul", "restructure",
     "design", "plan", "strategy", "multiple", "several", "across",
+    "gabungkan", "menggabungkan", "integrasikan", "implementasikan",
+    "analisis", "selidiki", "investigasi", "migrasi", "optimalkan",
+    "rancang", "desain", "beberapa",
 }
 
 # Patterns that suggest trivial single-action tasks

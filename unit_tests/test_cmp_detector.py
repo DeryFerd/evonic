@@ -31,13 +31,13 @@ def _patch_l2l3(task='complex', boundary=None):
             return_value=boundary or {'decision': 'continue', 'target': None}))
 
 
-# ── L1 short-circuits (LLM must never be called) ─────────────────────────────
+# ── L1 guards (grounded/safety only — topic decisions belong to the LLM) ────
 
-def test_short_message_continues_without_llm():
+def test_ack_message_continues_without_llm():
     ms = _session()
     with _patch_l2l3() as _:
         import backend.task_classifier as tc
-        result = detect(ms.cmp, ms, 'belum bisa')
+        result = detect(ms.cmp, ms, 'ok sip')
         assert result == {'decision': 'continue', 'target': None, 'layer': 'L1'}
         tc.classify_task.assert_not_called()
         tc.classify_boundary.assert_not_called()
@@ -48,7 +48,6 @@ def test_approval_in_plan_mode_continues():
     ms.mode = 'plan'
     with _patch_l2l3():
         import backend.task_classifier as tc
-        # > 6 words AND approval-looking — rule 0 still guards it
         result = detect(ms.cmp, ms,
                         'ok lanjutkan saja rencananya saya setuju dengan semua langkah itu ya')
         assert result['decision'] == 'continue'
@@ -63,26 +62,57 @@ def test_explicit_path_id_is_a_return():
         assert result == {'decision': 'return', 'target': 'P1', 'layer': 'L1'}
 
 
-def test_continuation_marker_continues():
-    ms = _session()
-    with _patch_l2l3():
-        import backend.task_classifier as tc
-        result = detect(ms.cmp, ms,
-                        'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout')
-        assert result['decision'] == 'continue'
-        tc.classify_boundary.assert_not_called()
-
-
-def test_working_set_overlap_continues():
+def test_topical_messages_reach_the_llm():
+    """No keyword short-circuits: follow-up-looking or overlapping messages
+    still escalate — the LLM owns topic decisions (user requirement)."""
     ms = _session()
     ms.cmp['paths']['P2']['artifacts'] = ['/etc/nginx/nginx.conf']
-    with _patch_l2l3():
+    for msg in (
+        'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout',
+        'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text',
+    ):
+        with _patch_l2l3():
+            import backend.task_classifier as tc
+            result = detect(ms.cmp, ms, msg)
+            assert result['layer'] in ('L2', 'L3')
+            tc.classify_task.assert_called_once()
+
+
+def test_generic_title_word_does_not_short_circuit():
+    """Live regression (session 75433064): task 1 'cari bug di 3 plugin'
+    swallowed task 2 via keyword overlap ('plugin'). Topic decisions must
+    reach the LLM."""
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(
+        ms, title='tolong cari bug di 3 plugin paling aktif', now_ts=1000)
+    store.create_path(ms.cmp, ms, 'other work', now_ts=1500)
+    store.switch_to(ms.cmp, ms, 'P1', now_ts=2000)
+    ms.mode = 'execute'
+    # P1 card is empty (key_facts/artifacts never filled)
+    with _patch_l2l3(boundary={'decision': 'dep_branch', 'target': 'P1'}):
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms,
-                        'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text')
-        assert result['decision'] == 'continue'
-        assert result['layer'] == 'L1'
-        tc.classify_boundary.assert_not_called()
+                        'tolong gabungkan chart agent test di token monitor plugin')
+        assert result['layer'] == 'L3'          # escalated past L1
+        tc.classify_boundary.assert_called_once()
+        assert result['decision'] == 'dep_branch'
+
+
+def test_l3_sees_finished_task_state():
+    ms = _session()
+    ms.atg = {'status': 'done', 'dag': {'root_goal': 'g'}}
+    captured = {}
+
+    def fake_boundary(map_text, active_card, other_cards, user_text):
+        captured['active'] = active_card
+        return {'decision': 'continue', 'target': None}
+
+    from unittest.mock import MagicMock
+    with patch.multiple('backend.task_classifier',
+                        classify_task=MagicMock(return_value='complex'),
+                        classify_boundary=fake_boundary):
+        detect(ms.cmp, ms, LONG_NEW_TASK)
+    assert 'FINISHED' in captured['active']
 
 
 # ── L2 trivial gate ──────────────────────────────────────────────────────────

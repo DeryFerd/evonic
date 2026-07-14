@@ -1,19 +1,23 @@
 """
-CMP boundary detector — cost-ordered, precision-first cascade.
+CMP boundary detector — LLM-led, with minimal grounded guards.
 
-Layers (each may short-circuit; cheaper first):
-  L1  deterministic heuristics: approval/short-message guard (rule 0),
-      explicit path-id mention, anaphora/continuation markers, and
-      working-set overlap with the active card.
-  L2  complexity gate: a message must be a COMPLEX task to branch at all
-      (mirrors the ATG re-arm conservatism).
-  L3  LLM 4-class classification (task_classifier.classify_boundary),
-      biased to CONTINUE with a strict single-token parse.
+The LLM (task_classifier.classify_boundary, 4-class) is the primary
+decision-maker: keyword heuristics for topic decisions proved unreliable
+in live use (false continues from generic word overlap), so L1 keeps only
+deterministic rules that are grounded or safety-critical, never topical:
 
-The asymmetry driving the design: a false branch severs context the agent
-needs (correctness); a missed branch merely delays compaction (tokens).
-Any doubt or failure resolves to `continue`. The paper's L2 embedding
-layer is future work — no embedding infrastructure exists in Evonic.
+  L1  guards: empty/ack-length messages, approval words while a plan is
+      awaiting approval (a switch here would corrupt the approval flow),
+      and an explicit non-active path-id mention ("P2") which is a
+      grounded return reference, not a guess.
+  L2  complexity gate (classify_task, itself LLM-backed when uncertain):
+      trivial messages never branch — the paper's granularity policy;
+      not every small request becomes a path.
+  L3  classify_boundary over the map + cards (never transcripts), biased
+      to CONTINUE with a strict single-token parse.
+
+The asymmetry still applies: a false branch severs context (correctness),
+a missed branch costs tokens. Any doubt or failure resolves to `continue`.
 """
 from __future__ import annotations
 
@@ -22,36 +26,13 @@ import re
 
 _logger = logging.getLogger(__name__)
 
-_SHORT_MSG_MAX_WORDS = 6
+# Pure acknowledgements ("ok", "ya", "thanks") — never a new task.
+_ACK_MAX_WORDS = 3
 
 _PATH_ID_RE = re.compile(r'\bP(\d+)\b')
 
-# Conservative anaphora/continuation markers (EN + ID, incl. code-switched).
-# These short-circuit to `continue` — over-matching only delays compaction,
-# but determiners/relative pronouns ('that', 'this', 'itu', 'ini') are
-# excluded: they are too common in NEW task descriptions and would suppress
-# escalation entirely.
-_CONTINUATION_MARKERS = {
-    'it', 'again', 'tadi', 'tersebut',
-    'lanjut', 'lanjutkan', 'continue', 'teruskan',
-    'fix', 'perbaiki', 'betulkan', 'benerin',
-    'masih', 'belum', 'kenapa', 'why', 'kok',
-}
 
-_TOKEN_RE = re.compile(r'[A-Za-z0-9_./-]{5,}')
-
-
-def _working_set_tokens(active_path: dict) -> set:
-    """Identifier-ish tokens from the active card (artifacts + key facts +
-    title) used for lexical working-set overlap."""
-    corpus = ' '.join(
-        (active_path.get('artifacts') or [])
-        + (active_path.get('key_facts') or [])
-        + [active_path.get('title') or ''])
-    return {t.lower() for t in _TOKEN_RE.findall(corpus)}
-
-
-def _render_cards_for_llm(cmp: dict) -> tuple:
+def _render_cards_for_llm(cmp: dict, ms=None) -> tuple:
     """(map_text, active_card, other_cards) compact text views for L3."""
     lines = []
     for pid in sorted(cmp['paths']):
@@ -70,6 +51,15 @@ def _render_cards_for_llm(cmp: dict) -> tuple:
         return '\n'.join(parts)
 
     active = card_text(cmp['paths'][cmp['active_id']])
+    # Live progress hint: the active path's card is only finalized on switch,
+    # so tell the classifier whether the current task already finished — a
+    # finished task makes a complex new message far more likely to be a branch.
+    if ms is not None and isinstance(getattr(ms, 'atg', None), dict):
+        atg_status = ms.atg.get('status')
+        if atg_status in ('done', 'fallback', 'failed'):
+            active += f"\nstate: this task's work is FINISHED (task graph {atg_status})"
+        elif atg_status:
+            active += f"\nstate: task graph {atg_status}"
     others = '\n\n'.join(card_text(p) for pid, p in sorted(cmp['paths'].items())
                          if pid != cmp['active_id'])
     return map_text, active, others or '(none)'
@@ -80,31 +70,22 @@ def detect(cmp: dict, ms, user_text: str) -> dict:
     text = (user_text or '').strip()
     if not text:
         return {'decision': 'continue', 'target': None, 'layer': 'L1'}
-    lower = text.lower()
-    words = lower.split()
 
-    # L1 rule 0 — approval words in plan mode / very short follow-ups can
-    # NEVER trigger a switch (guards the plan-approval flow).
-    if len(words) <= _SHORT_MSG_MAX_WORDS:
+    # L1 guard — pure acknowledgements can never open/switch a task.
+    if len(text.split()) <= _ACK_MAX_WORDS:
         return {'decision': 'continue', 'target': None, 'layer': 'L1'}
+
+    # L1 guard — approval words while the active path awaits plan approval:
+    # "ok lanjutkan sesuai plan" must reach the approval check, never a switch.
     if ms is not None and ms.mode == 'plan' and _is_approval(text):
         return {'decision': 'continue', 'target': None, 'layer': 'L1'}
 
-    # L1 — explicit mention of a known non-active path id is a deliberate
-    # return signal ("lanjutkan yang P2 tadi").
+    # L1 grounded reference — explicit mention of a known non-active path id
+    # is a deliberate return signal ("lanjutkan yang P2 tadi").
     for match in _PATH_ID_RE.finditer(text):
         pid = f"P{match.group(1)}"
         if pid in cmp['paths'] and pid != cmp['active_id']:
             return {'decision': 'return', 'target': pid, 'layer': 'L1'}
-
-    # L1 — anaphora / continuation markers.
-    if set(words) & _CONTINUATION_MARKERS:
-        return {'decision': 'continue', 'target': None, 'layer': 'L1'}
-
-    # L1 — lexical working-set overlap with the active card.
-    ws = _working_set_tokens(cmp['paths'][cmp['active_id']])
-    if ws and any(tok.lower() in ws for tok in _TOKEN_RE.findall(text)):
-        return {'decision': 'continue', 'target': None, 'layer': 'L1'}
 
     # L2 — only complex tasks may branch (trivial → stay in flow).
     from backend.task_classifier import classify_boundary, classify_task
@@ -112,7 +93,7 @@ def detect(cmp: dict, ms, user_text: str) -> dict:
         return {'decision': 'continue', 'target': None, 'layer': 'L2'}
 
     # L3 — LLM 4-class decision over cards (never transcripts).
-    map_text, active_card, other_cards = _render_cards_for_llm(cmp)
+    map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms)
     result = classify_boundary(map_text, active_card, other_cards, text)
     cmp.setdefault('stats', {})['detector_llm_calls'] = \
         cmp['stats'].get('detector_llm_calls', 0) + 1

@@ -33,10 +33,15 @@ def _safe(text: str, cap: int) -> str:
     return _LABEL_SAFE_RE.sub('', str(text or ''))[:cap].strip()
 
 
-def render_map(cmp: dict) -> str:
+def render_map(cmp: dict, agent_name: str = "Agent") -> str:
     """Mermaid flowchart: action-labelled edges from the dependency parent
-    (Agent root for independent paths), `*` marks the active node."""
-    lines = ["flowchart TD", "  Agent((Agent))"]
+    (agent root for independent paths), `*` marks the active node.
+
+    The root node's mermaid ID stays `Agent` (ids must be identifier-like —
+    agent names can contain spaces); only the display label is dynamic.
+    """
+    safe_name = _safe(agent_name, 24) or "Agent"
+    lines = ["flowchart TD", f"  Agent(({safe_name}))"]
     ordered = sort_path_ids(cmp["paths"])
     for pid in ordered:
         path = cmp["paths"][pid]
@@ -85,12 +90,12 @@ def _snippet_card(path: dict) -> str:
             f"[{path.get('status')}] — {summary[:100]}")
 
 
-def render_cmp_section(cmp: dict) -> str:
+def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
     """Full CMP block for the agent-state system message."""
     if not cmp or not cmp.get("paths"):
         return ""
     active_id = cmp["active_id"]
-    lines = ["```mermaid", render_map(cmp), "```", ""]
+    lines = ["```mermaid", render_map(cmp, agent_name), "```", ""]
 
     active = cmp["paths"].get(active_id)
     if active:

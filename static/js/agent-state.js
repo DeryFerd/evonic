@@ -139,8 +139,7 @@ function _renderAgentStateCore(containerIds, data) {
             ' bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1' +
             ' cursor-pointer hover:bg-purple-200 dark:hover:bg-purple-800"' +
             ' title="' + esc(activeTitle) + ' — click to view the session path map">' +
-            'Paths: ' + data.cmp.paths.length +
-            ' <span class="ml-1 opacity-75">▸ map</span></span>';
+            'CMP: ' + data.cmp.paths.length + ' cards</span>';
     }
 
     // Raw JSON for debug
@@ -439,10 +438,12 @@ function _buildCmpSvg(cmp) {
     // Agent root
     var rootPos = pos[ROOT];
     var rootCx = rootPos.x + NODE_W / 2;
-    nodes += '<ellipse cx="' + rootCx + '" cy="' + (rootPos.y + NODE_H / 2) + '" rx="42" ry="20"' +
+    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 24);
+    var rootRx = Math.max(42, agentLabel.length * 4 + 14);
+    nodes += '<ellipse cx="' + rootCx + '" cy="' + (rootPos.y + NODE_H / 2) + '" rx="' + rootRx + '" ry="20"' +
         ' fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>' +
         '<text x="' + rootCx + '" y="' + (rootPos.y + NODE_H / 2 + 4) + '" text-anchor="middle" font-size="12"' +
-        ' font-weight="600" fill="currentColor">Agent</text>';
+        ' font-weight="600" fill="currentColor">' + esc(agentLabel) + '</text>';
 
     for (var n = 0; n < paths.length; n++) {
         var pn = paths[n];

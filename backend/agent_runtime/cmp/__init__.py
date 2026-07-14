@@ -23,10 +23,10 @@ def is_cmp_enabled(agent: dict) -> bool:
     return not agent.get('is_subagent')
 
 
-def render_cmp_section(cmp: dict) -> str:
+def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
     """Lazy re-export so AgentState.render never pays the import unless used."""
     from backend.agent_runtime.cmp.render import render_cmp_section as _render
-    return _render(cmp)
+    return _render(cmp, agent_name)
 
 
 def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):

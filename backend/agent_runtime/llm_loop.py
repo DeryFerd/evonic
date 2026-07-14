@@ -705,7 +705,9 @@ def run_tool_loop(agent: Dict[str, Any],
             state_msg = {"role": "system",
                          "content": ms.render(agent_id=agent_id,
                                               atg_enabled=bool(agent_context.get('enable_atg')),
-                                              cmp_enabled=bool(agent_context.get('enable_cmp')))}
+                                              cmp_enabled=bool(agent_context.get('enable_cmp')),
+                                              agent_name=agent_context.get('agent_name')
+                                                         or agent_context.get('name'))}
             state_idx = next(
                 (i for i, m in enumerate(messages)
                  if m.get('role') == 'system' and '## Agent State' in m.get('content', '')),

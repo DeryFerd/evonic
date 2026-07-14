@@ -266,7 +266,7 @@ class AgentState:
     # ── Rendering ────────────────────────────────────────────────────────────
 
     def render(self, agent_id: str = None, atg_enabled: bool = False,
-               cmp_enabled: bool = False) -> str:
+               cmp_enabled: bool = False, agent_name: str = None) -> str:
         """Render state as a markdown system message for LLM injection.
 
         Args:
@@ -329,7 +329,9 @@ class AgentState:
         if self.cmp and cmp_enabled:
             try:
                 from backend.agent_runtime.cmp import render_cmp_section
-                section = render_cmp_section(self.cmp)
+                aname = (agent_name
+                         or (agent_id.replace('_', ' ').title() if agent_id else "Agent"))
+                section = render_cmp_section(self.cmp, aname)
             except Exception:
                 section = ""
             if section:

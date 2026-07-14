@@ -92,6 +92,19 @@ def test_archived_paths_still_render_snippet():
     assert '- A1 Perusahaan A [archived]' in section
 
 
+def test_root_label_is_dynamic_but_id_stays_stable():
+    ms = _session()
+    mermaid = render_map(ms.cmp, 'Aisyah Krasan')
+    # display label = agent name; mermaid node ID stays identifier-safe
+    assert 'Agent((Aisyah Krasan))' in mermaid
+    assert 'Agent -->|create report| A1' in mermaid
+    # default fallback
+    assert 'Agent((Agent))' in render_map(ms.cmp)
+    # state render threads the name through
+    rendered = ms.render(cmp_enabled=True, agent_name='Aisyah')
+    assert 'Agent((Aisyah))' in rendered
+
+
 def test_mermaid_label_sanitized():
     ms = AgentState()
     ms.cmp = store.new_cmp(ms, title='weird "title" [x]|y', now_ts=1000)

@@ -43,15 +43,31 @@ def test_ack_message_continues_without_llm():
         tc.classify_boundary.assert_not_called()
 
 
-def test_approval_in_plan_mode_continues():
+def test_short_approval_in_plan_mode_continues():
     ms = _session()
     ms.mode = 'plan'
     with _patch_l2l3():
         import backend.task_classifier as tc
-        result = detect(ms.cmp, ms,
-                        'ok lanjutkan saja rencananya saya setuju dengan semua langkah itu ya')
+        result = detect(ms.cmp, ms, 'oke lanjutkan sesuai plan itu saja')
         assert result['decision'] == 'continue'
+        assert 'approval' in result['reason']
         tc.classify_boundary.assert_not_called()
+
+
+def test_long_message_with_approval_word_reaches_llm():
+    """Live regression: 'oke, sip, btw yg issue kanban state race condition
+    tadi udah solved kah?' was swallowed by the approval guard while P4 sat
+    in plan mode — the return-to-P1 question never reached L3. Substantive
+    messages containing approval particles must escalate."""
+    ms = _session()
+    ms.mode = 'plan'
+    with _patch_l2l3(boundary={'decision': 'return', 'target': 'P1'}):
+        import backend.task_classifier as tc
+        result = detect(ms.cmp, ms,
+                        'oke, sip, btw yg issue kanban state race condition tadi udah solved kah?')
+        assert result['layer'] == 'L3'
+        tc.classify_boundary.assert_called_once()
+        assert (result['decision'], result['target']) == ('return', 'P1')
 
 
 def test_explicit_path_id_is_a_return():

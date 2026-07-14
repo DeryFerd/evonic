@@ -29,6 +29,12 @@ _logger = logging.getLogger(__name__)
 # Pure acknowledgements ("ok", "ya", "thanks") — never a new task.
 _ACK_MAX_WORDS = 3
 
+# The approval guard only covers SHORT messages: genuine plan approvals are
+# terse ("oke lanjutkan"). Longer sentences that merely contain an approval
+# word ("oke, sip, btw yg issue kanban tadi udah solved kah?") are substantive
+# and must reach the LLM — seen live swallowing a return-to-path question.
+_APPROVAL_GUARD_MAX_WORDS = 8
+
 _PATH_ID_RE = re.compile(r'\bP(\d+)\b')
 
 
@@ -95,10 +101,12 @@ def detect(cmp: dict, ms, user_text: str, recent_tail: str = '') -> dict:
         return _done('continue', None, 'L1',
                      f'ack-length message (<= {_ACK_MAX_WORDS} words)')
 
-    # L1 guard — approval words while the active path awaits plan approval:
+    # L1 guard — short approval while the active path awaits plan approval:
     # "ok lanjutkan sesuai plan" must reach the approval check, never a switch.
-    if ms is not None and ms.mode == 'plan' and _is_approval(text):
-        return _done('continue', None, 'L1', 'approval message in plan mode')
+    if (ms is not None and ms.mode == 'plan'
+            and len(text.split()) <= _APPROVAL_GUARD_MAX_WORDS
+            and _is_approval(text)):
+        return _done('continue', None, 'L1', 'short approval message in plan mode')
 
     # L1 grounded reference — explicit mention of a known non-active path id
     # is a deliberate return signal ("lanjutkan yang P2 tadi").

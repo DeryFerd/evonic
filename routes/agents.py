@@ -1888,11 +1888,23 @@ def api_chat_agent_state(agent_id):
     # Context monitor: tokens consumed by the last LLM call vs the model's
     # context window (model.context_window, falling back to the global
     # llm_context_length setting; unknown window → max/percent are null).
+    # After session clear, context_usage is gone from session state — fall back
+    # to the compiled context token count (system prompt + tool definitions).
     if session_id:
         _cu = merged.get('context_usage') if isinstance(merged, dict) else None
+        _used = None
         if _cu and (_cu.get('prompt_tokens') or 0) > 0:
-            used = _cu.get('total_tokens') or (
+            _used = _cu.get('total_tokens') or (
                 (_cu.get('prompt_tokens') or 0) + (_cu.get('completion_tokens') or 0))
+        if _used is None:
+            # Fallback: compute compiled context token count
+            try:
+                from backend.agent_runtime import agent_runtime
+                _ctx = agent_runtime.get_compiled_context(agent_id, user_id=request.args.get('user_id'))
+                _used = _ctx.get('tokens', {}).get('total', 0)
+            except Exception:
+                pass
+        if _used and _used > 0:
             ctx_max = 0
             _am = payload.get('active_model') or {}
             if _am.get('id'):
@@ -1904,9 +1916,9 @@ def api_chat_agent_state(agent_id):
                 except (TypeError, ValueError):
                     ctx_max = 0
             payload['context_usage'] = {
-                'used': used,
+                'used': _used,
                 'max': ctx_max if ctx_max > 0 else None,
-                'percent': min(100, round(used * 100 / ctx_max)) if ctx_max > 0 else None,
+                'percent': min(100, round(_used * 100 / ctx_max)) if ctx_max > 0 else None,
             }
 
     # ?include=summary piggybacks the session summary on this response so the

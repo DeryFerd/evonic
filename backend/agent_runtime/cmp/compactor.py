@@ -137,8 +137,8 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})
         content = (msg.get('content') or msg.get('reasoning_content') or '').strip()
-        m = _JSON_RE.search(content)
-        card = json.loads(m.group(0)) if m else None
+        from backend.agent_runtime.llm_json import extract_first_json
+        card = extract_first_json(content)
         if not isinstance(card, dict):
             raise ValueError('no JSON object in card response')
 
@@ -191,8 +191,8 @@ def name_path(user_text: str) -> dict:
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})
         content = (msg.get('content') or msg.get('reasoning_content') or '').strip()
-        m = _JSON_RE.search(content)
-        named = json.loads(m.group(0)) if m else None
+        from backend.agent_runtime.llm_json import extract_first_json
+        named = extract_first_json(content)
         if not isinstance(named, dict) or not named.get('title'):
             raise ValueError('no usable JSON in naming response')
         return {'title': str(named['title'])[:60],

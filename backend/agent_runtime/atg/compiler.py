@@ -47,18 +47,10 @@ def _extract_json(text: str) -> dict:
     """Pull the graph JSON out of an LLM response (fenced block preferred)."""
     if not text:
         raise CompilationError("Empty LLM response.")
-    m = _JSON_BLOCK_RE.search(text)
-    candidate = m.group(1) if m else None
-    if candidate is None:
-        # Fallback: widest brace span
-        start, end = text.find('{'), text.rfind('}')
-        if start == -1 or end <= start:
-            raise CompilationError("No JSON object found in LLM response.")
-        candidate = text[start:end + 1]
-    try:
-        obj = json.loads(candidate)
-    except ValueError as e:
-        raise CompilationError(f"Invalid JSON: {e}")
+    from backend.agent_runtime.llm_json import extract_first_json
+    obj = extract_first_json(text)
+    if obj is None:
+        raise CompilationError("No JSON object found in LLM response.")
     if not isinstance(obj, dict) or not isinstance(obj.get('nodes'), list):
         raise CompilationError('JSON must be an object with a "nodes" array.')
     return obj

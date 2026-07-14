@@ -1,4 +1,4 @@
-{# Models pane — model cards + add/edit modal + connection test modal.
+{# Models pane — provider-grouped model cards + provider/model modals.
    Logic in static/js/settings-models.js #}
 
 <div class="settings-pane-head">
@@ -6,12 +6,17 @@
         <div>
             <h2 class="settings-pane-title">Models</h2>
             <p class="settings-pane-desc">
-                Manage LLM models and per-agent model assignments.
+                Manage providers and their LLM models.
             </p>
         </div>
-        <button onclick="settingsModels.showAddModal()" class="btn-primary flex-shrink-0">
-            <i data-lucide="plus"></i>Add Model
-        </button>
+        <div class="flex gap-2 flex-shrink-0">
+            <button onclick="settingsModels.showAddProviderModal()" class="btn-primary" style="background:var(--st-bg-2);color:var(--text-primary);border:1px solid var(--st-border);">
+                <i data-lucide="server"></i>Add Provider
+            </button>
+            <button onclick="settingsModels.showAddModelModal()" class="btn-primary">
+                <i data-lucide="plus"></i>Add Model
+            </button>
+        </div>
     </div>
 </div>
 
@@ -21,7 +26,7 @@
         <input
             type="text"
             id="model-search-input"
-            placeholder="Search models…"
+            placeholder="Search models or providers…"
             oninput="settingsModels.filter()"
             class="w-full border border-gray-200 dark:border-gray-600 rounded-lg pl-10 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
         />
@@ -40,9 +45,142 @@
         </svg>
     </div>
 
-    <!-- All Models Grid -->
-    <div id="models-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <p class="text-gray-500 text-center py-4 col-span-full">Loading models…</p>
+    <!-- Provider-grouped models -->
+    <div id="models-list" class="space-y-6">
+        <p class="text-gray-500 text-center py-4">Loading models…</p>
+    </div>
+</div>
+
+<!-- Provider Modal -->
+<div id="provider-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[90vh]"
+    >
+        <div
+            class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="provider-modal-title"
+                class="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
+                Add Provider
+            </h3>
+            <button
+                onclick="closeModal('provider-modal')"
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            >
+                &times;
+            </button>
+        </div>
+        <form
+            id="provider-form"
+            onsubmit="settingsModels.saveProvider(event)"
+            class="overflow-y-auto p-6 flex-1"
+        >
+            <input type="hidden" id="provider-edit-id" />
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-id">
+                    Provider ID *
+                </label>
+                <input
+                    type="text"
+                    id="provider-id"
+                    required
+                    placeholder="e.g., openrouter"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Lowercase identifier, no spaces. Used in model IDs.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-name">
+                    Display Name *
+                </label>
+                <input
+                    type="text"
+                    id="provider-name"
+                    required
+                    placeholder="e.g., OpenRouter"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-type">
+                    Type
+                </label>
+                <select
+                    id="provider-type"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <option value="remote">Remote</option>
+                    <option value="local">Local</option>
+                </select>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-base-url">
+                    Base URL
+                </label>
+                <input
+                    type="url"
+                    id="provider-base-url"
+                    placeholder="https://openrouter.ai/api/v1"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-api-key">
+                    API Key
+                </label>
+                <input
+                    type="password"
+                    id="provider-api-key"
+                    placeholder="sk-or-..."
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Shared across models under this provider. Models can override.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-api-format">
+                    API Format
+                </label>
+                <select
+                    id="provider-api-format"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <option value="openai">OpenAI</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="codex">Codex (OAuth)</option>
+                </select>
+            </div>
+        </form>
+        <div
+            class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                type="button"
+                onclick="closeModal('provider-modal')"
+                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition"
+            >
+                Cancel
+            </button>
+            <button
+                type="submit"
+                form="provider-form"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
+            >
+                Save Provider
+            </button>
+        </div>
     </div>
 </div>
 
@@ -115,15 +253,7 @@
                     id="model-provider"
                     class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
                 >
-                    <option value="openrouter">OpenRouter</option>
-                    <option value="togetherai">TogetherAI</option>
-                    <option value="ollama">Ollama</option>
-                    <option value="ollama_cloud">Ollama Cloud</option>
-                    <option value="opencode_zen">OpenCode Zen</option>
-                    <option value="opencode_go">OpenCode Go</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="llama.cpp">llama.cpp</option>
-                    <option value="custom">Custom</option>
+                    <!-- Populated dynamically from providers API -->
                 </select>
             </div>
 
@@ -131,13 +261,13 @@
                 <label
                     class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                     for="model-base-url"
-                    >Base URL *</label
+                    >Base URL (override)</label
                 >
                 <input
                     type="url"
                     id="model-base-url"
                     class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
-                    placeholder="https://openrouter.ai/api/v1"
+                    placeholder="Leave empty to use provider's URL"
                 />
             </div>
 
@@ -145,7 +275,7 @@
                 <label
                     class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                     for="model-api-format"
-                    >API Format *</label
+                    >API Format</label
                 >
                 <select
                     id="model-api-format"
@@ -154,6 +284,7 @@
                     <option value="openai">OpenAI</option>
                     <option value="ollama">Ollama</option>
                     <option value="anthropic">Anthropic</option>
+                    <option value="codex">Codex (OAuth)</option>
                 </select>
             </div>
 
@@ -161,13 +292,13 @@
                 <label
                     class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                     for="model-api-key"
-                    >API Key</label
+                    >API Key (override)</label
                 >
                 <input
                     type="password"
                     id="model-api-key"
                     class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
-                    placeholder="sk-or-..."
+                    placeholder="Leave empty to use provider's key"
                 />
             </div>
 
@@ -355,6 +486,52 @@
                 class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
             >
                 Save Model
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Fetch Models Modal -->
+<div id="fetch-models-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl mx-4 flex flex-col max-h-[90vh]"
+    >
+        <div
+            class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="fetch-models-title"
+                class="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
+                Available Models
+            </h3>
+            <button
+                onclick="closeModal('fetch-models-modal')"
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            >
+                &times;
+            </button>
+        </div>
+        <div id="fetch-models-content" class="overflow-y-auto p-6 flex-1">
+            <p class="text-gray-500 text-center py-4">Loading…</p>
+        </div>
+        <div
+            class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                type="button"
+                onclick="closeModal('fetch-models-modal')"
+                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition"
+            >
+                Close
+            </button>
+            <button
+                type="button"
+                onclick="settingsModels.addSelectedModels()"
+                id="fetch-models-add-btn"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
+            >
+                Add Selected
             </button>
         </div>
     </div>

@@ -8,6 +8,7 @@ from models.mixins.settings import SettingsMixin
 from models.mixins.schedules import ScheduleMixin
 from models.mixins.dashboard import DashboardMixin
 from models.mixins.models import ModelsMixin
+from models.mixins.providers import ProvidersMixin
 from models.mixins.workplaces import WorkplaceMixin
 from models.mixins.portals import PortalMixin
 from models.mixins.safety_rules import SafetyRuleMixin
@@ -27,6 +28,7 @@ __all__ = [
     'ScheduleMixin',
     'DashboardMixin',
     'ModelsMixin',
+    'ProvidersMixin',
     'WorkplaceMixin',
     'PortalMixin',
     'SafetyRuleMixin',

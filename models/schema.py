@@ -752,6 +752,33 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # ==================== Providers Table ====================
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS providers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'remote',
+                    base_url TEXT,
+                    api_key TEXT,
+                    api_format TEXT DEFAULT 'openai',
+                    enabled BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Migrations: add OAuth columns to providers for Codex support
+            for col in [
+                "auth_type TEXT DEFAULT 'api_key'",
+                "refresh_token TEXT",
+                "token_expires_at INTEGER",
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE providers ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
+
             # ==================== LLM Models Table ====================
 
             cursor.execute("""
@@ -805,11 +832,22 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add shortcode column to llm_models if missing
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN shortcode INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_shortcode ON llm_models(shortcode)")
+
+
             # One-shot migration: rewrite model ids to 'provider/model_name'
             # format (v2). Old ids are kept in legacy_id so stale references
             # still resolve via get_model_by_id. Guarded by a marker so later
             # provider/model_name edits never re-rename ids.
             self._migrate_model_ids_v2(cursor)
+
+            # One-shot migration: seed providers table + assign shortcodes
+            self._migrate_seed_providers(cursor)
 
             # ==================== Attachments Table ====================
             cursor.execute("""
@@ -1196,6 +1234,63 @@ class SchemaMixin:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
         )
         # Raw SQL above bypasses set_setting's cache invalidation
+        self.invalidate_settings_cache()
+
+    def _migrate_seed_providers(self, cursor):
+        """One-shot: seed providers table from PROVIDER_DEFAULTS + existing models,
+        and assign shortcodes to models that don't have one."""
+        cursor.execute("SELECT value FROM app_settings WHERE key = 'providers_seeded'")
+        row = cursor.fetchone()
+        if row and row[0] == '1':
+            return
+
+        _BUILTIN_PROVIDERS = {
+            "openrouter": ("OpenRouter", "remote", "https://openrouter.ai/api/v1", "openai"),
+            "togetherai": ("Together AI", "remote", "https://api.together.xyz/v1", "openai"),
+            "ollama": ("Ollama", "local", "http://localhost:11434/v1", "openai"),
+            "ollama_cloud": ("Ollama Cloud", "remote", "https://ollama.com/api", "ollama"),
+            "opencode_zen": ("OpenCode Zen", "remote", "https://opencode.ai/zen/v1", "openai"),
+            "opencode_go": ("OpenCode Go", "remote", "https://opencode.ai/zen/go/v1", "openai"),
+            "deepseek": ("DeepSeek", "remote", "https://api.deepseek.com", "openai"),
+            "llama.cpp": ("llama.cpp", "local", "http://localhost:8080/v1", "openai"),
+            "custom": ("Custom", "remote", "", "openai"),
+        }
+
+        for pid, (name, ptype, base_url, api_fmt) in _BUILTIN_PROVIDERS.items():
+            cursor.execute(
+                "INSERT OR IGNORE INTO providers (id, name, type, base_url, api_format) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (pid, name, ptype, base_url, api_fmt),
+            )
+
+        # Create provider rows for any provider values in existing models
+        # that aren't in PROVIDER_DEFAULTS (e.g. user-created "custom" entries)
+        cursor.execute("SELECT DISTINCT provider FROM llm_models WHERE provider NOT IN (SELECT id FROM providers)")
+        for (prov,) in cursor.fetchall():
+            cursor.execute(
+                "INSERT OR IGNORE INTO providers (id, name, type) VALUES (?, ?, 'remote')",
+                (prov, prov),
+            )
+
+        # Assign shortcodes to existing models ordered by provider, then name
+        cursor.execute(
+            "SELECT id FROM llm_models WHERE shortcode IS NULL ORDER BY provider, name"
+        )
+        model_ids = [r[0] for r in cursor.fetchall()]
+        if model_ids:
+            cursor.execute("SELECT COALESCE(MAX(shortcode), 0) FROM llm_models")
+            next_code = cursor.fetchone()[0] + 1
+            for mid in model_ids:
+                cursor.execute(
+                    "UPDATE llm_models SET shortcode = ? WHERE id = ?",
+                    (next_code, mid),
+                )
+                next_code += 1
+
+        cursor.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('providers_seeded', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
         self.invalidate_settings_cache()
 
     def _populate_session_index(self):

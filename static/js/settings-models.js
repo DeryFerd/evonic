@@ -1,20 +1,30 @@
-/* Models pane: model CRUD, clone, set-default, connection test.
- * Extracted from settings.html — logic unchanged. Uses ModelsCache so the
+/* Models pane: provider-grouped model management.
+ * Extracted from settings.html — uses ModelsCache so the
  * General pane's model selects stay in sync via 'models:changed'. */
 
 window.settingsModels = {
     models: [],
+    providers: [],
     searchQuery: "",
     _currentTestModelId: null,
+    _fetchProviderId: null,
+    _codexStatus: null,
 
     async init() {
         await this.load();
+        this._checkCodexStatus();
     },
 
     async load() {
         try {
-            this.models = await ModelsCache.get();
+            const [modelsData, providersData] = await Promise.all([
+                ModelsCache.get(),
+                apiGet("/api/providers").then((d) => d.providers || []),
+            ]);
+            this.models = modelsData;
+            this.providers = providersData;
             this.render();
+            this._populateProviderSelect();
         } catch (error) {
             console.error("Failed to load models:", error);
         }
@@ -25,42 +35,132 @@ window.settingsModels = {
         await this.load();
     },
 
+    _populateProviderSelect() {
+        const sel = document.getElementById("model-provider");
+        if (!sel) return;
+        sel.innerHTML = this.providers
+            .map((p) => `<option value="${p.id}">${p.name}</option>`)
+            .join("");
+    },
+
     render() {
         const modelsList = document.getElementById("models-list");
         const q = this.searchQuery.toLowerCase().trim();
+
         const filtered = q
             ? this.models.filter(
                   (m) =>
                       (m.name || "").toLowerCase().includes(q) ||
                       (m.provider || "").toLowerCase().includes(q) ||
-                      (m.model_name || "").toLowerCase().includes(q) ||
-                      (m.type || "").toLowerCase().includes(q),
+                      (m.model_name || "").toLowerCase().includes(q),
               )
             : this.models;
 
-        if (filtered.length === 0) {
+        // Group models by provider, and ensure ALL providers appear (even with 0 models)
+        const provMap = {};
+        for (const p of this.providers) provMap[p.id] = p;
+        const groups = {};
+        for (const p of this.providers) {
+            const matchesSearch = !q || (p.name || "").toLowerCase().includes(q) || p.id.toLowerCase().includes(q);
+            if (matchesSearch) groups[p.id] = [];
+        }
+        for (const m of filtered) {
+            const pid = m.provider || "unknown";
+            if (!groups[pid]) groups[pid] = [];
+            groups[pid].push(m);
+        }
+
+        if (Object.keys(groups).length === 0) {
             modelsList.innerHTML =
-                '<p class="text-gray-500 text-center py-4 col-span-full">No models match your search.</p>';
+                '<p class="text-gray-500 text-center py-4">No models or providers match your search.</p>';
             return;
         }
 
-        modelsList.innerHTML = filtered
-            .map((model) => {
-                const typeColors =
-                    model.type === "remote"
-                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
-                        : "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300";
-                const enabledColors = model.enabled
-                    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
-                    : "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
-                const defaultBorder = model.is_default
-                    ? "border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-200 dark:ring-indigo-800"
-                    : "border-gray-200 dark:border-gray-700";
+        const sortedProviders = Object.keys(groups).sort((a, b) => {
+            const na = (provMap[a]?.name || a).toLowerCase();
+            const nb = (provMap[b]?.name || b).toLowerCase();
+            return na.localeCompare(nb);
+        });
+
+        modelsList.innerHTML = sortedProviders
+            .map((pid) => {
+                const prov = provMap[pid] || { id: pid, name: pid };
+                const models = groups[pid];
+                const typeBadge =
+                    prov.type === "local"
+                        ? '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300">local</span>'
+                        : '<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300">remote</span>';
+
+                const modelCards = models.length > 0
+                    ? models.map((model) => this._renderModelCard(model)).join("")
+                    : `<div class="col-span-full text-center py-4 text-sm text-gray-400 dark:text-gray-500">No models yet — click <strong>Fetch Models</strong> to discover available models from this provider.</div>`;
+
+                const isCodex = prov.api_format === "codex" || prov.auth_type === "oauth";
+                const codexConnected = this._codexStatus && this._codexStatus.connected && this._codexStatus.provider_id === pid;
+
+                let actionButtons;
+                const addModelBtn = `<button class="px-2 py-1 text-xs font-medium text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 rounded hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors" onclick="settingsModels.addModelForProvider('${pid}')" title="Add a custom model">+ Model</button>`;
+                if (isCodex) {
+                    const statusDot = codexConnected
+                        ? '<span class="inline-block w-2 h-2 rounded-full bg-green-500 mr-1" title="Connected"></span>'
+                        : '<span class="inline-block w-2 h-2 rounded-full bg-gray-400 mr-1" title="Not connected"></span>';
+                    const connectBtn = codexConnected
+                        ? `<button class="px-2 py-1 text-xs font-medium text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/50 rounded hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors" onclick="settingsModels.codexDisconnect()" title="Disconnect OAuth">Disconnect</button>`
+                        : `<button class="px-2 py-1 text-xs font-medium text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-950/50 rounded hover:bg-green-100 dark:hover:bg-green-900/50 transition-colors" onclick="settingsModels.codexConnect('${pid}')" title="Connect via OAuth">Connect</button>`;
+                    actionButtons = `${statusDot}${connectBtn}` +
+                        (codexConnected ? `<button class="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors" onclick="settingsModels.fetchModels('${pid}')" title="Discover models">Fetch Models</button>` : "") +
+                        addModelBtn +
+                        `<button class="px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors" onclick="settingsModels.editProvider('${pid}')" title="Edit provider settings">Edit</button>` +
+                        `<button class="px-2 py-1 text-xs font-medium text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/50 rounded hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors" onclick="settingsModels.deleteProvider('${pid}')" title="Delete provider">Del</button>`;
+                } else {
+                    actionButtons =
+                        `<button class="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors" onclick="settingsModels.fetchModels('${pid}')" title="Discover models from provider API">Fetch Models</button>` +
+                        addModelBtn +
+                        `<button class="px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors" onclick="settingsModels.testProvider('${pid}')" title="Test provider connection">Test</button>` +
+                        `<button class="px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-400 bg-gray-50 dark:bg-gray-700 rounded hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors" onclick="settingsModels.editProvider('${pid}')" title="Edit provider settings">Edit</button>` +
+                        `<button class="px-2 py-1 text-xs font-medium text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-950/50 rounded hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors" onclick="settingsModels.deleteProvider('${pid}')" title="Delete provider">Del</button>`;
+                }
+
                 return `
+                    <div class="provider-group">
+                        <div class="flex items-center justify-between mb-2 px-1">
+                            <div class="flex items-center gap-2">
+                                <h3 class="text-sm font-semibold text-gray-700 dark:text-gray-300">${this._escapeHtml(prov.name)}</h3>
+                                ${typeBadge}
+                                <span class="text-xs text-gray-400">${models.length} model${models.length !== 1 ? "s" : ""}</span>
+                            </div>
+                            <div class="flex items-center gap-1.5">
+                                ${actionButtons}
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                            ${modelCards}
+                        </div>
+                    </div>`;
+            })
+            .join("");
+    },
+
+    _renderModelCard(model) {
+        const typeColors =
+            model.type === "remote"
+                ? "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300"
+                : "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300";
+        const enabledColors = model.enabled
+            ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/50 dark:text-emerald-300"
+            : "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300";
+        const defaultBorder = model.is_default
+            ? "border-indigo-400 dark:border-indigo-500 ring-1 ring-indigo-200 dark:ring-indigo-800"
+            : "border-gray-200 dark:border-gray-700";
+        const shortcode = model.shortcode != null ? model.shortcode : "?";
+
+        return `
         <div class="model-card bg-white dark:bg-gray-800 rounded-lg border ${defaultBorder} p-3 hover:shadow-sm transition-shadow flex flex-col gap-2">
-            <!-- Top row: name + actions (delete lives at the bottom) -->
             <div class="flex items-start justify-between gap-2">
-                <h4 class="font-semibold text-sm text-gray-900 dark:text-gray-100 truncate min-w-0">${model.name}</h4>
+                <div class="flex items-center gap-2 min-w-0">
+                    <span class="inline-flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 dark:bg-gray-700 text-[11px] font-bold text-gray-600 dark:text-gray-300 flex-shrink-0">${shortcode}</span>
+                    <h4 class="font-semibold text-sm text-gray-900 dark:text-gray-100 truncate min-w-0">${model.name}</h4>
+                </div>
                 <div class="flex flex-row items-center gap-1.5 shrink-0">
                     ${!model.is_default ? `<button class="p-1 rounded border border-amber-400 dark:border-amber-500 text-amber-500 dark:text-amber-400 bg-transparent cursor-pointer hover:bg-amber-50 dark:hover:bg-amber-950/50 transition-colors" onclick="settingsModels.setDefault('${model.id}')" title="Set Default"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg></button>` : ""}
                     <button class="p-1 rounded border border-gray-300 dark:border-gray-600 bg-transparent cursor-pointer text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onclick="settingsModels.testConnection('${model.id}')" title="Test"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg></button>
@@ -69,7 +169,6 @@ window.settingsModels = {
                 </div>
             </div>
 
-            <!-- Badges row -->
             <div class="flex flex-wrap items-center gap-1.5">
                 ${model.is_default ? '<span class="inline-block bg-indigo-600 text-white px-1.5 py-0.5 rounded text-[10px] font-semibold leading-none">Default</span>' : ""}
                 <span class="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium ${typeColors}">${model.type}</span>
@@ -77,17 +176,13 @@ window.settingsModels = {
                 ${model.thinking ? '<span class="inline-block px-1.5 py-0.5 rounded text-[11px] font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300">Thinking</span>' : ""}
             </div>
 
-            <!-- Bottom row: provider info + delete -->
             <div class="flex items-end justify-between gap-2">
                 <div class="text-[11px] text-gray-500 dark:text-gray-400 truncate min-w-0">
-                    ${model.provider} · ${model.model_name}
+                    ${model.model_name}
                 </div>
                 <button class="p-1 rounded border border-red-400 dark:border-red-500 text-red-400 dark:text-red-400 bg-transparent cursor-pointer hover:bg-red-50 dark:hover:bg-red-950/50 transition-colors shrink-0" onclick="settingsModels.remove('${model.id}')" title="Delete"><svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg></button>
             </div>
-        </div>
-    `;
-            })
-            .join("");
+        </div>`;
     },
 
     filter() {
@@ -95,10 +190,206 @@ window.settingsModels = {
         this.render();
     },
 
-    showAddModal() {
+    /* ---- Provider CRUD ---- */
+
+    showAddProviderModal() {
+        document.getElementById("provider-modal-title").textContent = "Add Provider";
+        document.getElementById("provider-form").reset();
+        document.getElementById("provider-edit-id").value = "";
+        document.getElementById("provider-id").disabled = false;
+        openModal("provider-modal");
+    },
+
+    editProvider(providerId) {
+        const prov = this.providers.find((p) => p.id === providerId);
+        if (!prov) return;
+        document.getElementById("provider-modal-title").textContent = "Edit Provider";
+        document.getElementById("provider-edit-id").value = prov.id;
+        document.getElementById("provider-id").value = prov.id;
+        document.getElementById("provider-id").disabled = true;
+        document.getElementById("provider-name").value = prov.name || "";
+        document.getElementById("provider-type").value = prov.type || "remote";
+        document.getElementById("provider-base-url").value = prov.base_url || "";
+        document.getElementById("provider-api-key").value = "";
+        document.getElementById("provider-api-format").value = prov.api_format || "openai";
+        openModal("provider-modal");
+    },
+
+    async saveProvider(event) {
+        event.preventDefault();
+        const editId = document.getElementById("provider-edit-id").value;
+        const data = {
+            id: document.getElementById("provider-id").value,
+            name: document.getElementById("provider-name").value,
+            type: document.getElementById("provider-type").value,
+            base_url: document.getElementById("provider-base-url").value,
+            api_key: document.getElementById("provider-api-key").value,
+            api_format: document.getElementById("provider-api-format").value,
+        };
+
+        try {
+            let result;
+            if (editId) {
+                result = await apiPut("/api/providers/" + encodeURIComponent(editId), data);
+            } else {
+                result = await apiPost("/api/providers", data);
+            }
+            if (result.success) {
+                closeModal("provider-modal");
+                await this.reload();
+                if (window.toast) toast.show("Provider saved", "success");
+            } else {
+                if (window.toast) toast.show("Error: " + (result.error || "Failed"), "error");
+            }
+        } catch (error) {
+            if (window.toast) toast.show("Failed to save provider: " + error.message, "error");
+        }
+    },
+
+    async deleteProvider(providerId) {
+        if (
+            !(await showConfirm({
+                title: "Delete Provider",
+                message: "Delete this provider? Its models must be removed first.",
+                confirmText: "Delete",
+            }))
+        )
+            return;
+        try {
+            const result = await apiDelete("/api/providers/" + encodeURIComponent(providerId));
+            if (result.success) {
+                await this.reload();
+            } else {
+                if (window.toast) toast.show("Error: " + (result.error || "Failed"), "error");
+            }
+        } catch (error) {
+            if (window.toast) toast.show("Failed: " + error.message, "error");
+        }
+    },
+
+    async testProvider(providerId) {
+        if (window.toast) toast.show("Testing provider connection…", "info", 2000);
+        try {
+            const result = await apiPost(
+                "/api/providers/" + encodeURIComponent(providerId) + "/test",
+                {},
+            );
+            if (result.success) {
+                if (window.toast) toast.success(result.message || "Connected!", 3000);
+            } else {
+                if (window.toast) toast.error("Failed: " + (result.error || "Unknown error"), 5000);
+            }
+        } catch (error) {
+            if (window.toast) toast.error("Connection error: " + error.message, 5000);
+        }
+    },
+
+    /* ---- Fetch Models from Provider ---- */
+
+    async fetchModels(providerId) {
+        this._fetchProviderId = providerId;
+        const prov = this.providers.find((p) => p.id === providerId);
+        const content = document.getElementById("fetch-models-content");
+        document.getElementById("fetch-models-title").textContent =
+            "Available Models — " + (prov ? prov.name : providerId);
+        content.innerHTML =
+            '<div class="text-center py-8"><div class="spinner" style="width:32px;height:32px;border-width:3px;"></div><p class="mt-4 text-gray-500">Fetching models from provider…</p></div>';
+        openModal("fetch-models-modal");
+
+        try {
+            const result = await apiPost(
+                "/api/providers/" + encodeURIComponent(providerId) + "/fetch-models",
+                {},
+            );
+            if (!result.success) {
+                content.innerHTML =
+                    '<p class="text-red-500 text-center py-4">Failed: ' +
+                    this._escapeHtml(result.error || "Unknown error") +
+                    "</p>";
+                return;
+            }
+            if (!result.models || result.models.length === 0) {
+                content.innerHTML =
+                    '<p class="text-gray-500 text-center py-4">No models found.</p>';
+                return;
+            }
+
+            const searchHtml =
+                '<input type="text" id="fetch-model-search" placeholder="Filter models…" oninput="settingsModels._filterFetchedModels()" class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-indigo-300 dark:bg-gray-700 dark:text-gray-100" />';
+
+            const listHtml = result.models
+                .map(
+                    (m) =>
+                        `<label class="fetch-model-item flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700/50 cursor-pointer" data-model-id="${this._escapeHtml(m.id)}">
+                        <input type="checkbox" class="fetch-model-cb rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" value="${this._escapeHtml(m.id)}" ${m.already_added ? "disabled checked" : ""} />
+                        <span class="text-sm text-gray-800 dark:text-gray-200 truncate">${this._escapeHtml(m.id)}</span>
+                        ${m.already_added ? '<span class="text-[10px] text-gray-400 ml-auto">added</span>' : ""}
+                    </label>`,
+                )
+                .join("");
+
+            content.innerHTML = searchHtml + '<div class="space-y-1 max-h-[50vh] overflow-y-auto">' + listHtml + "</div>";
+        } catch (error) {
+            content.innerHTML =
+                '<p class="text-red-500 text-center py-4">Error: ' +
+                this._escapeHtml(error.message) +
+                "</p>";
+        }
+    },
+
+    _filterFetchedModels() {
+        const q = (document.getElementById("fetch-model-search")?.value || "").toLowerCase();
+        document.querySelectorAll(".fetch-model-item").forEach((el) => {
+            el.style.display = el.dataset.modelId.toLowerCase().includes(q) ? "" : "none";
+        });
+    },
+
+    async addSelectedModels() {
+        const cbs = document.querySelectorAll(".fetch-model-cb:checked:not(:disabled)");
+        if (cbs.length === 0) {
+            if (window.toast) toast.show("No models selected", "info");
+            return;
+        }
+        let added = 0;
+        for (const cb of cbs) {
+            try {
+                const result = await apiPost(
+                    "/api/providers/" + encodeURIComponent(this._fetchProviderId) + "/add-model",
+                    { model_name: cb.value },
+                );
+                if (result.success) added++;
+            } catch (e) {
+                console.error("Failed to add model:", cb.value, e);
+            }
+        }
+        closeModal("fetch-models-modal");
+        await this.reload();
+        if (window.toast) toast.show(`Added ${added} model(s)`, "success");
+    },
+
+    /* ---- Model CRUD ---- */
+
+    showAddModelModal() {
         document.getElementById("modal-title").textContent = "Add Model";
         document.getElementById("model-form").reset();
         document.getElementById("model-id").value = "";
+        this._populateProviderSelect();
+        openModal("model-modal");
+    },
+
+    addModelForProvider(providerId) {
+        const prov = this.providers.find((p) => p.id === providerId);
+        if (!prov) return;
+
+        document.getElementById("modal-title").textContent = "Add Model — " + (prov.name || providerId);
+        document.getElementById("model-form").reset();
+        document.getElementById("model-id").value = "";
+        this._populateProviderSelect();
+        document.getElementById("model-provider").value = providerId;
+        document.getElementById("model-type").value = prov.type || "remote";
+        if (prov.base_url) document.getElementById("model-base-url").value = prov.base_url;
+        if (prov.api_format) document.getElementById("model-api-format").value = prov.api_format;
+        this.toggleFields();
         openModal("model-modal");
     },
 
@@ -110,7 +401,8 @@ window.settingsModels = {
         document.getElementById("model-id").value = model.id;
         document.getElementById("model-name").value = model.name || "";
         document.getElementById("model-type").value = model.type || "remote";
-        document.getElementById("model-provider").value = model.provider || "custom";
+        this._populateProviderSelect();
+        document.getElementById("model-provider").value = model.provider || "";
         document.getElementById("model-base-url").value = model.base_url || "";
         document.getElementById("model-api-key").value = model.api_key || "";
         document.getElementById("model-name-param").value = model.model_name || "";
@@ -252,7 +544,6 @@ window.settingsModels = {
             );
             if (result.success) {
                 await this.reload();
-                // Open edit modal for the new clone so user can reconfigure
                 this.edit(result.model_id);
             } else {
                 if (window.toast)
@@ -266,8 +557,6 @@ window.settingsModels = {
 
     /* ---- Connection test ---- */
 
-    // Extract a human-friendly message from the raw API error string.
-    // The backend may return: "HTTP 401: {\"error\":\"API key required...\"}"
     _parseTestError(rawError) {
         if (!rawError) return { message: "Unknown error", detail: "" };
         const jsonMatch = rawError.match(
@@ -287,39 +576,19 @@ window.settingsModels = {
         const msg = (errorMsg || "").toLowerCase();
         const tips = [];
         if (statusCode === 401) {
-            tips.push(
-                "Your API key is missing or invalid — add a valid API key in the model settings",
-            );
-            tips.push(
-                "Some providers require you to generate an API key from their dashboard first",
-            );
+            tips.push("Your API key is missing or invalid — check the provider or model settings");
+            tips.push("Some providers require you to generate an API key from their dashboard first");
         } else if (statusCode === 403) {
             tips.push("Access denied — your API key may not have permission for this endpoint");
-            tips.push("Check your provider account for usage limits or billing issues");
         } else if (statusCode === 404) {
             tips.push("The API endpoint was not found — verify the Base URL is correct");
-            tips.push("Make sure the model name matches what your provider expects");
         } else if (statusCode === 429) {
-            tips.push("Rate limited — your API key has exceeded its request quota");
-            tips.push("Wait a moment and try again, or check your provider's rate limits");
+            tips.push("Rate limited — wait and try again");
         } else if (statusCode && statusCode >= 500) {
-            tips.push("The provider's server returned an error — this is usually temporary");
-            tips.push(
-                "Try again in a few minutes. If it persists, check the provider's status page",
-            );
+            tips.push("The provider's server returned an error — usually temporary");
         }
         if (msg.includes("connection") || msg.includes("timeout") || msg.includes("network")) {
             tips.push("Check that the Base URL is reachable from this server");
-            tips.push("Verify there is no firewall blocking outbound connections");
-        }
-        if (
-            msg.includes("api key") ||
-            msg.includes("unauthorized") ||
-            msg.includes("key required")
-        ) {
-            if (!tips.some((t) => t.toLowerCase().includes("api key"))) {
-                tips.push("Add or update your API key in the model's configuration");
-            }
         }
         return tips;
     },
@@ -330,7 +599,6 @@ window.settingsModels = {
         const title = document.getElementById("connection-test-title");
         const header = document.getElementById("connection-test-header");
 
-        // Disable the test button for this specific model card
         this._currentTestModelId = modelId;
         const testBtn = document.querySelector(
             `button[onclick*="testConnection('${modelId}')"]`,
@@ -340,7 +608,6 @@ window.settingsModels = {
             testBtn.classList.add("opacity-50", "cursor-not-allowed");
         }
 
-        // Reset header style and show loading state
         if (header) {
             header.className =
                 "flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-600";
@@ -352,7 +619,6 @@ window.settingsModels = {
             '<div class="text-center py-8">' +
             '<div class="spinner" style="width:32px;height:32px;border-width:3px;"></div>' +
             '<p class="mt-4 text-gray-600 dark:text-gray-400 font-medium">Testing connection…</p>' +
-            '<p class="mt-1 text-gray-400 dark:text-gray-500 text-sm">This may take a few seconds</p>' +
             "</div>";
         footer.classList.add("hidden");
 
@@ -361,9 +627,7 @@ window.settingsModels = {
         try {
             const response = await fetch(
                 "/api/models/" + encodeURIComponent(modelId) + "/test",
-                {
-                    method: "POST",
-                },
+                { method: "POST" },
             );
             const result = await response.json();
 
@@ -379,35 +643,17 @@ window.settingsModels = {
                     '<div class="p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-700 rounded-lg">' +
                     '<div class="flex items-center gap-2 mb-3">' +
                     '<svg class="w-6 h-6 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' +
-                    '<span class="text-green-800 dark:text-green-300 font-semibold text-base">Model is reachable</span>' +
-                    "</div>" +
+                    '<span class="text-green-800 dark:text-green-300 font-semibold text-base">Model is reachable</span></div>' +
                     '<div class="text-green-700 dark:text-green-400 text-sm"><strong>Endpoint:</strong> ' +
-                    this._escapeHtml(result.message) +
-                    "</div>" +
+                    this._escapeHtml(result.message) + "</div>" +
                     '<div class="text-green-600 dark:text-green-500 text-sm mt-1"><strong>Available models:</strong> ' +
-                    result.available_models +
-                    "</div>" +
-                    (result.available_models > 0
-                        ? '<div class="test-tips test-tips-success mt-3"><strong>Tip:</strong> ' +
-                          "The provider returned " +
-                          result.available_models +
-                          " model(s). Your configured model name should match one of them." +
-                          "</div>"
-                        : "") +
-                    "</div>";
+                    result.available_models + "</div></div>";
             } else {
                 const parsed = this._parseTestError(result.error);
                 const statusCode = result.status_code;
                 const tips = this._getTestTroubleshootingTips(statusCode, parsed.message);
 
-                if (window.toast)
-                    toast.error(
-                        "Connection failed: " +
-                            (statusCode ? "(HTTP " + statusCode + ") " : "") +
-                            parsed.message,
-                        5000,
-                    );
-
+                if (window.toast) toast.error("Connection failed: " + parsed.message, 5000);
                 if (header) {
                     header.className =
                         "flex justify-between items-center p-5 border-b border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20";
@@ -419,32 +665,19 @@ window.settingsModels = {
                     '<div class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">' +
                     '<div class="flex items-start gap-2 mb-2">' +
                     '<svg class="w-6 h-6 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' +
-                    '<div><span class="text-red-800 dark:text-red-300 font-semibold text-base">' +
-                    this._escapeHtml(parsed.message) +
-                    "</span>" +
-                    (statusCode
-                        ? '<span class="ml-2 inline-block px-2 py-0.5 text-xs font-bold rounded-full bg-red-200 dark:bg-red-800 text-red-800 dark:text-red-200">HTTP ' +
-                          statusCode +
-                          "</span>"
-                        : "") +
-                    "</div></div>";
-
+                    '<span class="text-red-800 dark:text-red-300 font-semibold text-base">' +
+                    this._escapeHtml(parsed.message) + "</span></div>";
                 if (tips.length > 0) {
-                    html += '<div class="test-tips"><strong>Troubleshooting tips:</strong><ul>';
-                    tips.forEach((tip) => {
-                        html += "<li>" + this._escapeHtml(tip) + "</li>";
-                    });
+                    html += '<div class="test-tips"><strong>Troubleshooting:</strong><ul>';
+                    tips.forEach((tip) => { html += "<li>" + this._escapeHtml(tip) + "</li>"; });
                     html += "</ul></div>";
                 }
-
                 if (parsed.detail && parsed.detail !== parsed.message) {
                     html +=
-                        '<details class="test-error-detail"><summary class="cursor-pointer text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300">Show raw error</summary>' +
+                        '<details class="test-error-detail"><summary class="cursor-pointer text-gray-500">Show raw error</summary>' +
                         '<code class="block mt-1 p-2 bg-gray-100 dark:bg-gray-700 rounded text-xs">' +
-                        this._escapeHtml(parsed.detail) +
-                        "</code></details>";
+                        this._escapeHtml(parsed.detail) + "</code></details>";
                 }
-
                 html += "</div>";
                 testStatus.innerHTML = html;
             }
@@ -455,30 +688,16 @@ window.settingsModels = {
             }
             title.textContent = "Connection Failed";
             title.className = "m-0 text-red-700 dark:text-red-400";
-
-            const errorMsg = error.message || "An unexpected network error occurred";
-            if (window.toast) toast.error("Connection failed: " + errorMsg, 5000);
             testStatus.innerHTML =
                 '<div class="p-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">' +
-                '<div class="flex items-start gap-2 mb-2">' +
-                '<svg class="w-6 h-6 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' +
-                '<span class="text-red-800 dark:text-red-300 font-semibold text-base">' +
-                this._escapeHtml(errorMsg) +
-                "</span>" +
-                "</div>" +
-                '<div class="test-tips"><strong>Troubleshooting tips:</strong><ul>' +
-                "<li>Verify the server can reach the Base URL (check DNS, firewall, or VPN)</li>" +
-                "<li>Ensure the Base URL is correct and includes the protocol (http:// or https://)</li>" +
-                "<li>Check if the provider's service is currently online</li>" +
-                "</ul></div>" +
-                "</div>";
+                '<span class="text-red-800 dark:text-red-300 font-semibold">' +
+                this._escapeHtml(error.message || "Network error") + "</span></div>";
         } finally {
             if (this._currentTestModelId === modelId && testBtn) {
                 testBtn.disabled = false;
                 testBtn.classList.remove("opacity-50", "cursor-not-allowed");
             }
         }
-
         footer.classList.remove("hidden");
     },
 
@@ -488,8 +707,110 @@ window.settingsModels = {
         return div.innerHTML;
     },
 
+    /* ---- Codex OAuth (PKCE flow) ---- */
+
+    async _checkCodexStatus() {
+        try {
+            this._codexStatus = await apiGet("/api/codex/status");
+            this.render();
+        } catch (e) {
+            this._codexStatus = null;
+        }
+    },
+
+    async codexConnect(providerId) {
+        try {
+            const result = await apiPost("/api/codex/connect", {});
+            if (result.error) {
+                if (window.toast) toast.error(result.error, 5000);
+                return;
+            }
+            window.open(result.auth_url, "_blank");
+            this._showAuthWaitingModal();
+        } catch (e) {
+            if (window.toast) toast.error("Failed: " + e.message, 5000);
+        }
+    },
+
+    _showAuthWaitingModal() {
+        const testStatus = document.getElementById("connection-test-status");
+        const footer = document.getElementById("connection-test-footer");
+        const title = document.getElementById("connection-test-title");
+        const header = document.getElementById("connection-test-header");
+
+        if (header) header.className = "flex justify-between items-center p-5 border-b border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20";
+        title.textContent = "Connect to OpenAI Codex";
+        title.className = "m-0 text-indigo-700 dark:text-indigo-400";
+        testStatus.innerHTML =
+            '<div class="text-center py-4">' +
+            '<p class="text-sm text-gray-600 dark:text-gray-400 mb-4">Complete the login in the OpenAI page that just opened.</p>' +
+            '<p class="text-xs text-gray-400 mb-3">Waiting for authorization…</p>' +
+            '<div class="spinner mx-auto" style="width:24px;height:24px;border-width:2px;"></div>' +
+            '<p id="codex-poll-status" class="text-xs text-gray-400 mt-3"></p>' +
+            '</div>';
+        footer.classList.add("hidden");
+        openModal("connection-test-modal");
+
+        this._pollAuthCallback();
+    },
+
+    _pollAuthCallback() {
+        const deadline = Date.now() + 300_000;
+
+        const poll = setInterval(async () => {
+            if (Date.now() > deadline) {
+                clearInterval(poll);
+                const el = document.getElementById("codex-poll-status");
+                if (el) el.textContent = "Timed out. Close and try again.";
+                return;
+            }
+            try {
+                const result = await apiPost("/api/codex/poll", {});
+                if (result.status === "complete") {
+                    clearInterval(poll);
+                    closeModal("connection-test-modal");
+                    await this._checkCodexStatus();
+                    await this.reload();
+                    if (window.toast) toast.success("Connected to Codex!", 3000);
+                } else if (result.status === "error" || result.status === "expired") {
+                    clearInterval(poll);
+                    const el = document.getElementById("codex-poll-status");
+                    if (el) el.textContent = result.error || "Authorization failed.";
+                }
+            } catch (e) { /* ignore, retry next tick */ }
+        }, 3000);
+
+        this._codexPollTimer = poll;
+    },
+
+    async codexDisconnect() {
+        if (!(await showConfirm({
+            title: "Disconnect Codex",
+            message: "This will remove the stored OAuth tokens. You'll need to reconnect to use Codex models.",
+            confirmText: "Disconnect",
+        }))) return;
+
+        try {
+            const result = await apiPost("/api/codex/disconnect", {});
+            if (result.success) {
+                this._codexStatus = null;
+                await this._checkCodexStatus();
+                this.render();
+                if (window.toast) toast.show("Codex disconnected", "success");
+            } else {
+                if (window.toast) toast.error(result.error || "Failed", 5000);
+            }
+        } catch (e) {
+            if (window.toast) toast.error("Failed: " + e.message, 5000);
+        }
+    },
+
     closeTestModal() {
         closeModal("connection-test-modal");
+        if (this._codexPollTimer) {
+            clearInterval(this._codexPollTimer);
+            this._codexPollTimer = null;
+        }
         if (this._currentTestModelId) {
             const testBtn = document.querySelector(
                 `button[onclick*="testConnection('${this._currentTestModelId}')"]`,

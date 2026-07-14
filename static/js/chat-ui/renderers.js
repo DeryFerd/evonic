@@ -23,6 +23,7 @@ const ALLOWED_ATTRS = {
     pre:  ['class'],
     span: ['class', 'style', 'aria-hidden'],
     img:  ['src', 'alt', 'class', 'loading'],
+    ol:   ['start'],
 };
 
 function _walkSanitize(node) {

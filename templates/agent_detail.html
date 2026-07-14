@@ -5266,6 +5266,7 @@ async function sendChat() {
             chatUI.closeStream();
             const cmdMeta = data.bash_exec ? { bash_exec: true } : { slash_command: true };
             chatUI.appendMessage('assistant', data.response, { metadata: cmdMeta });
+            chatUI.scrollToBottom();
             await syncLastChatTs();
         } else {
             // Non-buffered success: agent responded immediately.

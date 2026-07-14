@@ -950,56 +950,83 @@ def _register_builtins():
         from models.db import db
 
         if not args or not args.strip():
-            # No args — show current model
-            model = db.get_agent_model(agent_id)
-            if model:
-                model_name = model.get("name", "unknown")
-                model_id = model.get("model_name", "")
-                if model_id:
-                    return f"Current model: {model_name} ({model_id})"
-                else:
-                    return f"Current model: {model_name}"
+            # No args — list all models grouped by provider
+            current = db.get_agent_model(agent_id)
+            current_id = current.get("id") if current else None
+            providers = db.get_providers()
+            all_models = db.get_enabled_llm_models()
+
+            if not all_models:
+                return "No models configured. Add models in Settings > Models."
+
+            models_by_prov = {}
+            for m in all_models:
+                prov = m.get("provider", "unknown")
+                models_by_prov.setdefault(prov, []).append(m)
+
+            prov_names = {p["id"]: p.get("name", p["id"]) for p in providers}
+
+            def _sort_key(m):
+                sc = m.get("shortcode")
+                return sc if isinstance(sc, int) else 1_000_000
+
+            lines = ["**Available Models**", ""]
+            for prov_id in sorted(models_by_prov.keys()):
+                prov_label = prov_names.get(prov_id, prov_id)
+                lines.append(f"**{prov_label}**")
+                lines.append("")
+                for m in sorted(models_by_prov[prov_id], key=_sort_key):
+                    sc = m.get("shortcode", "?")
+                    name = m.get("name", "unknown")
+                    model_name = m.get("model_name", "")
+                    is_current = " ✓" if m.get("id") == current_id else ""
+                    if model_name:
+                        lines.append(f"{sc}. {name} ({model_name}){is_current}")
+                    else:
+                        lines.append(f"{sc}. {name}{is_current}")
+                lines.append("")
+
+            if current:
+                sc = current.get("shortcode", "?")
+                lines.append(f"**Current:** {current.get('name', 'unknown')} (#{sc})")
             else:
-                return "No model configured. Use `/model <id>` to set one."
+                lines.append("**Current:** none")
+            lines.append("")
+            lines.append("Type /model <number> or /model <provider/model> to switch.")
+            return "\n".join(lines)
 
         # Set model
         new_model_id = args.strip()
-        model = db.get_model_by_id(new_model_id)
-        if not model:
-            # Try matching by model_name field too
-            model = db.get_model_by_model_name(new_model_id)
-        if not model:
-            # List available models so user knows what's valid
-            all_models = db.get_llm_models()
-            if all_models:
-                lines = [f"Model '{new_model_id}' not found. Available models:"]
-                for m in all_models:
-                    m_name = m.get("name", "unknown")
-                    m_model = m.get("model_name", "")
-                    if m_model:
-                        lines.append(f"- {m_name} ({m_model})")
-                    else:
-                        lines.append(f"- {m_name}")
-                return "\n".join(lines)
-            else:
-                return f"Model '{new_model_id}' not found and no models are configured."
 
-        # Set the agent's model
+        # Try shortcode first (numeric input)
+        model = None
+        if new_model_id.isdigit():
+            model = db.get_model_by_shortcode(int(new_model_id))
+
+        if not model:
+            model = db.get_model_by_id(new_model_id)
+        if not model:
+            model = db.get_model_by_model_name(new_model_id)
+
+        if not model:
+            return f"Model '{new_model_id}' not found. Type /model to see available models."
+
         success = db.set_agent_model(agent_id, model["id"])
         if not success:
             return f"Failed to set model to '{new_model_id}'."
 
+        sc = model.get("shortcode", "?")
         model_name = model.get("name", "unknown")
         model_model = model.get("model_name", "")
         if model_model:
-            return f"Model set to: {model_name} ({model_model})"
+            return f"Model set to: {model_name} ({model_model}) [#{sc}]"
         else:
-            return f"Model set to: {model_name}"
+            return f"Model set to: {model_name} [#{sc}]"
 
     command_registry.register(
         "model",
         model_handler,
-        "Show or set agent's LLM model — /model [id]",
+        "Show or set agent's LLM model — /model [number|provider/model]",
     )
 
 

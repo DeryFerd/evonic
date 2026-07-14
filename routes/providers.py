@@ -159,9 +159,9 @@ def api_fetch_provider_models(provider_id):
                         models.append({"id": mid, "name": mid})
             else:
                 models = [
-                    {"id": "o4-mini", "name": "o4-mini"},
-                    {"id": "o3", "name": "o3"},
-                    {"id": "codex-mini-latest", "name": "codex-mini-latest"},
+                    {"id": "gpt-5.6-sol", "name": "GPT-5.6 Sol"},
+                    {"id": "gpt-5.6-terra", "name": "GPT-5.6 Terra"},
+                    {"id": "gpt-5.6-luna", "name": "GPT-5.6 Luna"},
                 ]
         else:
             raw_models = data.get("data", data.get("models", []))

@@ -977,6 +977,18 @@ def _register_builtins():
 
             prov_names = {p["id"]: p.get("name", p["id"]) for p in providers}
 
+            # Web renders responses as markdown, where "21. name" becomes an
+            # ordered-list item and gets renumbered sequentially — hiding the
+            # real shortcode. Escape the dot so the number renders verbatim.
+            # Messaging channels show plain text, so keep the plain dot there.
+            is_compact = False
+            if channel_id:
+                channel = db.get_channel(channel_id)
+                if channel:
+                    ch_type = channel.get("type", "")
+                    is_compact = ch_type in ("telegram", "whatsapp", "whatsapp_shared")
+            dot = "." if is_compact else "\\."
+
             def _sort_key(m):
                 sc = m.get("shortcode")
                 return sc if isinstance(sc, int) else 1_000_000
@@ -992,9 +1004,9 @@ def _register_builtins():
                     model_name = m.get("model_name", "")
                     is_current = " ✓" if m.get("id") == current_id else ""
                     if model_name:
-                        lines.append(f"{sc}. {name} ({model_name}){is_current}")
+                        lines.append(f"{sc}{dot} {name} ({model_name}){is_current}")
                     else:
-                        lines.append(f"{sc}. {name}{is_current}")
+                        lines.append(f"{sc}{dot} {name}{is_current}")
                 lines.append("")
 
             if current:
@@ -1004,7 +1016,11 @@ def _register_builtins():
                 lines.append("**Current:** none")
             lines.append("")
             lines.append("Type /model <number> or /model <provider/model> to switch.")
-            return "\n".join(lines)
+            # Web: escaped-dot lines are plain paragraphs, so they need a
+            # blank line between them to render one model per line.
+            if is_compact:
+                return "\n".join(lines)
+            return "\n\n".join(l for l in lines if l)
 
         # Set model
         new_model_id = args.strip()

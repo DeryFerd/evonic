@@ -383,6 +383,7 @@ class LLMClient:
             max_tokens=max_tokens or 4096,
             temperature=temperature if temperature is not None else self.temperature,
             tools=tools,
+            reasoning=bool(self.thinking),
             timeout=self.timeout or 120,
         )
         duration_ms = int((time.time() - start_time) * 1000)

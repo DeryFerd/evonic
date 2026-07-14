@@ -44,6 +44,7 @@ class CodexClient:
         max_tokens: int = 4096,
         temperature: Optional[float] = None,
         tools: Optional[List[Dict]] = None,
+        reasoning: bool = False,
         stream: bool = True,
         timeout: int = 120,
     ) -> Dict[str, Any]:
@@ -54,6 +55,8 @@ class CodexClient:
             "stream": stream,
             "store": False,
         }
+        if reasoning:
+            payload["reasoning"] = {"summary": "auto"}
         if tools:
             payload["tools"] = self._convert_tools(tools)
 
@@ -129,16 +132,16 @@ class CodexClient:
                         response_id = r.get("id", "")
                         model_used = r.get("model", "")
 
-                    elif event_type == "response.content_part.delta":
-                        delta = event.get("delta", {})
-                        delta_type = delta.get("type", "")
-                        if delta_type == "text_delta":
-                            content_parts.append(delta.get("text", ""))
-                        elif delta_type == "thinking_delta":
-                            thinking_parts.append(delta.get("thinking", ""))
-
                     elif event_type == "response.output_text.delta":
                         content_parts.append(event.get("delta", ""))
+
+                    elif event_type == "response.reasoning_summary_text.delta":
+                        thinking_parts.append(event.get("delta", ""))
+
+                    elif event_type == "response.reasoning_summary_part.added":
+                        # Separate reasoning summary parts with a blank line
+                        if thinking_parts:
+                            thinking_parts.append("\n\n")
 
                     elif event_type == "response.output_item.done":
                         item = event.get("item", {})
@@ -213,8 +216,10 @@ class CodexClient:
                 for part in item.get("content", []):
                     if part.get("type") == "output_text":
                         content += part.get("text", "")
-                    elif part.get("type") == "thinking":
-                        thinking += part.get("thinking", "")
+            elif item.get("type") == "reasoning":
+                for part in item.get("summary", []):
+                    if part.get("type") == "summary_text":
+                        thinking += part.get("text", "")
             elif item.get("type") == "function_call":
                 tool_calls.append({
                     "id": item.get("call_id", ""),
@@ -254,6 +259,7 @@ class CodexClient:
         max_tokens: int = 4096,
         temperature: Optional[float] = None,
         tools: Optional[List[Dict]] = None,
+        reasoning: bool = False,
         timeout: int = 120,
     ) -> Generator[Dict[str, Any], None, None]:
         """Yield SSE delta chunks for real-time streaming to the frontend."""
@@ -263,6 +269,8 @@ class CodexClient:
             "stream": True,
             "store": False,
         }
+        if reasoning:
+            payload["reasoning"] = {"summary": "auto"}
         if tools:
             payload["tools"] = self._convert_tools(tools)
 

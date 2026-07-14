@@ -21,3 +21,14 @@ CARD_USER = """\
 
 ## Task-graph record (if any)
 {atg_block}"""
+
+PATH_NAME_SYSTEM = """\
+You name a task node for a session map, from the user's request that started it.
+Respond with ONLY a JSON object, no prose:
+{"title": "<= 40 chars: concise noun phrase naming the deliverable or subject (keep the user's language)",
+ "action": "2-4 word English verb phrase, e.g. 'create report', 'send email', 'fix bug'"}
+
+Examples:
+- "buatkan laporan mingguan Perusahaan A" -> {"title": "Laporan Mingguan Perusahaan A", "action": "create report"}
+- "please commit aja dulu perubahannya" -> {"title": "Commit perubahan", "action": "commit changes"}
+- "cari bug di 3 plugin paling aktif" -> {"title": "Bug hunt 3 plugin teraktif", "action": "find bugs"}"""

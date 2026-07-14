@@ -123,6 +123,65 @@ def test_lift_atg_facts():
     assert lift_atg_facts(None) == ([], [], "")
 
 
+# ── name_path ────────────────────────────────────────────────────────────────
+
+def test_name_path_uses_llm_naming():
+    from backend.agent_runtime.cmp.compactor import name_path
+    named_json = json.dumps({'title': 'Commit perubahan', 'action': 'commit changes'})
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=_scripted_client(named_json)):
+        named = name_path('please commit aja dulu perubahannya')
+    assert named == {'title': 'Commit perubahan', 'action': 'commit changes'}
+
+
+def test_name_path_mechanical_fallback():
+    from backend.agent_runtime.cmp.compactor import name_path
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=_scripted_client('not json at all')):
+        named = name_path('please commit aja dulu perubahannya')
+    assert named['title'] == 'please commit aja dulu perubahannya'
+    assert named['action'] == 'please commit aja dulu'
+    # LLM exception → same fallback, never raises
+    client = MagicMock()
+    client.chat_completion.side_effect = RuntimeError('boom')
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        assert name_path('tulis blog')['title'] == 'tulis blog'
+
+
+def test_branch_paths_get_named_at_creation():
+    from backend.agent_runtime.cmp import on_turn_boundary
+
+    class Log:
+        def get_last_entry(self, types=None):
+            return {'type': 'user', 'ts': 5000, 'content': 'x'}
+
+        def get_entries_between_ts(self, a, b):
+            return []
+
+        def get_entries_after_ts(self, a):
+            return []
+
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(ms, title='first', now_ts=1000)
+    with patch('backend.agent_runtime.cmp.detector.detect',
+               return_value={'decision': 'indep_branch', 'target': None,
+                             'layer': 'LLM', 'reason': 'x'}), \
+         patch('backend.agent_runtime.cmp.compactor.name_path',
+               return_value={'title': 'Blog robin.blog.com',
+                             'action': 'create article'}) as np, \
+         patch('backend.agent_runtime.cmp.compactor.generate_card',
+               return_value={'title': 'first', 'goal': '', 'outcome': '',
+                             'key_facts': [], 'artifacts': []}):
+        result = on_turn_boundary({'id': 'a1', 'enable_cmp': 1,
+                                   'enable_agent_state': 1}, ms, Log(),
+                                  'buatkan tulisan blog untuk robin.blog.com dong')
+    np.assert_called_once()
+    new_path_record = ms.cmp['paths'][result['target']]
+    assert new_path_record['title'] == 'Blog robin.blog.com'
+    assert new_path_record['action'] == 'create article'
+
+
 # ── finalize_active_card ─────────────────────────────────────────────────────
 
 def test_finalize_updates_path_and_clears_stale():

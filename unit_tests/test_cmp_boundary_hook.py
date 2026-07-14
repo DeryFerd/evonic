@@ -1,6 +1,19 @@
 """Tests for the CMP per-turn orchestrator (on_turn_boundary) and its
 coexistence with the ATG re-arm."""
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_path_naming(monkeypatch):
+    """Path naming is a real LLM call at creation — stub it to the mechanical
+    form so titles stay deterministic (and no network) in tests."""
+    monkeypatch.setattr(
+        'backend.agent_runtime.cmp.compactor.name_path',
+        lambda text: {'title': (text or '')[:60],
+                      'action': ' '.join((text or '').split()[:4])[:32]})
+
+
 from unittest.mock import MagicMock, patch
 
 from backend.agent_runtime.cmp import on_turn_boundary, store

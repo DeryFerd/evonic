@@ -48,14 +48,18 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
     text = (user_text or '').strip()
     user_ts = _last_user_ts(chatlog)
 
-    # First-path init: adopt the ongoing work (or this first message) as P1.
+    # First-path init: adopt the ongoing work (or this first message) as A1.
     if not ms.cmp or not ms.cmp.get('paths'):
-        title = _current_work_title(ms) or text[:60] or 'Session start'
-        ms.cmp = store.new_cmp(ms, title=title, goal=text[:300],
-                               now_ts=user_ts)
+        title = _current_work_title(ms)
+        ms.cmp = store.new_cmp(ms, title=title or text[:60] or 'Session start',
+                               goal=text[:300], now_ts=user_ts)
+        if not title:  # raw message as title reads badly on the map — name it
+            _apply_naming(ms.cmp['paths'][ms.cmp['active_id']], text)
         _emit(agent, 'cmp_path_created',
-              {'path_id': 'P1', 'title': title, 'initiator': 'auto-init'})
-        return {'decision': 'init', 'target': 'P1', 'layer': 'init'}
+              {'path_id': ms.cmp['active_id'],
+               'title': ms.cmp['paths'][ms.cmp['active_id']]['title'],
+               'initiator': 'auto-init'})
+        return {'decision': 'init', 'target': ms.cmp['active_id'], 'layer': 'init'}
 
     decision = detector.detect(ms.cmp, ms, text,
                                recent_tail=_last_final_excerpt(chatlog))
@@ -72,6 +76,7 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
                 ms.cmp, ms, title=text[:60], goal=text[:300],
                 depends_on=[target] if (d == 'dep_branch' and target) else [],
                 now_ts=user_ts)
+            _apply_naming(record, text)
             decision['target'] = record['id']
             _emit(agent, 'cmp_path_created',
                   {'path_id': record['id'], 'depends_on': record['depends_on'],
@@ -86,6 +91,20 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
         _emit(agent, 'cmp_path_archived', {'path_id': archived_id})
     _emit(agent, 'cmp_boundary_decision', decision)
     return decision
+
+
+def _apply_naming(record: dict, user_text: str) -> None:
+    """Replace the mechanical raw-message title/action with a proper name
+    (one small LLM call at path creation). Best-effort — never blocks."""
+    try:
+        from backend.agent_runtime.cmp.compactor import name_path
+        named = name_path(user_text)
+        if named.get('title'):
+            record['title'] = named['title']
+        if named.get('action'):
+            record['action'] = named['action']
+    except Exception:
+        pass
 
 
 def _current_work_title(ms) -> str:

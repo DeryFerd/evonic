@@ -15,6 +15,19 @@ cards only); the active path's dependency ancestors stay in memory because
 the child consumes their results; returning reloads a path's detail.
 """
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _stub_path_naming(monkeypatch):
+    """Path naming is a real LLM call at creation — stub it to the mechanical
+    form so titles stay deterministic (and no network) in tests."""
+    monkeypatch.setattr(
+        'backend.agent_runtime.cmp.compactor.name_path',
+        lambda text: {'title': (text or '')[:60],
+                      'action': ' '.join((text or '').split()[:4])[:32]})
+
+
 from unittest.mock import patch
 
 from backend.agent_runtime.cmp import assembler, on_turn_boundary

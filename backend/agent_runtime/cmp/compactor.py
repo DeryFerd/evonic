@@ -167,6 +167,41 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
         return clamp_card_fields(_mechanical_card(path, entries, atg_state))
 
 
+def name_path(user_text: str) -> dict:
+    """Proper {'title','action'} for a NEW path from the user's request —
+    one small LLM call at path creation (raw message excerpts as node names
+    read badly on the map). NEVER raises; mechanical fallback on any failure."""
+    text = (user_text or '').strip()
+    mechanical = {
+        'title': text[:60],
+        'action': ' '.join(text.split()[:4])[:32],
+    }
+    if not text:
+        return mechanical
+    try:
+        from backend.task_classifier import _get_classifier_client
+        client = _get_classifier_client('cmp_model_id')
+        response = client.chat_completion(
+            [{"role": "system", "content": prompts.PATH_NAME_SYSTEM},
+             {"role": "user", "content": text[:1000]}],
+            tools=None, temperature=0.0, enable_thinking=False,
+            max_tokens=120,
+        )
+        if not response.get('success'):
+            raise ValueError(response.get('error_type') or 'LLM call failed')
+        msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})
+        content = (msg.get('content') or msg.get('reasoning_content') or '').strip()
+        m = _JSON_RE.search(content)
+        named = json.loads(m.group(0)) if m else None
+        if not isinstance(named, dict) or not named.get('title'):
+            raise ValueError('no usable JSON in naming response')
+        return {'title': str(named['title'])[:60],
+                'action': str(named.get('action') or mechanical['action'])[:32]}
+    except Exception as e:
+        _logger.warning("CMP path naming fell back to mechanical: %s", e)
+        return mechanical
+
+
 def finalize_active_card(chatlog, cmp: dict, ms) -> None:
     """Refresh the ACTIVE path's card before it is suspended (switch/branch).
     Uses the live ms.atg (not yet snapshotted). Never raises."""

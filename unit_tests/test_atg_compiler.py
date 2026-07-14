@@ -177,6 +177,41 @@ def test_compile_call_budget_enforced():
     assert all(dag.get(f"n{i}").is_composite for i in range(1, 6))
 
 
+def test_refinement_bailout_after_first_failed_node():
+    """A refinement that fails all attempts disables refinement for the rest
+    of the compile — the backbone clearly can't do it, and every further try
+    would burn a full LLM call for nothing (seen live: 118s compiles)."""
+    composites = [{"id": f"n{i}", "goal": f"c{i}", "tool": None,
+                   "outputs": [], "deps": []} for i in range(1, 5)]
+    llm = ScriptedLLM([_json_block(composites)] + ["garbage"] * 10)
+    dag, _ = compile_task_graph("goal", TOOLS, llm, LOCK)
+    # 1 coarse + (1 + _REFINE_RETRIES) failed refinement attempts, then bail
+    assert len(llm.calls) == 3
+    assert all(dag.get(f"n{i}").is_composite for i in range(1, 5))
+
+
+def test_compile_calls_are_token_capped():
+    from backend.agent_runtime.atg.compiler import _COMPILE_MAX_TOKENS
+
+    class RecordingLLM(ScriptedLLM):
+        def __init__(self, responses):
+            super().__init__(responses)
+            self.max_tokens_seen = []
+
+        def chat_completion(self, messages, tools=None, temperature=None,
+                            enable_thinking=True, max_tokens=None, log_file=None):
+            self.max_tokens_seen.append(max_tokens)
+            return super().chat_completion(messages, tools, temperature,
+                                           enable_thinking, max_tokens, log_file)
+
+    coarse = _json_block([{"id": "n1", "goal": "read", "tool": "read_file",
+                           "args_template": {"path": "a"}, "outputs": ["content"],
+                           "deps": []}])
+    llm = RecordingLLM([coarse])
+    compile_task_graph("goal", TOOLS, llm, LOCK)
+    assert llm.max_tokens_seen == [_COMPILE_MAX_TOKENS]
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def test_extract_json_variants():

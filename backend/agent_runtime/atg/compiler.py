@@ -33,7 +33,12 @@ from backend.agent_runtime.atg.interfaces import get_interface_catalog
 
 _logger = logging.getLogger(__name__)
 
-_MAX_RETRIES_PER_PASS = 2
+_MAX_RETRIES_PER_PASS = 2   # coarse pass — its failure fails the whole compile
+_REFINE_RETRIES = 1         # refinement — failure just leaves the node atomic
+                            # (executor free-binds it), retry #2 rarely helped live
+# Graph JSON never legitimately needs more than this; without a cap a rambling
+# local model generates prose for minutes per call (seen live: 118s compiles).
+_COMPILE_MAX_TOKENS = 2048
 _JSON_BLOCK_RE = re.compile(r'```(?:json)?\s*(\{.*?\})\s*```', re.DOTALL)
 
 
@@ -77,7 +82,7 @@ class _LLMCaller:
                 tools=None,
                 temperature=0,
                 enable_thinking=False,
-                max_tokens=None,
+                max_tokens=_COMPILE_MAX_TOKENS,
                 log_file=self.log_file,
             )
         if not result.get('success'):
@@ -273,7 +278,7 @@ def _refine_node(caller: _LLMCaller, dag: TaskDAG, node_id: str,
         outputs=node.outputs, schema=prompts.GRAPH_JSON_SCHEMA)
 
     last_error = None
-    for _attempt in range(1 + _MAX_RETRIES_PER_PASS):
+    for _attempt in range(1 + _REFINE_RETRIES):
         prompt = user if last_error is None else (
             user + prompts.COMPILE_RETRY_SUFFIX.format(errors=last_error))
         try:
@@ -330,9 +335,16 @@ def compile_task_graph(root_goal: str, tools: list, llm, llm_lock,
         try:
             dag = _refine_node(caller, dag, node_id, catalog)
         except CompilationError as e:
-            _logger.warning("ATG: node %s stays atomic after failed refinement: %s",
-                            node_id, e)
-            continue
+            # Adaptive bail-out: a refinement that failed ALL its attempts is
+            # near-certain evidence the backbone can't do refinement at all
+            # (seen live: every subsequent node failed the same way, burning
+            # the whole call budget for ~2 minutes with zero graph change).
+            # Stop refining — composite nodes are executable via free-bind.
+            _logger.warning(
+                "ATG: node %s stays atomic after failed refinement (%s) — "
+                "skipping refinement for remaining composites: %s",
+                node_id, e, queue)
+            break
         dag.version += 1
         history.record(node_id, dag)
         queue.extend(nid for nid, n in sorted(dag.nodes.items())

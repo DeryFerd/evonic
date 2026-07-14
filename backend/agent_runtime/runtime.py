@@ -2007,23 +2007,44 @@ class AgentRuntime:
                         # so the agent can start a new plan cycle for this task
                         # instead of being stuck in a stale plan from a previous task.
                         ms = AgentState()
-            # ATG re-arm: when the previous task graph is finished and this
-            # message is a brand-new complex task (not a follow-up), re-enter
+            # Cross-task boundary handling. CMP (when enabled) owns it: the
+            # detector routes the turn (continue/return/branch) and a branch
+            # IS the ATG re-arm — a fresh plan cycle on its own path. Agents
+            # with ATG but not CMP keep the original 2-way re-arm.
+            _boundary_text = ""
+            if not agent.get('is_subagent'):
+                for _msg in reversed(messages):
+                    if _msg.get('role') == 'user':
+                        _c = _msg.get('content', '')
+                        _boundary_text = (
+                            next((p.get('text', '') for p in _c
+                                  if isinstance(p, dict) and p.get('type') == 'text'), '')
+                            if isinstance(_c, list) else _c)
+                        break
+            _cmp_handled = False
+            if agent.get('enable_cmp') and agent.get('enable_agent_state') \
+                    and not agent.get('is_subagent'):
+                try:
+                    from backend.agent_runtime import cmp as _cmp_pkg
+                    _cmp_chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
+                    _cmp_res = _cmp_pkg.on_turn_boundary(agent, ms, _cmp_chatlog,
+                                                         _boundary_text)
+                    _cmp_handled = _cmp_res is not None
+                    if _cmp_res and _cmp_res.get('decision') not in ('continue', 'init'):
+                        _logger.info("CMP boundary: %s -> %s (layer %s) for session %s",
+                                     _cmp_res.get('decision'), _cmp_res.get('target'),
+                                     _cmp_res.get('layer'), ctx.session_id)
+                except Exception:
+                    _logger.exception("CMP boundary check failed — keeping current state")
+
+            # ATG re-arm (atg-only agents): when the previous task graph is
+            # finished and this message is a brand-new complex task, re-enter
             # the plan/compile cycle so the new task gets its own graph.
-            if (not is_new_session and ms.mode == 'execute'
+            if (not _cmp_handled and not is_new_session and ms.mode == 'execute'
                     and agent.get('enable_atg') and not agent.get('is_subagent')):
                 try:
                     from backend.agent_runtime import atg as _atg_pkg
-                    _rearm_text = ""
-                    for _msg in reversed(messages):
-                        if _msg.get('role') == 'user':
-                            _c = _msg.get('content', '')
-                            _rearm_text = (
-                                next((p.get('text', '') for p in _c
-                                      if isinstance(p, dict) and p.get('type') == 'text'), '')
-                                if isinstance(_c, list) else _c)
-                            break
-                    if _atg_pkg.maybe_rearm_atg(agent, ms, _rearm_text):
+                    if _atg_pkg.maybe_rearm_atg(agent, ms, _boundary_text):
                         _logger.info("ATG re-armed for session %s — new complex task detected",
                                      ctx.session_id)
                 except Exception:

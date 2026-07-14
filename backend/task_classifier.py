@@ -55,6 +55,71 @@ When in doubt, classify as COMPLEX.
 Respond with exactly one word: TRIVIAL or COMPLEX"""
 
 
+_BOUNDARY_SYSTEM = """You route a user's new message in a multi-task session for an AI agent.
+The session contains several task paths (below). Decide exactly one:
+  CONTINUE        - the message continues the ACTIVE path: feedback, refinement,
+                    bug report, correction, or question about the same work.
+  RETURN:<id>     - the message resumes a specific NON-ACTIVE path.
+  DEP_BRANCH:<id> - a NEW task that USES the results of path <id>
+                    (e.g. "now make an invoice for the client A website" after
+                    a path that built that website).
+  INDEP_BRANCH    - an unrelated new task.
+When in doubt, answer CONTINUE.
+Respond with exactly one token, e.g.: CONTINUE or RETURN:P2 or DEP_BRANCH:P1 or INDEP_BRANCH"""
+
+_BOUNDARY_RE = re.compile(
+    r'\b(CONTINUE|RETURN:(P\d+)|DEP_BRANCH:(P\d+)|INDEP_BRANCH)\b')
+
+
+def classify_boundary(map_text: str, active_card: str, other_cards: str,
+                      user_text: str) -> dict:
+    """4-class session boundary decision for CMP.
+
+    Returns {'decision': 'continue'|'return'|'dep_branch'|'indep_branch',
+             'target': 'P<n>'|None}. Defaults to continue on ANY doubt,
+    parse failure, or LLM error (precision-first: a false branch severs
+    context; a missed branch only costs tokens).
+    """
+    fallback = {"decision": "continue", "target": None}
+    text = (user_text or "").strip()
+    if not text:
+        return fallback
+    try:
+        client = _get_classifier_client()
+        user_prompt = (f"## Path map\n{map_text}\n\n"
+                       f"## Active path\n{active_card}\n\n"
+                       f"## Other paths\n{other_cards}\n\n"
+                       f"## New message\n{text[:4000]}")
+        response = client.chat_completion(
+            [{"role": "system", "content": _BOUNDARY_SYSTEM},
+             {"role": "user", "content": user_prompt}],
+            tools=None, temperature=0.0, enable_thinking=False,
+            max_tokens=150,
+        )
+        if not response.get("success"):
+            _logger.warning("Boundary classifier LLM call failed: %s",
+                            response.get("error_type"))
+            return fallback
+        msg = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
+        content = (msg.get("content") or "").strip().upper()
+        if not content:
+            content = (msg.get("reasoning_content") or "").strip().upper()
+        m = _BOUNDARY_RE.search(content)
+        if not m:
+            return fallback
+        token = m.group(1)
+        if token == "CONTINUE":
+            return fallback
+        if token == "INDEP_BRANCH":
+            return {"decision": "indep_branch", "target": None}
+        if token.startswith("RETURN:"):
+            return {"decision": "return", "target": m.group(2)}
+        return {"decision": "dep_branch", "target": m.group(3)}
+    except Exception as e:
+        _logger.warning("Boundary classifier failed, defaulting to continue: %s", e)
+        return fallback
+
+
 _CONTINUATION_SYSTEM = """You decide whether a user's new message starts a NEW task or CONTINUES the previous one, for an AI coding agent.
 
 The agent just finished this task:

@@ -98,6 +98,50 @@ def test_generic_title_word_does_not_short_circuit():
         assert result['decision'] == 'dep_branch'
 
 
+def test_l3_sees_recent_deliverable_tail():
+    """The just-delivered reply reaches the L3 prompt — the branch cue for
+    'invoice done' → 'rebuild krasan-cli' style borderline cases."""
+    ms = _session()
+    captured = {}
+
+    def fake_boundary(map_text, active_card, other_cards, user_text):
+        captured['active'] = active_card
+        return {'decision': 'dep_branch', 'target': 'P2'}
+
+    with patch.multiple('backend.task_classifier',
+                        classify_task=MagicMock(return_value='complex'),
+                        classify_boundary=fake_boundary):
+        result = detect(ms.cmp, ms, LONG_NEW_TASK,
+                        recent_tail='Invoice INV-042 untuk Budi Contoh sudah dibuat.')
+    assert 'INV-042' in captured['active']
+    assert result['decision'] == 'dep_branch'
+
+
+def test_hook_passes_last_final_to_detector():
+    from backend.agent_runtime.cmp import on_turn_boundary
+
+    class Log:
+        def get_last_entry(self, types=None):
+            if types and 'final' in types:
+                return {'type': 'final', 'ts': 4000,
+                        'content': 'Invoice sudah selesai dibuat.'}
+            return {'type': 'user', 'ts': 5000}
+
+        def get_entries_between_ts(self, a, b):
+            return []
+
+        def get_entries_after_ts(self, a):
+            return []
+
+    ms = _session()
+    with patch('backend.agent_runtime.cmp.detector.detect',
+               return_value={'decision': 'continue', 'target': None,
+                             'layer': 'L3', 'reason': 'x'}) as det:
+        on_turn_boundary({'id': 'a1', 'enable_cmp': 1, 'enable_agent_state': 1},
+                         ms, Log(), 'tolong rebuild krasan-cli sekarang setelah invoice tadi')
+    assert det.call_args[1]['recent_tail'] == 'Invoice sudah selesai dibuat.'
+
+
 def test_l3_sees_finished_task_state():
     ms = _session()
     ms.atg = {'status': 'done', 'dag': {'root_goal': 'g'}}

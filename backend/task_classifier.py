@@ -63,14 +63,22 @@ Respond with exactly one word: TRIVIAL or COMPLEX"""
 
 _BOUNDARY_SYSTEM = """You route a user's new message in a multi-task session for an AI agent.
 The session contains several task paths (below). Decide exactly one:
-  CONTINUE        - the message continues the ACTIVE path: feedback, refinement,
-                    bug report, correction, or question about the same work.
+  CONTINUE        - the message is about the ACTIVE path's SAME deliverable:
+                    feedback, refinement, bug report, correction, approval,
+                    or a question about that work.
   RETURN:<id>     - the message resumes a specific NON-ACTIVE path.
-  DEP_BRANCH:<id> - a NEW task that USES the results of path <id>
-                    (e.g. "now make an invoice for the client A website" after
-                    a path that built that website).
-  INDEP_BRANCH    - an unrelated new task.
-When in doubt, answer CONTINUE.
+  DEP_BRANCH:<id> - a NEW goal with a DIFFERENT deliverable that uses the
+                    results, tools, or context of path <id>. Examples:
+                    "now make an invoice for the client A website" (after the
+                    path that built it); "update the CLI tool we just used";
+                    "rebuild the server that hosts it".
+  INDEP_BRANCH    - a new goal unrelated to any existing path.
+
+The test is the DELIVERABLE, not the topic: a new imperative goal is a
+BRANCH even when it involves the same project, tools, or domain as the
+active path — especially when the active path's work is already finished.
+CONTINUE only when the message is about the same deliverable the active
+path is producing. When genuinely unsure, answer CONTINUE.
 Respond with exactly one token, e.g.: CONTINUE or RETURN:P2 or DEP_BRANCH:P1 or INDEP_BRANCH"""
 
 _BOUNDARY_RE = re.compile(

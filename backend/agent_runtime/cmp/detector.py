@@ -32,7 +32,7 @@ _ACK_MAX_WORDS = 3
 _PATH_ID_RE = re.compile(r'\bP(\d+)\b')
 
 
-def _render_cards_for_llm(cmp: dict, ms=None) -> tuple:
+def _render_cards_for_llm(cmp: dict, ms=None, recent_tail: str = '') -> tuple:
     """(map_text, active_card, other_cards) compact text views for L3."""
     lines = []
     for pid in sorted(cmp['paths']):
@@ -60,14 +60,21 @@ def _render_cards_for_llm(cmp: dict, ms=None) -> tuple:
             active += f"\nstate: this task's work is FINISHED (task graph {atg_status})"
         elif atg_status:
             active += f"\nstate: task graph {atg_status}"
+    # What the agent just delivered — a completed deliverable followed by a
+    # new imperative is the classic branch signature the cards alone miss
+    # (the active card is only finalized on switch).
+    if recent_tail:
+        active += f"\nlast assistant reply (what was just delivered): {recent_tail}"
     others = '\n\n'.join(card_text(p) for pid, p in sorted(cmp['paths'].items())
                          if pid != cmp['active_id'])
     return map_text, active, others or '(none)'
 
 
-def detect(cmp: dict, ms, user_text: str) -> dict:
+def detect(cmp: dict, ms, user_text: str, recent_tail: str = '') -> dict:
     """Classify a user turn. Returns {'decision', 'target', 'layer', 'reason'}.
 
+    recent_tail: excerpt of the agent's latest reply — gives L3 the
+    just-delivered deliverable that raw (pre-switch) cards don't carry.
     Every decision — including `continue` — is logged with its resolving
     layer and reason, so 'why didn't it branch?' is answerable from the log.
     """
@@ -108,7 +115,7 @@ def detect(cmp: dict, ms, user_text: str) -> dict:
                      f'classify_task={task_class} (only complex tasks branch)')
 
     # L3 — LLM 4-class decision over cards (never transcripts).
-    map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms)
+    map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms, recent_tail)
     result = classify_boundary(map_text, active_card, other_cards, text)
     cmp.setdefault('stats', {})['detector_llm_calls'] = \
         cmp['stats'].get('detector_llm_calls', 0) + 1

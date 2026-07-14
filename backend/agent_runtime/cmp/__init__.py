@@ -57,7 +57,8 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
               {'path_id': 'P1', 'title': title, 'initiator': 'auto-init'})
         return {'decision': 'init', 'target': 'P1', 'layer': 'init'}
 
-    decision = detector.detect(ms.cmp, ms, text)
+    decision = detector.detect(ms.cmp, ms, text,
+                               recent_tail=_last_final_excerpt(chatlog))
     d, target = decision['decision'], decision.get('target')
     try:
         if d == 'return':
@@ -96,6 +97,17 @@ def _current_work_title(ms) -> str:
     if ms.plan_file:
         return str(ms.plan_file)[:60]
     return ''
+
+
+def _last_final_excerpt(chatlog, max_chars: int = 300) -> str:
+    """Excerpt of the agent's latest final reply — the just-delivered
+    deliverable, fed to the boundary classifier for context."""
+    try:
+        entry = chatlog.get_last_entry(types=frozenset({'final'}))
+        content = (entry or {}).get('content') or ''
+        return content[:max_chars]
+    except Exception:
+        return ''
 
 
 def _last_user_ts(chatlog):

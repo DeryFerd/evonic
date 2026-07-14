@@ -787,7 +787,8 @@ def _builtin_compile_task_graph_factory(agent_context: dict):
             )
         except CompilationError as e:
             # Mark the attempt so save_plan's ATG redirect unlocks as fallback.
-            ms.atg = {"status": "failed", "error": str(e)[:500]}
+            # root_goal kept for the re-arm continuation check.
+            ms.atg = {"status": "failed", "error": str(e)[:500], "root_goal": goal}
             return {"error": f"Task graph compilation failed: {e}. "
                              "You can retry with a clearer goal, or fall back to save_plan."}
 

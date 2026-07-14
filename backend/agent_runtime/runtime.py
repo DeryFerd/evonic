@@ -2006,6 +2006,28 @@ class AgentRuntime:
                         # so the agent can start a new plan cycle for this task
                         # instead of being stuck in a stale plan from a previous task.
                         ms = AgentState()
+            # ATG re-arm: when the previous task graph is finished and this
+            # message is a brand-new complex task (not a follow-up), re-enter
+            # the plan/compile cycle so the new task gets its own graph.
+            if (not is_new_session and ms.mode == 'execute'
+                    and agent.get('enable_atg') and not agent.get('is_subagent')):
+                try:
+                    from backend.agent_runtime import atg as _atg_pkg
+                    _rearm_text = ""
+                    for _msg in reversed(messages):
+                        if _msg.get('role') == 'user':
+                            _c = _msg.get('content', '')
+                            _rearm_text = (
+                                next((p.get('text', '') for p in _c
+                                      if isinstance(p, dict) and p.get('type') == 'text'), '')
+                                if isinstance(_c, list) else _c)
+                            break
+                    if _atg_pkg.maybe_rearm_atg(agent, ms, _rearm_text):
+                        _logger.info("ATG re-armed for session %s — new complex task detected",
+                                     ctx.session_id)
+                except Exception:
+                    _logger.exception("ATG re-arm check failed — keeping current state")
+
             # Sub-agents receive delegated tasks from their parent and
             # should never require plan/approval cycles. Force execute mode.
             if agent.get('is_subagent'):

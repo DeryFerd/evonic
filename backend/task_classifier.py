@@ -55,6 +55,60 @@ When in doubt, classify as COMPLEX.
 Respond with exactly one word: TRIVIAL or COMPLEX"""
 
 
+_CONTINUATION_SYSTEM = """You decide whether a user's new message starts a NEW task or CONTINUES the previous one, for an AI coding agent.
+
+The agent just finished this task:
+{goal}
+
+CONTINUATION: feedback, bug reports, follow-ups, refinements, corrections or questions about the SAME work. Examples: "it doesn't work", "change the port to 8080", "add a button to that page", "why is it slow?", "belum bisa", "masih error"
+NEW_TASK: an unrelated or clearly separate piece of work — a different project, feature, or goal than the finished task.
+
+When in doubt, answer CONTINUATION.
+Respond with exactly one word: NEW_TASK or CONTINUATION"""
+
+# Short follow-ups ("belum bisa", "masih error", "coba lagi") are continuations.
+_CONTINUATION_MAX_WORDS = 6
+
+
+def classify_continuation(previous_goal: str, user_message: str) -> str:
+    """Classify a message as 'new_task' or 'continuation' of previous_goal.
+
+    Defaults to 'continuation' on any error — re-planning by surprise is
+    worse than staying in the current flow.
+    """
+    text = (user_message or "").strip()
+    if not text or not (previous_goal or "").strip():
+        return "continuation"
+    if len(text.split()) <= _CONTINUATION_MAX_WORDS:
+        return "continuation"
+
+    try:
+        client = _get_classifier_client()
+        response = client.chat_completion(
+            [{"role": "system",
+              "content": _CONTINUATION_SYSTEM.format(goal=previous_goal.strip()[:1000])},
+             {"role": "user", "content": text[:4000]}],
+            tools=None,
+            temperature=0.0,
+            enable_thinking=False,
+            max_tokens=100,
+        )
+        if not response.get("success"):
+            _logger.warning("Continuation classifier LLM call failed: %s",
+                            response.get("error_type"))
+            return "continuation"
+        msg = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
+        content = (msg.get("content") or "").strip().upper()
+        if not content:
+            content = (msg.get("reasoning_content") or "").strip().upper()
+        result = "new_task" if "NEW_TASK" in content else "continuation"
+        _logger.info("Message classified as %s (LLM)", result)
+        return result
+    except Exception as e:
+        _logger.warning("Continuation classifier failed, defaulting to continuation: %s", e)
+        return "continuation"
+
+
 def _get_classifier_client() -> LLMClient:
     """Build an LLMClient for classification, using the configured model or default."""
     try:
@@ -131,7 +185,7 @@ def classify_task(user_message: str) -> str:
             tools=None,
             temperature=0.0,
             enable_thinking=False,
-            max_tokens=10,
+            max_tokens=100,  # Increased from 10 to ensure model can produce full response
         )
         if not response.get("success"):
             _logger.warning("Task classifier LLM call failed: %s", response.get("error_type"))
@@ -139,11 +193,18 @@ def classify_task(user_message: str) -> str:
         choices = response.get("response", {}).get("choices", [])
         if not choices:
             return "complex"
-        content = choices[0].get("message", {}).get("content", "").strip().upper()
+        # Extract content from LLM response - model may put response in 'content' or 'reasoning_content'
+        # (some models like deepseek-v4-flash put the response in reasoning_content field)
+        msg = choices[0].get("message", {})
+        content = msg.get("content", "").strip().upper()
+        reasoning = msg.get("reasoning_content", "").strip().upper()
+        # If content is empty, try reasoning_content as fallback
+        if not content and reasoning:
+            content = reasoning
         if "TRIVIAL" in content:
             _logger.info("Task classified as trivial (LLM)")
             return "trivial"
-        _logger.info("Task classified as complex (LLM: %s)", content[:20])
+        _logger.info("Task classified as complex (LLM: %s)", content[:20] if content else "empty/missing")
         return "complex"
     except Exception as e:
         _logger.warning("Task classifier failed, defaulting to complex: %s", e)

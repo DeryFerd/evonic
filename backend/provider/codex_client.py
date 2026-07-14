@@ -68,9 +68,12 @@ class CodexClient:
             else:
                 return self._blocking_response(url, payload, timeout)
         except httpx.TimeoutException:
+            # Use 'request_timeout' (not 'timeout_error') so llm_loop retries on
+            # the same model before falling back — reasoning turns are slow and a
+            # single stall shouldn't demote us to a weaker fallback model.
             return {
                 "success": False,
-                "error_type": "timeout_error",
+                "error_type": "request_timeout",
                 "error": "Codex request timed out",
             }
         except httpx.ConnectError as e:

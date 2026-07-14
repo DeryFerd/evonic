@@ -1686,16 +1686,24 @@ async function deleteSession(sessionId) {
 // exits (done/timeout/failed) it drops off the list entirely, and rows are
 // styled as terminal command lines (mono + prompt glyph + live dot) so they
 // don't read like the checkbox/checkmark Task list.
+// In-memory cache of background process data, keyed by job_id.
+let _bgProcessesData = {};
+
 function buildBgProcessesHtml(procs) {
     if (!Array.isArray(procs)) return '';
     const running = procs.filter(p => p && p.status === 'running');
     if (running.length === 0) return '';
+    // Store in cache for modal lookup
+    _bgProcessesData = {};
+    for (const p of running) {
+        _bgProcessesData[p.job_id] = p;
+    }
     const liveDot = '<span class="relative flex h-2 w-2 flex-shrink-0"><span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60 animate-ping"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span></span>';
     let html = '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Background Processes</div><ul class="space-y-1">';
     for (const p of running) {
         const secs = Math.max(0, Math.floor(Date.now() / 1000 - p.started_at));
         const elapsed = secs < 60 ? `${secs}s` : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60)}m`);
-        html += `<li class="flex items-center gap-1.5">${liveDot}<span class="text-green-500 dark:text-green-400 font-mono text-[11px] flex-shrink-0 select-none">❯</span><span class="font-mono text-[11px] text-gray-700 dark:text-gray-200 truncate" title="${esc(p.command)}">${esc(p.command)}</span><span class="font-mono text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 ml-auto tabular-nums">${esc(elapsed)}</span></li>`;
+        html += `<li class="flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 -mx-1 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onclick="openBgProcessModal('${esc(p.job_id)}')" title="Click to view details">${liveDot}<span class="text-green-500 dark:text-green-400 font-mono text-[11px] flex-shrink-0 select-none">❯</span><span class="font-mono text-[11px] text-gray-700 dark:text-gray-200 truncate">${esc(p.command)}</span><span class="font-mono text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 ml-auto tabular-nums">${esc(elapsed)}</span></li>`;
     }
     html += '</ul></div>';
     return html;
@@ -1717,6 +1725,172 @@ function buildContextUsageHtml(cu) {
         label = `~${fmt(cu.used)} tokens`;
     }
     return `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600"><div class="flex justify-between items-center"><span class="text-gray-500 dark:text-gray-400 font-medium text-xs uppercase tracking-wide">Context</span><span class="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">${label}</span></div>${barHtml}</div>`;
+}
+
+// ==================== Background Process Modal ====================
+
+let _bgProcessModalJobId = null;
+let _bgLogPollTimer = null;
+
+function openBgProcessModal(jobId) {
+    const p = _bgProcessesData[jobId];
+    if (!p) return;
+    _bgProcessModalJobId = jobId;
+
+    const backdrop = document.getElementById('bg-process-modal-backdrop');
+    const modal = document.getElementById('bg-process-modal');
+    const body = document.getElementById('bg-process-modal-body');
+    const title = document.getElementById('bg-process-modal-title');
+
+    // Status badge colors
+    const statusColors = {running: 'text-green-700 bg-green-100 dark:bg-green-900 dark:text-green-300', done: 'text-blue-700 bg-blue-100 dark:bg-blue-900 dark:text-blue-300', timeout: 'text-red-700 bg-red-100 dark:bg-red-900 dark:text-red-300'};
+    const kindColors = {wrapper: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300', tmux: 'bg-amber-100 text-amber-700 dark:bg-amber-900 dark:text-amber-300', screen: 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300', nohup: 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300'};
+
+    const started = new Date(p.started_at * 1000).toLocaleString();
+    const now = Date.now() / 1000;
+    const secs = Math.max(0, Math.floor((p.finished_at || now) - p.started_at));
+    const elapsed = secs < 60 ? `${secs}s` : (secs < 3600 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ${secs % 60}s`);
+    const finished = p.finished_at ? new Date(p.finished_at * 1000).toLocaleString() : '—';
+    const exitCode = (p.status !== 'running' && p.exit_code != null) ? String(p.exit_code) : '—';
+    const statusColor = statusColors[p.status] || statusColors.running;
+    const kindColor = kindColors[p.kind] || kindColors.wrapper;
+
+    // Live indicator for running processes
+    const liveIndicator = p.status === 'running'
+        ? '<span class="inline-flex items-center gap-1 ml-2"><span class="relative flex h-2 w-2"><span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60 animate-ping"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span></span><span class="text-[10px] text-green-600 dark:text-green-400 font-medium">LIVE</span></span>'
+        : '';
+
+    let html = '<div class="space-y-3 text-sm">';
+
+    // Meta fields
+    html += '<div class="grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5">';
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Job ID</div><div class="font-mono text-xs text-gray-700 dark:text-gray-200">${esc(p.job_id)}</div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Kind</div><div><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${kindColor}">${esc(p.kind)}</span></div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Status</div><div class="flex items-center"><span class="inline-flex px-1.5 py-0.5 rounded text-[11px] font-medium ${statusColor}">${esc(p.status)}</span>${liveIndicator}</div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Started</div><div class="font-mono text-xs text-gray-700 dark:text-gray-200">${esc(started)}</div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Finished</div><div class="font-mono text-xs text-gray-700 dark:text-gray-200">${esc(finished)}</div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Elapsed</div><div class="font-mono text-xs text-gray-700 dark:text-gray-200 bg-process-elapsed" data-started="${p.started_at}" data-finished="${p.finished_at || 0}">${esc(elapsed)}</div>`;
+    html += `<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Exit Code</div><div class="font-mono text-xs text-gray-700 dark:text-gray-200">${esc(exitCode)}</div>`;
+    html += '</div>';
+
+    // Command block
+    html += '<div class="pt-2">';
+    html += '<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Command</div>';
+    html += `<pre class="bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-lg p-3 text-xs font-mono text-gray-800 dark:text-gray-200 overflow-x-auto whitespace-pre-wrap max-h-28 overflow-y-auto">${esc(p.command)}</pre>`;
+    html += '</div>';
+
+    // Log file
+    if (p.log_file) {
+        html += '<div class="pt-1">';
+        html += '<div class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide mb-1">Log File</div>';
+        html += `<div class="font-mono text-[11px] text-gray-500 dark:text-gray-400 truncate" title="${esc(p.log_file)}">${esc(p.log_file)}</div>`;
+        html += '</div>';
+
+        // Log output section
+        html += '<div class="pt-2">';
+        html += '<div class="flex items-center justify-between mb-1">';
+        html += '<div class="flex items-center gap-2">';
+        html += '<span class="text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">Log Output</span>';
+        html += '<span id="bg-log-live-badge" class="hidden text-[10px] text-green-600 dark:text-green-400 font-medium flex items-center gap-1"><span class="relative flex h-1.5 w-1.5"><span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60 animate-ping"></span><span class="relative inline-flex h-1.5 w-1.5 rounded-full bg-green-500"></span></span>LIVE</span>';
+        html += '</div>';
+        html += '<span id="bg-log-refreshed" class="text-[10px] text-gray-400 dark:text-gray-500"></span>';
+        html += '</div>';
+        html += '<pre id="bg-log-content" class="bg-gray-900 dark:bg-black border border-gray-700 rounded-lg p-3 text-[11px] font-mono text-green-400 overflow-x-auto max-h-64 overflow-y-auto"><div class="flex items-center justify-center py-8 text-gray-500"><svg class="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span class="text-xs">Loading log...</span></div></pre>';
+        html += '</div>';
+    }
+
+    html += '</div>';
+
+    title.textContent = '⚙ ' + (p.session_name ? esc(p.session_name) + ' — ' : '') + 'Background Process';
+    body.innerHTML = html;
+
+    backdrop.classList.remove('hidden');
+    modal.classList.remove('hidden');
+
+    // Start elapsed timer update for running processes
+    if (p.status === 'running' && !p.finished_at) _startBgElapsedTimer();
+
+    // Start log polling
+    if (p.log_file) _fetchBgLog();
+
+    // Focus close button
+    setTimeout(() => {
+        const cb = modal.querySelector('button[aria-label="Close bg process modal"]');
+        if (cb) cb.focus();
+    }, 50);
+}
+
+function closeBgProcessModal() {
+    document.getElementById('bg-process-modal-backdrop').classList.add('hidden');
+    document.getElementById('bg-process-modal').classList.add('hidden');
+    _bgProcessModalJobId = null;
+    _stopBgElapsedTimer();
+    _stopBgLogPolling();
+}
+
+let _bgElapsedTimer = null;
+
+function _startBgElapsedTimer() {
+    _stopBgElapsedTimer();
+    _bgElapsedTimer = setInterval(() => {
+        const el = document.querySelector('.bg-process-elapsed');
+        if (!el) { _stopBgElapsedTimer(); return; }
+        const started = parseFloat(el.dataset.started) || 0;
+        const finished = parseFloat(el.dataset.finished) || 0;
+        if (finished) { _stopBgElapsedTimer(); return; }
+        const secs = Math.max(0, Math.floor(Date.now() / 1000 - started));
+        const txt = secs < 60 ? `${secs}s` : (secs < 3600 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ${secs % 60}s`);
+        el.textContent = txt;
+    }, 1000);
+}
+
+function _stopBgElapsedTimer() {
+    if (_bgElapsedTimer) { clearInterval(_bgElapsedTimer); _bgElapsedTimer = null; }
+}
+
+function _fetchBgLog() {
+    const p = _bgProcessesData[_bgProcessModalJobId];
+    if (!p || !p.log_file) return;
+    if (!currentAgentId) return;
+
+    fetch(`/api/agents/${encodeURIComponent(currentAgentId)}/bg-job/log?file=${encodeURIComponent(p.log_file)}&lines=200`)
+        .then(res => {
+            if (!res.ok) throw new Error('Failed to load log');
+            return res.json();
+        })
+        .then(data => {
+            const pre = document.getElementById('bg-log-content');
+            if (!pre) return;
+            if (data.content && data.content.length > 0) {
+                pre.textContent = data.content.join('\n');
+            } else {
+                pre.innerHTML = '<span class="text-gray-500 italic">(empty log)</span>';
+            }
+            pre.scrollTop = pre.scrollHeight;
+
+            // Show live badge
+            const badge = document.getElementById('bg-log-live-badge');
+            if (badge) badge.classList.remove('hidden');
+
+            // Update refreshed time
+            const refreshed = document.getElementById('bg-log-refreshed');
+            if (refreshed) refreshed.textContent = 'refreshed just now';
+
+            // Schedule next poll
+            _stopBgLogPolling();
+            _bgLogPollTimer = setTimeout(_fetchBgLog, 3000);
+        })
+        .catch(err => {
+            const pre = document.getElementById('bg-log-content');
+            if (pre) pre.innerHTML = `<span class="text-red-400 italic">Failed to load log: ${esc(err.message)}</span>`;
+            // Retry after longer delay
+            _stopBgLogPolling();
+            _bgLogPollTimer = setTimeout(_fetchBgLog, 5000);
+        });
+}
+
+function _stopBgLogPolling() {
+    if (_bgLogPollTimer) { clearTimeout(_bgLogPollTimer); _bgLogPollTimer = null; }
 }
 
 let lastSummaryText = null;
@@ -2222,11 +2396,16 @@ function closePlanModal() {
     _planModalFetchedFor = null;
 }
 
-// Escape key to close modal
+// Escape key to close modals
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
-        var backdrop = document.getElementById('plan-modal-backdrop');
-        if (backdrop && !backdrop.classList.contains('hidden')) {
+        var bgBackdrop = document.getElementById('bg-process-modal-backdrop');
+        if (bgBackdrop && !bgBackdrop.classList.contains('hidden')) {
+            closeBgProcessModal();
+            return;
+        }
+        var planBackdrop = document.getElementById('plan-modal-backdrop');
+        if (planBackdrop && !planBackdrop.classList.contains('hidden')) {
             closePlanModal();
         }
     }
@@ -2253,4 +2432,26 @@ document.addEventListener('keydown', function(e) {
         </div>
     </div>
 </div>
+
+<!-- Background Process Modal -->
+<div id="bg-process-modal-backdrop" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onclick="closeBgProcessModal()" role="presentation">
+    <div id="bg-process-modal" class="hidden bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[90vh]" role="dialog" aria-modal="true" aria-label="Background process details" onclick="event.stopPropagation()">
+        <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+            <h3 id="bg-process-modal-title" class="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">⚙ Background Process</h3>
+            <button onclick="closeBgProcessModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" aria-label="Close bg process modal" title="Close (Esc)">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+        </div>
+        <div id="bg-process-modal-body" class="p-5 overflow-y-auto flex-1">
+            <div class="flex items-center justify-center py-12 text-gray-400">
+                <svg class="animate-spin h-6 w-6 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <span class="text-sm">Loading details...</span>
+            </div>
+        </div>
+        <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex justify-end flex-shrink-0">
+            <button onclick="closeBgProcessModal()" class="px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">Close</button>
+        </div>
+    </div>
+</div>
+
 {% endblock %}

@@ -2064,6 +2064,57 @@ def api_agent_plan_file_update(agent_id):
     return jsonify({'success': True, 'plan_file': plan_file})
 
 
+@agents_bp.route('/api/agents/<agent_id>/bg-job/log', methods=['GET'])
+def api_bg_job_log(agent_id):
+    """Read log output for a background job.
+
+    Query params:
+        file      - log file path (must start with /tmp/evonic_build_)
+        lines     - number of lines to return (default 200, max 2000)
+        direction - 'tail' (default) or 'head'
+    """
+    log_path = (request.args.get('file') or '').strip()
+    if not log_path.startswith('/tmp/evonic_build_') or '..' in log_path:
+        return jsonify({'error': 'Invalid log file path'}), 400
+
+    real = os.path.realpath(log_path)
+    if not real.startswith('/tmp/evonic_build_'):
+        return jsonify({'error': 'Invalid log file path'}), 400
+
+    if not os.path.isfile(real):
+        return jsonify({'error': 'Log file not found'}), 404
+
+    lines_count = min(int(request.args.get('lines', 200)), 2000)
+    direction = request.args.get('direction', 'tail')
+
+    try:
+        file_size = os.path.getsize(real)
+        fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
+            if direction == 'tail':
+                avg_line = 120
+                seek_pos = max(0, file_size - lines_count * avg_line)
+                if seek_pos > 0:
+                    f.seek(seek_pos)
+                    f.readline()
+                all_lines = f.readlines()
+                content = [l.rstrip('\n\r') for l in all_lines[-lines_count:]]
+            else:
+                content = []
+                for i, line in enumerate(f):
+                    if i >= lines_count:
+                        break
+                    content.append(line.rstrip('\n\r'))
+
+        return jsonify({
+            'content': content,
+            'file_size': file_size,
+            'total_lines': len(content),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @agents_bp.route('/api/agents/<agent_id>/chat/clear', methods=['POST'])
 def api_chat_clear(agent_id):
     agent = db.get_agent(agent_id)

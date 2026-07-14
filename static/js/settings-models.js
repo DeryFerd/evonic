@@ -711,7 +711,7 @@ window.settingsModels = {
 
     async _checkCodexStatus() {
         try {
-            this._codexStatus = await apiGet("/api/codex/status");
+            this._codexStatus = await apiGet("/api/provider/codex/status");
             this.render();
         } catch (e) {
             this._codexStatus = null;
@@ -720,7 +720,7 @@ window.settingsModels = {
 
     async codexConnect(providerId) {
         try {
-            const result = await apiPost("/api/codex/connect", {});
+            const result = await apiPost("/api/provider/codex/connect", {});
             if (result.error) {
                 if (window.toast) toast.error(result.error, 5000);
                 return;
@@ -747,6 +747,11 @@ window.settingsModels = {
             '<p class="text-xs text-gray-400 mb-3">Waiting for authorization…</p>' +
             '<div class="spinner mx-auto" style="width:24px;height:24px;border-width:2px;"></div>' +
             '<p id="codex-poll-status" class="text-xs text-gray-400 mt-3"></p>' +
+            '<hr class="my-4 border-gray-200 dark:border-gray-700">' +
+            '<p class="text-xs text-gray-500 dark:text-gray-400 mb-2">Trouble auto-redirecting?</p>' +
+            '<p class="text-xs text-gray-400 mb-2">Paste the full callback URL from your browser address bar below:</p>' +
+            '<textarea id="codex-callback-url" rows="2" class="w-full text-xs p-2 rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-700 dark:text-gray-200" placeholder="http://localhost:1455/auth/callback?code=...&state=..."></textarea>' +
+            '<button onclick="settingsModels.pasteCallback()" class="mt-2 px-3 py-1 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded transition-colors">Submit</button>' +
             '</div>';
         footer.classList.add("hidden");
         openModal("connection-test-modal");
@@ -765,7 +770,7 @@ window.settingsModels = {
                 return;
             }
             try {
-                const result = await apiPost("/api/codex/poll", {});
+                const result = await apiPost("/api/provider/codex/poll", {});
                 if (result.status === "complete") {
                     clearInterval(poll);
                     closeModal("connection-test-modal");
@@ -786,12 +791,12 @@ window.settingsModels = {
     async codexDisconnect() {
         if (!(await showConfirm({
             title: "Disconnect Codex",
-            message: "This will remove the stored OAuth tokens. You'll need to reconnect to use Codex models.",
+            message: "This will remove the stored OAuth tokens. You’ll need to reconnect to use Codex models.",
             confirmText: "Disconnect",
         }))) return;
 
         try {
-            const result = await apiPost("/api/codex/disconnect", {});
+            const result = await apiPost("/api/provider/codex/disconnect", {});
             if (result.success) {
                 this._codexStatus = null;
                 await this._checkCodexStatus();
@@ -801,6 +806,41 @@ window.settingsModels = {
                 if (window.toast) toast.error(result.error || "Failed", 5000);
             }
         } catch (e) {
+            if (window.toast) toast.error("Failed: " + e.message, 5000);
+        }
+    },
+
+    async pasteCallback() {
+        const textarea = document.getElementById("codex-callback-url");
+        const statusEl = document.getElementById("codex-poll-status");
+        const url = textarea ? textarea.value.trim() : "";
+
+        if (!url) {
+            if (window.toast) toast.error("Please paste the callback URL first.", 3000);
+            return;
+        }
+
+        if (!url.includes("code=") || !url.includes("state=")) {
+            if (window.toast) toast.error("URL must contain 'code' and 'state' parameters. Paste the full URL.", 5000);
+            return;
+        }
+
+        if (statusEl) statusEl.textContent = "Processing callback URL…";
+
+        try {
+            const result = await apiPost("/api/provider/codex/callback", { url });
+            if (result.success) {
+                if (statusEl) statusEl.textContent = "Connected!";
+                closeModal("connection-test-modal");
+                await this._checkCodexStatus();
+                await this.reload();
+                if (window.toast) toast.success("Connected to Codex!", 3000);
+            } else {
+                if (statusEl) statusEl.textContent = result.error || "Failed to process callback.";
+                if (window.toast) toast.error(result.error || "Failed", 5000);
+            }
+        } catch (e) {
+            if (statusEl) statusEl.textContent = "Error: " + e.message;
             if (window.toast) toast.error("Failed: " + e.message, 5000);
         }
     },

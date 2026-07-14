@@ -78,7 +78,13 @@ The test is the DELIVERABLE, not the topic: a new imperative goal is a
 BRANCH even when it involves the same project, tools, or domain as the
 active path — especially when the active path's work is already finished.
 CONTINUE only when the message is about the same deliverable the active
-path is producing. When genuinely unsure, answer CONTINUE.
+path is producing.
+
+Also CONTINUE (never branch) for: approvals or acknowledgements of the
+active path's plan ("ok", "lanjutkan", "ya, setuju"), and small quick
+requests that a few tool calls satisfy — only substantial new goals
+deserve their own path. Explicitly mentioning a path id (e.g. "lanjutkan
+P2") is a RETURN to that path. When genuinely unsure, answer CONTINUE.
 Respond with exactly one token, e.g.: CONTINUE or RETURN:P2 or DEP_BRANCH:P1 or INDEP_BRANCH"""
 
 _BOUNDARY_RE = re.compile(

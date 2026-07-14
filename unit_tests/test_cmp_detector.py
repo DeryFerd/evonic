@@ -1,4 +1,4 @@
-"""Tests for the CMP boundary-detection cascade (L1 → L2 → L3)."""
+"""Tests for the CMP boundary detector (fully LLM-led)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -31,67 +31,66 @@ def _patch_l2l3(task='complex', boundary=None):
             return_value=boundary or {'decision': 'continue', 'target': None}))
 
 
-# ── L1 guards (grounded/safety only — topic decisions belong to the LLM) ────
+# ── Fully LLM-led: every non-empty message reaches classify_boundary ─────────
 
-def test_ack_message_continues_without_llm():
+def test_every_message_reaches_the_llm():
+    """No keyword short-circuits at all (user requirement): acks, approval
+    particles, follow-ups, overlaps — the LLM owns every routing decision."""
     ms = _session()
-    with _patch_l2l3() as _:
-        import backend.task_classifier as tc
-        result = detect(ms.cmp, ms, 'ok sip')
-        assert (result['decision'], result['target'], result['layer']) == ('continue', None, 'L1')
-        tc.classify_task.assert_not_called()
-        tc.classify_boundary.assert_not_called()
+    ms.cmp['paths']['P2']['artifacts'] = ['/etc/nginx/nginx.conf']
+    for msg in (
+        'ok sip',
+        'oke lanjutkan sesuai plan itu saja',
+        'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout',
+        'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text',
+        'tolong lanjutkan pekerjaan yang ada di P1 sekarang juga',
+    ):
+        with _patch_l2l3():
+            import backend.task_classifier as tc
+            result = detect(ms.cmp, ms, msg)
+            assert result['layer'] == 'LLM'
+            tc.classify_boundary.assert_called_once()
 
 
-def test_short_approval_in_plan_mode_continues():
+def test_empty_message_skips_llm():
     ms = _session()
-    ms.mode = 'plan'
     with _patch_l2l3():
         import backend.task_classifier as tc
-        result = detect(ms.cmp, ms, 'oke lanjutkan sesuai plan itu saja')
+        result = detect(ms.cmp, ms, '   ')
         assert result['decision'] == 'continue'
-        assert 'approval' in result['reason']
         tc.classify_boundary.assert_not_called()
 
 
-def test_long_message_with_approval_word_reaches_llm():
-    """Live regression: 'oke, sip, btw yg issue kanban state race condition
-    tadi udah solved kah?' was swallowed by the approval guard while P4 sat
-    in plan mode — the return-to-P1 question never reached L3. Substantive
-    messages containing approval particles must escalate."""
+def test_plan_mode_context_reaches_llm():
+    """The removed approval guard's knowledge now travels as prompt context:
+    the LLM must see that the active path awaits approval."""
+    ms = _session()
+    ms.mode = 'plan'
+    captured = {}
+
+    def fake_boundary(map_text, active_card, other_cards, user_text):
+        captured['active'] = active_card
+        return {'decision': 'continue', 'target': None}
+
+    with patch.multiple('backend.task_classifier',
+                        classify_task=MagicMock(return_value='complex'),
+                        classify_boundary=fake_boundary):
+        detect(ms.cmp, ms, 'oke lanjutkan sesuai plan itu saja')
+    assert 'AWAITING USER APPROVAL' in captured['active']
+
+
+def test_kanban_return_regression():
+    """Live regression: 'oke, sip, btw yg issue kanban ... udah solved kah?'
+    was swallowed by the old approval guard while P4 sat in plan mode."""
     ms = _session()
     ms.mode = 'plan'
     with _patch_l2l3(boundary={'decision': 'return', 'target': 'P1'}):
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms,
                         'oke, sip, btw yg issue kanban state race condition tadi udah solved kah?')
-        assert result['layer'] == 'L3'
+        assert result['layer'] == 'LLM'
         tc.classify_boundary.assert_called_once()
         assert (result['decision'], result['target']) == ('return', 'P1')
-
-
-def test_explicit_path_id_is_a_return():
-    ms = _session()
-    with _patch_l2l3():
-        result = detect(ms.cmp, ms,
-                        'tolong lanjutkan pekerjaan yang ada di P1 sekarang juga')
-        assert (result['decision'], result['target'], result['layer']) == ('return', 'P1', 'L1')
-
-
-def test_topical_messages_reach_the_llm():
-    """No keyword short-circuits: follow-up-looking or overlapping messages
-    still escalate — the LLM owns topic decisions (user requirement)."""
-    ms = _session()
-    ms.cmp['paths']['P2']['artifacts'] = ['/etc/nginx/nginx.conf']
-    for msg in (
-        'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout',
-        'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text',
-    ):
-        with _patch_l2l3():
-            import backend.task_classifier as tc
-            result = detect(ms.cmp, ms, msg)
-            assert result['layer'] in ('L2', 'L3')
-            tc.classify_task.assert_called_once()
 
 
 def test_generic_title_word_does_not_short_circuit():
@@ -109,7 +108,7 @@ def test_generic_title_word_does_not_short_circuit():
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms,
                         'tolong gabungkan chart agent test di token monitor plugin')
-        assert result['layer'] == 'L3'          # escalated past L1
+        assert result['layer'] == 'LLM'
         tc.classify_boundary.assert_called_once()
         assert result['decision'] == 'dep_branch'
 
@@ -175,18 +174,7 @@ def test_l3_sees_finished_task_state():
     assert 'FINISHED' in captured['active']
 
 
-# ── L2 trivial gate ──────────────────────────────────────────────────────────
-
-def test_trivial_task_never_branches():
-    ms = _session()
-    with _patch_l2l3(task='trivial'):
-        import backend.task_classifier as tc
-        result = detect(ms.cmp, ms, LONG_NEW_TASK)
-        assert (result['decision'], result['target'], result['layer']) == ('continue', None, 'L2')
-        tc.classify_boundary.assert_not_called()
-
-
-# ── L3 decisions + validation ────────────────────────────────────────────────
+# ── LLM decisions + validation ───────────────────────────────────────────────
 
 def test_l3_decisions_flow_through():
     ms = _session()
@@ -199,7 +187,7 @@ def test_l3_decisions_flow_through():
         with _patch_l2l3(boundary=boundary):
             result = detect(ms.cmp, ms, LONG_NEW_TASK)
             assert (result['decision'], result['target']) == expected
-            assert result['layer'] == 'L3'
+            assert result['layer'] == 'LLM'
 
 
 def test_l3_invalid_targets_degrade_safely():

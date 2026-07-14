@@ -58,6 +58,19 @@ class _NodeError(Exception):
     """A node-level failure (binding, guard, rejection, tool error)."""
 
 
+def _is_error_result(result) -> bool:
+    """Error detection covering both conventions: an 'error' key / error
+    status, and tools that return bare 'Error: ...' strings (e.g. read_file),
+    which _run_tool wraps as {'result': 'Error: ...'}. ATG must catch these —
+    they gate repair and keep garbage out of downstream placeholders."""
+    if not isinstance(result, dict):
+        return True
+    if 'error' in result or result.get('status') == 'error':
+        return True
+    value = result.get('result')
+    return isinstance(value, str) and value.startswith('Error:')
+
+
 # ── Argument binding ─────────────────────────────────────────────────────────
 
 def _lookup_output(outputs: dict, node_id: str, key: str):
@@ -322,14 +335,15 @@ def _execute_bound(ctx: _ExecCtx, node, tool: str, args: dict,
                                    'param_types': {}, 'atg_node': node.id})
 
     result = _run_tool(ctx, tool, args)
-    has_error = isinstance(result, dict) and 'error' in result
+    has_error = _is_error_result(result)
     ts_end = time.time()
 
     node.tool = tool
     node.status = 'failed' if has_error else 'done'
     node.record_result(resolved_args=args,
                        output=None if has_error else result,
-                       error=result.get('error') if has_error else None,
+                       error=(result.get('error') or str(result.get('result')))
+                             if has_error else None,
                        ts_start=ts_start, ts_end=ts_end)
     if not has_error:
         outputs[node.id] = result

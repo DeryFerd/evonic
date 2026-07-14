@@ -181,6 +181,20 @@ def test_unresolved_placeholder_falls_back_to_llm_bind():
 
 # ── Failure / stop / approval ────────────────────────────────────────────────
 
+def test_bare_string_error_result_detected_as_failure():
+    # read_file returns bare 'Error: ...' strings — must count as node failure
+    class StringErrorStub(ToolStub):
+        def __call__(self, tool, args):
+            super().__call__(tool, args)
+            return "Error: File not found."
+
+    nodes = [_node('n1', args={'path': 'a'})]
+    outcome, ms, _, _ = _run(nodes, stub=StringErrorStub())
+    assert outcome.status == 'fallback'
+    assert _statuses(ms)['n1'] == 'failed'
+    assert 'File not found' in ms.atg['dag']['nodes']['n1']['record']['error']
+
+
 def test_node_failure_skips_downstream_and_falls_back():
     stub = ToolStub(errors={'bad'})
     nodes = [

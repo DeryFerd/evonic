@@ -101,9 +101,14 @@ def test_run_tool_loop_drives_atg_branch():
 
     # Two LLM calls: thought experiment + the final answer — no tool rounds
     assert llm.chat_completion.call_count == 2
-    summary_msgs = [m for m in llm.chat_completion.call_args[1]['messages']
-                    if m['role'] == 'system' and '[ATG]' in str(m.get('content'))]
+    msgs = llm.chat_completion.call_args[1]['messages']
+    summary_msgs = [m for m in msgs
+                    if m['role'] == 'user' and '[SYSTEM] [ATG]' in str(m.get('content'))]
     assert summary_msgs, "ATG summary must be injected before the final LLM call"
+    # strict chat templates reject non-leading system messages; leading ones
+    # (position 0..n before the first non-system) are merged by llm_client.
+    first_non_system = next(i for i, m in enumerate(msgs) if m['role'] != 'system')
+    assert all(m['role'] != 'system' for m in msgs[first_non_system:])
 
     # tool_trace/timeline populated like Phase 3 would
     assert len(tool_trace) == 3

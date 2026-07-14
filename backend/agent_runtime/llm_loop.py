@@ -624,7 +624,11 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
                 return stop_msg, tool_trace, timeline
             if _atg_outcome.summary_for_llm:
-                messages.append({"role": "system", "content": _atg_outcome.summary_for_llm})
+                # user role with [SYSTEM] prefix (same pattern as force-stop
+                # injection): strict chat templates (e.g. evomodel on llama.cpp)
+                # reject system messages that are not in leading position.
+                messages.append({"role": "user",
+                                 "content": "[SYSTEM] " + _atg_outcome.summary_for_llm})
             # Stats land in the final assistant message metadata (timeline) so
             # A/B evaluation and the UI can read per-run ATG figures.
             timeline.append({"type": "atg_stats", "status": _atg_outcome.status,

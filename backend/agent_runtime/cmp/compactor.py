@@ -122,6 +122,8 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
 
         from backend.task_classifier import _get_classifier_client
         client = _get_classifier_client('cmp_model_id')
+        import time as _time
+        _t0 = _time.time()
         response = client.chat_completion(
             [{"role": "system", "content": prompts.CARD_SYSTEM},
              {"role": "user", "content": prompts.CARD_USER.format(
@@ -155,6 +157,9 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
             card['goal'] = path.get('goal') or atg_goal
         if not card.get('title'):
             card['title'] = path.get('title')
+        _logger.info("CMP card generated for %s (model=%s, %.1fs, %d facts, %d artifacts)",
+                     path.get('id'), getattr(client, 'model', None),
+                     _time.time() - _t0, len(card['key_facts']), len(card['artifacts']))
         return clamp_card_fields(card)
     except Exception as e:
         _logger.warning("CMP card generation fell back to mechanical: %s", e)

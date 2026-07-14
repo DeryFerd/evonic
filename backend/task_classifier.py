@@ -10,6 +10,7 @@ heuristic fast-path to skip the LLM entirely for obvious cases.
 
 import logging
 import re
+import time
 from typing import Optional
 
 import config
@@ -91,6 +92,7 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
         return fallback
     try:
         client = _get_classifier_client('cmp_model_id')
+        _t0 = time.time()
         user_prompt = (f"## Path map\n{map_text}\n\n"
                        f"## Active path\n{active_card}\n\n"
                        f"## Other paths\n{other_cards}\n\n"
@@ -101,9 +103,10 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
             tools=None, temperature=0.0, enable_thinking=False,
             max_tokens=150,
         )
+        _dur = time.time() - _t0
         if not response.get("success"):
-            _logger.warning("Boundary classifier LLM call failed: %s",
-                            response.get("error_type"))
+            _logger.warning("CMP boundary LLM call failed [%s] (model=%s, %.1fs) — defaulting to continue",
+                            response.get("error_type"), getattr(client, 'model', None), _dur)
             return fallback
         msg = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
         content = (msg.get("content") or "").strip().upper()
@@ -111,8 +114,13 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
             content = (msg.get("reasoning_content") or "").strip().upper()
         m = _BOUNDARY_RE.search(content)
         if not m:
+            _logger.warning("CMP boundary verdict unparseable (model=%s, %.1fs) — "
+                            "defaulting to continue. Raw: %.120s",
+                            getattr(client, 'model', None), _dur, content or '(empty)')
             return fallback
         token = m.group(1)
+        _logger.info("CMP boundary verdict: %s (model=%s, %.1fs)",
+                     token, getattr(client, 'model', None), _dur)
         if token == "CONTINUE":
             return fallback
         if token == "INDEP_BRANCH":
@@ -253,6 +261,7 @@ def classify_task(user_message: str) -> str:
     # LLM classification
     try:
         client = _get_classifier_client()
+        _t0 = time.time()
         messages = [
             {"role": "system", "content": _CLASSIFIER_SYSTEM},
             {"role": "user", "content": text},
@@ -265,7 +274,9 @@ def classify_task(user_message: str) -> str:
             max_tokens=100,  # Increased from 10 to ensure model can produce full response
         )
         if not response.get("success"):
-            _logger.warning("Task classifier LLM call failed: %s", response.get("error_type"))
+            _logger.warning("Task classifier LLM call failed [%s] (model=%s, %.1fs) — defaulting to complex",
+                            response.get("error_type"), getattr(client, 'model', None),
+                            time.time() - _t0)
             return "complex"
         choices = response.get("response", {}).get("choices", [])
         if not choices:

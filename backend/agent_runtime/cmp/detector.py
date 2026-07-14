@@ -66,31 +66,46 @@ def _render_cards_for_llm(cmp: dict, ms=None) -> tuple:
 
 
 def detect(cmp: dict, ms, user_text: str) -> dict:
-    """Classify a user turn. Returns {'decision', 'target', 'layer'}."""
+    """Classify a user turn. Returns {'decision', 'target', 'layer', 'reason'}.
+
+    Every decision — including `continue` — is logged with its resolving
+    layer and reason, so 'why didn't it branch?' is answerable from the log.
+    """
     text = (user_text or '').strip()
+
+    def _done(decision, target, layer, reason):
+        _logger.info("CMP detect [%s]: %s%s — %s | active=%s | msg: %.80s",
+                     layer, decision, f" -> {target}" if target else '',
+                     reason, cmp.get('active_id'), text)
+        return {'decision': decision, 'target': target, 'layer': layer,
+                'reason': reason}
+
     if not text:
-        return {'decision': 'continue', 'target': None, 'layer': 'L1'}
+        return _done('continue', None, 'L1', 'empty message')
 
     # L1 guard — pure acknowledgements can never open/switch a task.
     if len(text.split()) <= _ACK_MAX_WORDS:
-        return {'decision': 'continue', 'target': None, 'layer': 'L1'}
+        return _done('continue', None, 'L1',
+                     f'ack-length message (<= {_ACK_MAX_WORDS} words)')
 
     # L1 guard — approval words while the active path awaits plan approval:
     # "ok lanjutkan sesuai plan" must reach the approval check, never a switch.
     if ms is not None and ms.mode == 'plan' and _is_approval(text):
-        return {'decision': 'continue', 'target': None, 'layer': 'L1'}
+        return _done('continue', None, 'L1', 'approval message in plan mode')
 
     # L1 grounded reference — explicit mention of a known non-active path id
     # is a deliberate return signal ("lanjutkan yang P2 tadi").
     for match in _PATH_ID_RE.finditer(text):
         pid = f"P{match.group(1)}"
         if pid in cmp['paths'] and pid != cmp['active_id']:
-            return {'decision': 'return', 'target': pid, 'layer': 'L1'}
+            return _done('return', pid, 'L1', 'explicit path id mentioned')
 
     # L2 — only complex tasks may branch (trivial → stay in flow).
     from backend.task_classifier import classify_boundary, classify_task
-    if classify_task(text) != 'complex':
-        return {'decision': 'continue', 'target': None, 'layer': 'L2'}
+    task_class = classify_task(text)
+    if task_class != 'complex':
+        return _done('continue', None, 'L2',
+                     f'classify_task={task_class} (only complex tasks branch)')
 
     # L3 — LLM 4-class decision over cards (never transcripts).
     map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms)
@@ -102,10 +117,12 @@ def detect(cmp: dict, ms, user_text: str) -> dict:
     # Validate targets against the live graph; anything off → continue.
     if decision == 'return' and (target not in cmp['paths']
                                  or target == cmp['active_id']):
-        decision, target = 'continue', None
+        return _done('continue', None, 'L3',
+                     f'LLM said return:{target} but target is invalid/active')
     if decision == 'dep_branch' and target not in cmp['paths']:
-        decision, target = 'indep_branch', None
-    return {'decision': decision, 'target': target, 'layer': 'L3'}
+        return _done('indep_branch', None, 'L3',
+                     f'LLM said dep_branch:{target} but target unknown — downgraded')
+    return _done(decision, target, 'L3', 'LLM verdict')
 
 
 def _is_approval(text: str) -> bool:

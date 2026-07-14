@@ -38,7 +38,7 @@ def test_ack_message_continues_without_llm():
     with _patch_l2l3() as _:
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms, 'ok sip')
-        assert result == {'decision': 'continue', 'target': None, 'layer': 'L1'}
+        assert (result['decision'], result['target'], result['layer']) == ('continue', None, 'L1')
         tc.classify_task.assert_not_called()
         tc.classify_boundary.assert_not_called()
 
@@ -59,7 +59,7 @@ def test_explicit_path_id_is_a_return():
     with _patch_l2l3():
         result = detect(ms.cmp, ms,
                         'tolong lanjutkan pekerjaan yang ada di P1 sekarang juga')
-        assert result == {'decision': 'return', 'target': 'P1', 'layer': 'L1'}
+        assert (result['decision'], result['target'], result['layer']) == ('return', 'P1', 'L1')
 
 
 def test_topical_messages_reach_the_llm():
@@ -122,7 +122,7 @@ def test_trivial_task_never_branches():
     with _patch_l2l3(task='trivial'):
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms, LONG_NEW_TASK)
-        assert result == {'decision': 'continue', 'target': None, 'layer': 'L2'}
+        assert (result['decision'], result['target'], result['layer']) == ('continue', None, 'L2')
         tc.classify_boundary.assert_not_called()
 
 

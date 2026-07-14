@@ -171,9 +171,27 @@ class TurnPrefetcher:
                     "content": f"## Prior conversation summary\n{summary_record['summary']}"
                 })
 
-            _jsonl_entries = chatlog.get_entries_for_llm(
-                after_ts=summary_record.get('last_message_ts') if summary_record else None,
-            )
+            # CMP offload: scope history to the active path's segments via the
+            # SAME shared builder the runtime uses (prefetch assumes the next
+            # turn continues the active path; the runtime discards the hit on
+            # a switch/branch decision).
+            _jsonl_entries = None
+            if agent.get('enable_cmp') and agent.get('enable_agent_state'):
+                try:
+                    import json as _json
+                    from backend.agent_runtime.cmp import assembler as _cmp_asm
+                    _sess_raw = db.get_session_state(session_id, agent_id=db_agent_id)
+                    _cmp_state = (_json.loads(_sess_raw) or {}).get('cmp') if _sess_raw else None
+                    if _cmp_asm.should_filter(_cmp_state):
+                        _jsonl_entries = _cmp_asm.build_history(
+                            chatlog, summary_record, _cmp_state)
+                except Exception:
+                    _logger.exception("CMP prefetch history filter failed — full history")
+                    _jsonl_entries = None
+            if _jsonl_entries is None:
+                _jsonl_entries = chatlog.get_entries_for_llm(
+                    after_ts=summary_record.get('last_message_ts') if summary_record else None,
+                )
             _use_jsonl = bool(_jsonl_entries) or chatlog.get_last_entry() is not None
 
             if _use_jsonl:

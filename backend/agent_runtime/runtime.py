@@ -1562,11 +1562,48 @@ class AgentRuntime:
         if _early_reply:
             return _early_reply
 
+        # ── CMP early boundary hook (offload-aware) ──────────────────────────
+        # Runs BEFORE context assembly so a switch/branch decision shapes this
+        # turn's history window, and gates the prefetch hit (prefetch builds
+        # under the continue assumption). State is persisted immediately so
+        # _restore_agent_state below re-reads consistent post-switch fields.
+        # Rule 0 in the detector guarantees approval-like messages classify
+        # `continue`, so the plan-approval check later is never bypassed.
+        _cmp_early_handled = False
+        _cmp_filter_state = None
+        _cmp_switched_this_turn = False
+        if (agent.get('enable_cmp') and agent.get('enable_agent_state')
+                and not agent.get('is_subagent')):
+            try:
+                _cmp_ms = self._restore_agent_state(db_agent_id, session_id=ctx.session_id)
+                if _cmp_ms is not None:
+                    from backend.agent_runtime import cmp as _cmp_pkg
+                    _cmp_chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
+                    _cmp_user = _cmp_chatlog.get_last_entry(types=frozenset({'user'}))
+                    _cmp_res = _cmp_pkg.on_turn_boundary(
+                        agent, _cmp_ms, _cmp_chatlog,
+                        (_cmp_user or {}).get('content', ''))
+                    if _cmp_res is not None:
+                        _cmp_early_handled = True
+                        from backend.agent_runtime.llm_loop import _persist_agent_state_split
+                        _persist_agent_state_split(_cmp_ms, agent_id, ctx.session_id, db_agent_id)
+                        _cmp_filter_state = _cmp_ms.cmp
+                        if _cmp_res.get('decision') not in ('continue', 'init'):
+                            _cmp_switched_this_turn = True
+                            _logger.info(
+                                "CMP boundary(early): %s -> %s (layer %s) for session %s",
+                                _cmp_res.get('decision'), _cmp_res.get('target'),
+                                _cmp_res.get('layer'), ctx.session_id)
+            except Exception:
+                _logger.exception("CMP early boundary hook failed — full-history turn")
+                _cmp_filter_state = None
+
         # Build messages for LLM (summary-aware)
         # Try prefetched context from the previous turn's background warmup
-        # (only when disable_turn_prefetch is not set).
+        # (only when disable_turn_prefetch is not set). A CMP switch/branch
+        # this turn invalidates the hit: it was assembled for the OLD path.
         _prefetch = None
-        if not agent.get('disable_turn_prefetch', 0):
+        if not agent.get('disable_turn_prefetch', 0) and not _cmp_switched_this_turn:
             _prefetch = self._prefetcher.try_get(ctx.session_id)
         if _prefetch and _prefetch.agent_id == agent_id:
             system_prompt = _prefetch.system_prompt
@@ -1706,10 +1743,22 @@ class AgentRuntime:
                         _cur_msg['attachment_info'] = _att
                     messages.append(_apply_multimodal(_cur_msg))
         else:
-            # Prefer JSONL-based context if the log has entries for this session
-            _jsonl_entries = chatlog.get_entries_for_llm(
-                after_ts=summary_record.get('last_message_ts') if summary_record else None,
-            )
+            # Prefer JSONL-based context if the log has entries for this session.
+            # CMP offload: with multiple paths, scope the history window to the
+            # active path's segments (shared builder — same as prefetch).
+            _jsonl_entries = None
+            try:
+                from backend.agent_runtime.cmp import assembler as _cmp_asm
+                if _cmp_asm.should_filter(_cmp_filter_state):
+                    _jsonl_entries = _cmp_asm.build_history(
+                        chatlog, summary_record, _cmp_filter_state)
+            except Exception:
+                _logger.exception("CMP history filter failed — using full history")
+                _jsonl_entries = None
+            if _jsonl_entries is None:
+                _jsonl_entries = chatlog.get_entries_for_llm(
+                    after_ts=summary_record.get('last_message_ts') if summary_record else None,
+                )
             # NOTE: The second condition handles an edge case where _jsonl_entries is empty
             # but the chatlog still has entries for this session. This happens when ALL
             # messages after the summary are themselves covered by the summary (after_ts
@@ -2021,9 +2070,14 @@ class AgentRuntime:
                                   if isinstance(p, dict) and p.get('type') == 'text'), '')
                             if isinstance(_c, list) else _c)
                         break
-            _cmp_handled = False
-            if agent.get('enable_cmp') and agent.get('enable_agent_state') \
-                    and not agent.get('is_subagent'):
+            # The early hook (before context assembly) normally owns CMP; this
+            # late slot only covers turns it skipped — e.g. brand-new sessions
+            # where agent state didn't exist yet at assembly time (first-path
+            # init happens here, after the classifier created ms).
+            _cmp_handled = _cmp_early_handled
+            if (not _cmp_early_handled
+                    and agent.get('enable_cmp') and agent.get('enable_agent_state')
+                    and not agent.get('is_subagent')):
                 try:
                     from backend.agent_runtime import cmp as _cmp_pkg
                     _cmp_chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)

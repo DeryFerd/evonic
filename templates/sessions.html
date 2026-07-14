@@ -429,7 +429,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=58"></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=59"></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4"></script>
 <script>
 let allSessions = [];
@@ -1540,7 +1540,10 @@ async function doSendReply() {
         optimisticMeta = {attachment_info: {filename: file.name, mime_type: file.type, is_image: false}};
     }
     const displayText = text || (file ? (file.type.startsWith('image/') ? '[Image]' : `[File: ${file.name}]`) : '');
-    const $msgEl = chatUI.appendMessage(outRole, displayText, {metadata: optimisticMeta});
+    const $msgEl = chatUI.appendMessage(outRole, displayText, {
+        metadata: optimisticMeta,
+        timestamp: new Date(),
+    });
     // If the agent is mid-turn, mark message as queued with clock indicator
     if (_sseThinkingId) chatUI.markLastUserBubbleQueued($msgEl);
     // Clear input and file preview immediately so the UI feels responsive
@@ -2133,7 +2136,8 @@ function timeAgo(ts) {
 
 function formatTime(ts) {
     if (!ts) return '';
-    const d = new Date(ts + (ts.includes('Z') ? '' : 'Z'));
+    const d = ts instanceof Date ? ts : new Date(ts);
+    if (Number.isNaN(d.getTime())) return '';
     return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
 }
 

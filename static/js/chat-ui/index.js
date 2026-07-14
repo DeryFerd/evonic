@@ -260,7 +260,10 @@ export class ChatUI {
                 // If we built the timeline from streaming events, don't also render it
                 // from metadata — that would create a duplicate thinking bubble.
                 const msgMeta = hadStreamingTurn ? Object.assign({}, meta, { timeline: [] }) : meta;
-                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, { metadata: msgMeta });
+                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, {
+                    metadata: msgMeta,
+                    timestamp: entry.ts || entry.created_at || null,
+                });
                 continue;
             }
             if (entry.type === 'error') {

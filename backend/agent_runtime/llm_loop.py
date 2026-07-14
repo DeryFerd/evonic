@@ -1323,9 +1323,12 @@ def run_tool_loop(agent: Dict[str, Any],
             # Fallback: when content is empty and the model put its entire response
             # in reasoning_content (e.g. Qwen models via llama.cpp), treat reasoning_text
             # as the actual response content.
+            # BUT: if reasoning_text contains XML tool calls (Qwen/Gemma4 format),
+            # don't steal it — the CoT parser below handles those (line 1387+).
             if not content and not embedded_final_in_reasoning and not tool_calls:
-                content = reasoning_text
-                reasoning_text = ''
+                if '<tool_call>' not in reasoning_text and '<|tool_call>' not in reasoning_text:
+                    content = reasoning_text
+                    reasoning_text = ''
             event_stream.emit('llm_thinking', {
                 'agent_id': agent_id, 'session_id': session_id,
                 'external_user_id': external_user_id, 'channel_id': channel_id,

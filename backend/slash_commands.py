@@ -141,6 +141,8 @@ def _register_builtins():
             'plan_file': fresh.plan_file,
             'states': fresh.states,
             'auto_trivial': fresh.auto_trivial,
+            'atg': None,   # full-replace already wipes these; explicit for clarity
+            'cmp': None,
         }
         db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
         # Global: reset focus only
@@ -796,6 +798,15 @@ def _register_builtins():
         if session_content:
             sess_ms = AgentState.deserialize(session_content)
             lines.append(f"Mode: {sess_ms.mode}")
+            if sess_ms.cmp and sess_ms.cmp.get('paths'):
+                _paths = sess_ms.cmp['paths']
+                _active = _paths.get(sess_ms.cmp.get('active_id')) or {}
+                _dormant = sum(1 for p in _paths.values() if p.get('status') == 'dormant')
+                _archived = sum(1 for p in _paths.values() if p.get('status') == 'archived')
+                lines.append(
+                    f"Paths: {len(_paths)} (active: {_active.get('id')} "
+                    f"\"{_active.get('title', '')[:40]}\"; "
+                    f"{_dormant} dormant, {_archived} archived)")
             if sess_ms.plan_file:
                 # Try per-agent path first, then fallback to legacy centralized path
                 project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))

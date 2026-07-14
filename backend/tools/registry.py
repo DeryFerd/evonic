@@ -49,6 +49,9 @@ class ToolRegistry:
         # ATG task-graph compiler — exposed only when agent_context['enable_atg']
         # (see get_builtin_tools gate)
         self._builtins['builtin:compile_task_graph'] = _builtin_compile_task_graph_factory
+        # CMP session-path navigation — exposed only when agent_context['enable_cmp']
+        self._builtins['builtin:switch_path'] = _builtin_switch_path_factory
+        self._builtins['builtin:new_path'] = _builtin_new_path_factory
         # State machine gate tool — always available, handlers registered by system/plugins
         self._builtins['builtin:state'] = _builtin_state_factory
         # Long-term memory tools. `recall` covers keyword search, brain-layer
@@ -271,9 +274,12 @@ class ToolRegistry:
         agent_id = agent_context.get('id', '')
         tools = []
         for builtin_id, factory in self._builtins.items():
-            # ATG tool is opt-in per agent — never expose the def otherwise,
-            # so non-flagged agents keep a byte-identical tool list.
+            # ATG/CMP tools are opt-in per agent — never expose the defs
+            # otherwise, so non-flagged agents keep a byte-identical tool list.
             if builtin_id == 'builtin:compile_task_graph' and not agent_context.get('enable_atg'):
+                continue
+            if (builtin_id in ('builtin:switch_path', 'builtin:new_path')
+                    and not agent_context.get('enable_cmp')):
                 continue
             tool_def, _ = factory(agent_context)
             if should_suppress_builtin(agent_id, builtin_id, tool_def):
@@ -831,6 +837,163 @@ def _builtin_compile_task_graph_factory(agent_context: dict):
             "plan_file": f"plan/{filename}",
             "nodes": len(dag.nodes),
             "waves": len(waves),
+        }
+
+    return tool_def, executor
+
+
+def _cmp_emit(agent_context: dict, event: str, payload: dict) -> None:
+    """Best-effort CMP event emission with session context."""
+    try:
+        from backend.event_stream import event_stream
+        event_stream.emit(event, {
+            'agent_id': agent_context.get('id', ''),
+            'session_id': agent_context.get('session_id'),
+            **payload,
+        })
+    except Exception:
+        pass
+
+
+def _cmp_gate(agent_context: dict):
+    """Common gate for CMP tools. Returns (ms, None) or (None, error_dict)."""
+    if not agent_context.get('enable_cmp'):
+        return None, {"error": "CMP is not enabled for this agent."}
+    ms = agent_context.get('agent_state')
+    if ms is None:
+        return None, {"error": "Agent state is not enabled for this agent."}
+    return ms, None
+
+
+def _builtin_switch_path_factory(agent_context: dict):
+    """Factory for the built-in 'switch_path' tool (CMP navigation).
+
+    Validated request: the harness checks the target against the session
+    graph; unknown ids return an error listing valid ids (grounding the node
+    inventory) instead of executing. Exposed only when enable_cmp.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "switch_path",
+            "description": (
+                "Resume another task path from the session map. Use when the "
+                "user returns to an earlier task (e.g. 'back to the website'). "
+                "Restores that path's plan/task-graph state and marks the "
+                "current path dormant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path_id": {
+                        "type": "string",
+                        "description": "Target path id from the session map, e.g. 'P1'."
+                    }
+                },
+                "required": ["path_id"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        ms, err = _cmp_gate(agent_context)
+        if err:
+            return err
+        if not ms.cmp or not ms.cmp.get("paths"):
+            return {"error": "No session paths exist yet. Use new_path(title) to start one."}
+        from backend.agent_runtime.cmp import store as cmp_store
+        target_id = (arguments.get('path_id') or '').strip()
+        old_id = ms.cmp.get("active_id")
+        try:
+            target = cmp_store.switch_to(ms.cmp, ms, target_id)
+        except ValueError as e:
+            return {"error": str(e)}
+        _cmp_emit(agent_context, 'cmp_path_switched',
+                  {'from': old_id, 'to': target_id, 'initiator': 'agent'})
+        return {
+            "result": f"Switched to {target_id} — {target.get('title')}. "
+                      "Its plan/task state has been restored.",
+            "path": {k: target.get(k) for k in
+                     ("id", "title", "goal", "outcome", "key_facts", "artifacts")},
+        }
+
+    return tool_def, executor
+
+
+def _builtin_new_path_factory(agent_context: dict):
+    """Factory for the built-in 'new_path' tool (CMP navigation).
+
+    Starts a separate task path (fresh plan cycle). depends_on records that
+    the new task consumes results of existing paths, pinning their cards.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "new_path",
+            "description": (
+                "Start a NEW task as its own session path when the user "
+                "switches to different work (not a follow-up of the current "
+                "task). Use depends_on when the new task builds on results "
+                "of existing paths (e.g. an invoice for a project built in P1)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the new task path (<= 60 chars)."
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "One-sentence goal of the new task."
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Path ids whose results this task uses, e.g. ['P1']."
+                    }
+                },
+                "required": ["title"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        ms, err = _cmp_gate(agent_context)
+        if err:
+            return err
+        title = (arguments.get('title') or '').strip()
+        if not title:
+            return {"error": "'title' must be a non-empty string."}
+        from backend.agent_runtime.cmp import store as cmp_store
+        if ms.cmp is None or not ms.cmp.get("paths"):
+            # Adopt the ongoing work as P1 before branching off it.
+            prev_title = None
+            if isinstance(ms.atg, dict):
+                prev_title = ((ms.atg.get('dag') or {}).get('root_goal')
+                              or ms.atg.get('root_goal'))
+            prev_title = (prev_title or ms.plan_file or "Earlier conversation")
+            ms.cmp = cmp_store.new_cmp(ms, title=str(prev_title)[:60])
+            _cmp_emit(agent_context, 'cmp_path_created',
+                      {'path_id': 'P1', 'title': str(prev_title)[:60],
+                       'initiator': 'auto-init'})
+        try:
+            record = cmp_store.create_path(
+                ms.cmp, ms, title,
+                goal=(arguments.get('goal') or '').strip(),
+                depends_on=arguments.get('depends_on') or [])
+        except ValueError as e:
+            return {"error": str(e)}
+        _cmp_emit(agent_context, 'cmp_path_created',
+                  {'path_id': record['id'], 'title': record['title'],
+                   'depends_on': record['depends_on'], 'initiator': 'agent'})
+        return {
+            "result": (
+                f"Started {record['id']} — {record['title']}. The previous "
+                "path is dormant (resumable via switch_path). You are now in "
+                "plan mode for this new task."
+            ),
+            "path_id": record['id'],
         }
 
     return tool_def, executor

@@ -386,6 +386,7 @@ class SchemaMixin:
                 ("audio_enabled", "BOOLEAN DEFAULT 0"),
                 ("video_enabled", "BOOLEAN DEFAULT 0"),
                 ("enable_atg", "BOOLEAN DEFAULT 0"),
+                ("enable_cmp", "BOOLEAN DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")

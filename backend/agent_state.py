@@ -99,7 +99,8 @@ class AgentState:
     def __init__(self, mode: str = "plan", tasks: list = None, next_task_id: int = 1,
                  plan_file: str = None, states: dict = None,
                  focus: bool = False, focus_reason: str = None,
-                 auto_trivial: bool = False, atg: dict = None):
+                 auto_trivial: bool = False, atg: dict = None,
+                 cmp: dict = None):
         self.mode = mode
         self.tasks: list[dict] = tasks or []
         self._next_task_id = next_task_id
@@ -117,6 +118,10 @@ class AgentState:
         # ATG (Atomic Task Graph) state, set by backend.agent_runtime.atg when
         # the enable_atg flag is on: {status, dag, history, repair_attempts, stats}
         self.atg: dict | None = atg
+        # CMP (Context Memory Path) session-path store, set by
+        # backend.agent_runtime.cmp when enable_cmp is on:
+        # {version, active_id, next_id, paths: {P1: {...card+segments+snapshot}}, stats}
+        self.cmp: dict | None = cmp
 
     # ── Blocking ────────────────────────────────────────────────────────────
 
@@ -260,7 +265,8 @@ class AgentState:
 
     # ── Rendering ────────────────────────────────────────────────────────────
 
-    def render(self, agent_id: str = None, atg_enabled: bool = False) -> str:
+    def render(self, agent_id: str = None, atg_enabled: bool = False,
+               cmp_enabled: bool = False) -> str:
         """Render state as a markdown system message for LLM injection.
 
         Args:
@@ -269,6 +275,8 @@ class AgentState:
                       backward compatibility with old centralized plans).
             atg_enabled: When True, plan-mode instructions steer the agent to
                       compile_task_graph() instead of a free-form save_plan().
+            cmp_enabled: When True and cmp state exists, render the session
+                      path map + cards section.
         """
         if self.mode == "plan":
             if atg_enabled:
@@ -317,6 +325,17 @@ class AgentState:
             lines.append("")
             lines.append("### Atomic Task Graph")
             lines.append(self._render_atg_summary())
+
+        if self.cmp and cmp_enabled:
+            try:
+                from backend.agent_runtime.cmp import render_cmp_section
+                section = render_cmp_section(self.cmp)
+            except Exception:
+                section = ""
+            if section:
+                lines.append("")
+                lines.append("### Session Paths (CMP)")
+                lines.append(section)
 
         if self.tasks:
             lines.append("")
@@ -426,6 +445,7 @@ class AgentState:
             "focus_reason": self.focus_reason,
             "auto_trivial": self.auto_trivial,
             "atg": self.atg,
+            "cmp": self.cmp,
         })
 
     @classmethod
@@ -443,6 +463,7 @@ class AgentState:
                 focus_reason=obj.get("focus_reason"),
                 auto_trivial=obj.get("auto_trivial", False),
                 atg=obj.get("atg"),
+                cmp=obj.get("cmp"),
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return cls()

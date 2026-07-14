@@ -181,6 +181,7 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
         'states': data.get('states', {}),
         'auto_trivial': data.get('auto_trivial', False),
         'atg': data.get('atg'),
+        'cmp': data.get('cmp'),
     })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
 from backend.tools import tool_registry
@@ -685,7 +686,8 @@ def run_tool_loop(agent: Dict[str, Any],
         if ms is not None:
             state_msg = {"role": "system",
                          "content": ms.render(agent_id=agent_id,
-                                              atg_enabled=bool(agent_context.get('enable_atg')))}
+                                              atg_enabled=bool(agent_context.get('enable_atg')),
+                                              cmp_enabled=bool(agent_context.get('enable_cmp')))}
             state_idx = next(
                 (i for i, m in enumerate(messages)
                  if m.get('role') == 'system' and '## Agent State' in m.get('content', '')),
@@ -2156,7 +2158,8 @@ def run_tool_loop(agent: Dict[str, Any],
             })
 
             # Persist agent state immediately for state-changing built-in tools
-            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state', 'compile_task_graph'):
+            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state',
+                           'compile_task_graph', 'switch_path', 'new_path'):
                 _ms = agent_context.get('agent_state')
                 if _ms is not None:
                     _persist_agent_state_split(_ms, agent_id, session_id, db_agent_id)

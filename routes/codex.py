@@ -1,15 +1,18 @@
 """Codex OAuth routes — PKCE flow, status, disconnect."""
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, render_template_string
 
 from models.db import db
 from backend.provider.oauth_codex import (
+    REDIRECT_URI,
     start_auth_flow,
     check_auth_status,
     exchange_code_for_tokens,
     store_tokens,
     get_valid_token,
     clear_tokens,
+    receive_callback,
+    process_callback_url,
 )
 
 codex_bp = Blueprint("codex", __name__)
@@ -23,7 +26,41 @@ def _find_codex_provider():
     return None
 
 
-@codex_bp.route("/api/codex/status", methods=["GET"])
+_CALLBACK_HTML = """<!DOCTYPE html>
+<html><head><title>Evonic - Codex Auth</title></head>
+<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#f9fafb">
+<div style="text-align:center;padding:2rem"><h2>{{ message }}</h2>
+<p>Returning to Evonic...</p>
+<script>setTimeout(function(){window.close()},2000)</script>
+</div></body></html>"""
+
+
+@codex_bp.route("/auth/callback", methods=["GET"])
+def codex_auth_callback():
+    """Receive the OAuth redirect from OpenAI and store the authorization code."""
+    provider = _find_codex_provider()
+    if not provider:
+        return render_template_string(_CALLBACK_HTML, message="No Codex provider configured."), 404
+
+    code = request.args.get("code")
+    state = request.args.get("state")
+    error = request.args.get("error")
+
+    if error:
+        desc = request.args.get("error_description", error)
+        return render_template_string(_CALLBACK_HTML, message=f"Authentication failed: {desc}")
+
+    if not code:
+        return render_template_string(_CALLBACK_HTML, message="No authorization code received.")
+
+    result = receive_callback(provider["id"], code, state)
+    if not result["success"]:
+        return render_template_string(_CALLBACK_HTML, message=f"Authentication failed: {result['error']}")
+
+    return render_template_string(_CALLBACK_HTML, message="Authentication successful! You can close this tab.")
+
+
+@codex_bp.route("/api/provider/codex/status", methods=["GET"])
 def codex_status():
     provider = _find_codex_provider()
     if not provider:
@@ -40,7 +77,7 @@ def codex_status():
     })
 
 
-@codex_bp.route("/api/codex/connect", methods=["POST"])
+@codex_bp.route("/api/provider/codex/connect", methods=["POST"])
 def codex_connect():
     """Start the OAuth PKCE flow — returns an auth URL to open in the browser."""
     provider = _find_codex_provider()
@@ -54,7 +91,7 @@ def codex_connect():
     })
 
 
-@codex_bp.route("/api/codex/poll", methods=["POST"])
+@codex_bp.route("/api/provider/codex/poll", methods=["POST"])
 def codex_poll():
     """Poll to check if the user has completed OAuth authorization."""
     provider = _find_codex_provider()
@@ -84,7 +121,33 @@ def codex_poll():
     return jsonify({"status": "pending"})
 
 
-@codex_bp.route("/api/codex/disconnect", methods=["POST"])
+@codex_bp.route("/api/provider/codex/callback", methods=["POST"])
+def codex_paste_callback():
+    """Receive a pasted callback URL from a remote user."""
+    data = request.get_json(silent=True) or {}
+    url = data.get("url", "").strip()
+
+    if not url:
+        return jsonify({"success": False, "error": "No callback URL provided."}), 400
+
+    provider = _find_codex_provider()
+    if not provider:
+        return jsonify({"success": False, "error": "No Codex provider configured."}), 404
+
+    result = process_callback_url(url)
+    if not result.get("success"):
+        return jsonify({"success": False, "error": result.get("error", "Failed to process callback.")}), 400
+
+    # Exchange the code for tokens immediately
+    tokens = exchange_code_for_tokens(provider["id"])
+    if "error" in tokens:
+        return jsonify({"success": False, "error": tokens["error"]}), 500
+
+    store_tokens(db, provider["id"], tokens)
+    return jsonify({"success": True, "status": "complete"})
+
+
+@codex_bp.route("/api/provider/codex/disconnect", methods=["POST"])
 def codex_disconnect():
     provider = _find_codex_provider()
     if not provider:

@@ -2048,60 +2048,6 @@ def extract_and_store_kb(agent: dict, session_id: str, summary: str,
     _author_docs(agent, session_id, summary, llm_lock)
 
 
-def get_memories_for_context(agent_id: str, messages: list,
-                              limit: int = 8, engine: str = None) -> Optional[str]:
-    """Retrieve relevant memories for injection into the LLM context.
-
-    Primary + fallback architecture:
-    1. If the resolved engine is evomem: try evomem hybrid search first.
-       On any failure, transparently fall back to FTS5 pipeline.
-    2. Otherwise: use FTS5 BM25 keyword search (existing behaviour).
-
-    ``engine`` is the per-agent resolved engine ('evomem'|'fts5'); when None it
-    defaults to the global env engine (get_engine()), preserving prior behavior.
-
-    Returns a formatted markdown string or None if no memories exist.
-    """
-    if engine is None:
-        engine = get_engine()
-    try:
-        query = _extract_last_user_query(messages)
-
-        # === Primary: evomem ===
-        if engine == "evomem" and query:
-            evomem_result = _try_evomem_retrieval(agent_id, query, limit)
-            if evomem_result:
-                return evomem_result
-            logger.debug("evomem retrieval returned nothing, falling back to FTS5")
-
-        # === Fallback: FTS5 ===
-        memories: List[dict] = []
-
-        if query:
-            fts_query = _sanitize_fts_query(query)
-            if fts_query:
-                try:
-                    memories = db.search_memories(agent_id, fts_query, limit)
-                except Exception:
-                    pass  # FTS5 can fail on unusual query syntax — fall through
-
-        if not memories:
-            memories = db.get_recent_memories(agent_id, limit)
-
-        if not memories:
-            return None
-
-        lines = ["## Memory",
-                 "Facts remembered from past conversations:"]
-        for m in memories:
-            lines.append(f"- [{m['category']}] {m['content']}")
-        return "\n".join(lines)
-
-    except Exception as e:
-        print(f"[MemoryManager] Context retrieval failed for agent {agent_id} (non-fatal): {e}")
-        return None
-
-
 def store_memory(agent_id: str, session_id: str, content: str,
                  category: str = 'general') -> dict:
     """Pin a fact into the running session summary. Backs the `remember` tool.

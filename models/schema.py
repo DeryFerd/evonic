@@ -840,6 +840,13 @@ class SchemaMixin:
                 pass
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_shortcode ON llm_models(shortcode)")
 
+            # Migration: add context_window column to llm_models if missing
+            # (0 = unknown; max_tokens is the OUTPUT budget, this is the full window)
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN context_window INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
 
             # One-shot migration: rewrite model ids to 'provider/model_name'
             # format (v2). Old ids are kept in legacy_id so stale references

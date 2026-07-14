@@ -86,6 +86,7 @@ def api_create_model():
                 "enabled": data.get("enabled", 1),
                 "is_default": data.get("is_default", 0),
                 "model_max_concurrent": data.get("model_max_concurrent", 1),
+                "context_window": data.get("context_window", 0),
             }
         )
     except ValueError as e:

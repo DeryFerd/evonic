@@ -184,6 +184,24 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
         'cmp': data.get('cmp'),
     })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
+
+
+def _persist_context_usage(session_id, agent_id, usage):
+    """Merge a 'context_usage' key into session_state.
+
+    Feeds the Session State panel's context monitor: usage comes from the
+    provider's reported token counts on the last successful LLM call.
+    Merge-write (like _persist_agent_state_split) so other keys survive.
+    """
+    raw = db.get_session_state(session_id, agent_id=agent_id)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data['context_usage'] = usage
+    db.upsert_session_state(session_id, json.dumps(data), agent_id=agent_id)
 from backend.tools import tool_registry
 from config import (AGENT_MAX_TOOL_ITERATIONS as MAX_TOOL_ITERATIONS,
                     AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS,
@@ -1229,6 +1247,24 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
             except Exception:
                 _logger.exception("LLM-trace archive failed (session=%s)", session_id)
+
+        # Context monitor: remember the size of the last successful call so the
+        # Session State panel can show context usage vs the model's window.
+        # Guarded on prompt_tokens > 0 — providers that omit usage keep the
+        # previous reading instead of zeroing it out.
+        _cu_prompt = result.get('prompt_tokens') or 0
+        if _cu_prompt > 0:
+            try:
+                _cu_completion = result.get('completion_tokens') or 0
+                _persist_context_usage(session_id, agent_id, {
+                    'prompt_tokens': _cu_prompt,
+                    'completion_tokens': _cu_completion,
+                    'total_tokens': result.get('total_tokens') or (_cu_prompt + _cu_completion),
+                    'model': (result.get('request_payload') or {}).get('model'),
+                    'ts': int(time.time()),
+                })
+            except Exception:
+                _logger.exception("context-usage persist failed (session=%s)", session_id)
 
         choice = result['response'].get('choices', [{}])[0]
         msg = choice.get('message', {})

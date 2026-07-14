@@ -1882,6 +1882,30 @@ def api_chat_agent_state(agent_id):
             pass
         payload['background_processes'] = background_processes
 
+    # Context monitor: tokens consumed by the last LLM call vs the model's
+    # context window (model.context_window, falling back to the global
+    # llm_context_length setting; unknown window → max/percent are null).
+    if session_id:
+        _cu = merged.get('context_usage') if isinstance(merged, dict) else None
+        if _cu and (_cu.get('prompt_tokens') or 0) > 0:
+            used = _cu.get('total_tokens') or (
+                (_cu.get('prompt_tokens') or 0) + (_cu.get('completion_tokens') or 0))
+            ctx_max = 0
+            _am = payload.get('active_model') or {}
+            if _am.get('id'):
+                _am_row = db.get_model_by_id(_am['id'])
+                ctx_max = int((_am_row or {}).get('context_window') or 0)
+            if ctx_max <= 0:
+                try:
+                    ctx_max = int(db.get_setting('llm_context_length', 0) or 0)
+                except (TypeError, ValueError):
+                    ctx_max = 0
+            payload['context_usage'] = {
+                'used': used,
+                'max': ctx_max if ctx_max > 0 else None,
+                'percent': min(100, round(used * 100 / ctx_max)) if ctx_max > 0 else None,
+            }
+
     # ?include=summary piggybacks the session summary on this response so the
     # UI gets state + summary in one round trip instead of two requests.
     if request.args.get('include') == 'summary':

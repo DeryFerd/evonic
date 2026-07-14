@@ -5601,6 +5601,24 @@ function buildBgProcessesHtml(procs) {
     return html;
 }
 
+// Render the "Context" usage block for the Session State panel: how much of
+// the model's context window the last LLM call consumed. cu = {used, max,
+// percent} from /chat/state; max/percent are null when the window is unknown.
+function buildContextUsageHtml(cu) {
+    if (!cu || !cu.used) return '';
+    const fmt = n => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+    let label, barHtml = '';
+    if (cu.max) {
+        const pct = Math.min(100, cu.percent || 0);
+        const color = pct > 85 ? 'bg-red-500' : (pct >= 60 ? 'bg-amber-500' : 'bg-indigo-500');
+        label = `${fmt(cu.used)} / ${fmt(cu.max)} (${pct}%)`;
+        barHtml = `<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-600 rounded-full mt-1 overflow-hidden"><div class="h-1.5 ${color} rounded-full transition-all" style="width:${pct}%"></div></div>`;
+    } else {
+        label = `~${fmt(cu.used)} tokens`;
+    }
+    return `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-700"><div class="flex justify-between items-center"><span class="text-gray-500 dark:text-gray-400 font-medium text-xs uppercase tracking-wide">Context</span><span class="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">${label}</span></div>${barHtml}</div>`;
+}
+
 let _refreshSessionStateTimer = null;
 const _refreshSessionStateImpl = async function() {
     try {
@@ -5621,6 +5639,7 @@ const _refreshSessionStateImpl = async function() {
 
         // Build mode badge + plan file + tasks header from agent state
         let headerHtml = '';
+        headerHtml += buildContextUsageHtml(stateData.context_usage);
         if (stateData.mode) {
             const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
             headerHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;

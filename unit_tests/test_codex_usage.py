@@ -56,3 +56,35 @@ def test_codex_chat_completion_propagates_usage():
     # traces/archive get a request payload now (was None)
     assert result['request_payload']['model'] == 'gpt-5.6-terra'
     assert result['request_payload']['messages'][0]['content'] == 'halo'
+
+
+def test_estimate_context_tokens_from_messages_and_tools():
+    from backend.llm_usage_events import estimate_context_tokens
+    msgs = [
+        {'role': 'system', 'content': 'You are a helpful agent. ' * 50},
+        {'role': 'user', 'content': 'halo dunia'},
+        {'role': 'assistant', 'content': '',
+         'tool_calls': [{'function': {'name': 'bash',
+                                      'arguments': '{"script": "ls -la /very/long/path"}'}}]},
+    ]
+    tools = [{'type': 'function', 'function': {'name': 'bash',
+              'description': 'run a shell command ' * 20,
+              'parameters': {'type': 'object', 'properties': {}}}}]
+    n = estimate_context_tokens(msgs, tools)
+    # system prose + tool-call args + tool schema all counted → clearly > 100
+    assert n > 100
+    # tools contribute materially
+    assert estimate_context_tokens(msgs, tools) > estimate_context_tokens(msgs, None)
+    assert estimate_context_tokens([], None) == 0
+
+
+def test_context_usage_estimated_when_provider_reports_zero():
+    """The Codex path returns prompt_tokens=0; the persist logic must fall
+    back to a local estimate so the meter reflects real context growth."""
+    from backend.llm_usage_events import estimate_context_tokens
+    # a bigger message set estimates larger than a tiny one — monotonic,
+    # which is all the context monitor needs to stop being frozen.
+    small = estimate_context_tokens([{'role': 'user', 'content': 'hi'}], None)
+    big = estimate_context_tokens(
+        [{'role': 'user', 'content': 'x' * 8000}], None)
+    assert big > small

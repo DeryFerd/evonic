@@ -1252,9 +1252,19 @@ def run_tool_loop(agent: Dict[str, Any],
 
         # Context monitor: remember the size of the last successful call so the
         # Session State panel can show context usage vs the model's window.
-        # Guarded on prompt_tokens > 0 — providers that omit usage keep the
-        # previous reading instead of zeroing it out.
+        # When the provider omits usage (e.g. the Codex Responses endpoint
+        # returns none), estimate prompt tokens locally from the exact
+        # messages+tools we sent — otherwise the meter freezes at the last
+        # reading forever (guarded on prompt_tokens > 0).
         _cu_prompt = result.get('prompt_tokens') or 0
+        _cu_estimated = False
+        if _cu_prompt <= 0:
+            try:
+                from backend.llm_usage_events import estimate_context_tokens
+                _cu_prompt = estimate_context_tokens(messages, tools)
+                _cu_estimated = True
+            except Exception:
+                _cu_prompt = 0
         if _cu_prompt > 0:
             try:
                 _cu_completion = result.get('completion_tokens') or 0
@@ -1263,6 +1273,7 @@ def run_tool_loop(agent: Dict[str, Any],
                     'completion_tokens': _cu_completion,
                     'total_tokens': result.get('total_tokens') or (_cu_prompt + _cu_completion),
                     'model': (result.get('request_payload') or {}).get('model'),
+                    'estimated': _cu_estimated,
                     'ts': int(time.time()),
                 })
             except Exception:

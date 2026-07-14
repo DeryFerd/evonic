@@ -164,6 +164,7 @@ def switch_to(cmp: dict, ms, target_id: str, now_ts: int = None) -> dict:
     target["status"] = "active"
     target["dormant_turns"] = 0
     target["last_active"] = now_ts
+    target["card_stale"] = True  # new content will accumulate while active
     target["segments"].append([now_ts - 1, None])
     cmp["active_id"] = target_id
 
@@ -182,7 +183,8 @@ def _suspend_active(cmp: dict, ms, now_ts: int) -> dict:
     path["status"] = "dormant"
     path["dormant_turns"] = 0
     path["last_active"] = now_ts
-    path["card_stale"] = True
+    # card_stale untouched: the compactor finalizes the card right before
+    # suspension and clears the flag; activation re-marks it (new content).
     return path
 
 

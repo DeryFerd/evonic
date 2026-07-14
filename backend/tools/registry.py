@@ -865,6 +865,20 @@ def _cmp_gate(agent_context: dict):
     return ms, None
 
 
+def _cmp_finalize_outgoing(agent_context: dict, ms) -> None:
+    """Best-effort card finalization for the active path before it is
+    suspended (the paper's card-first ordering). Never blocks the switch."""
+    try:
+        from models.chatlog import chatlog_manager
+        from backend.agent_runtime.cmp.compactor import finalize_active_card
+        chatlog = chatlog_manager.get(
+            agent_context.get('_db_agent_id', agent_context.get('id', '')),
+            agent_context.get('session_id'))
+        finalize_active_card(chatlog, ms.cmp, ms)
+    except Exception:
+        pass
+
+
 def _builtin_switch_path_factory(agent_context: dict):
     """Factory for the built-in 'switch_path' tool (CMP navigation).
 
@@ -904,6 +918,7 @@ def _builtin_switch_path_factory(agent_context: dict):
         from backend.agent_runtime.cmp import store as cmp_store
         target_id = (arguments.get('path_id') or '').strip()
         old_id = ms.cmp.get("active_id")
+        _cmp_finalize_outgoing(agent_context, ms)  # card-first ordering
         try:
             target = cmp_store.switch_to(ms.cmp, ms, target_id)
         except ValueError as e:
@@ -977,6 +992,7 @@ def _builtin_new_path_factory(agent_context: dict):
             _cmp_emit(agent_context, 'cmp_path_created',
                       {'path_id': 'P1', 'title': str(prev_title)[:60],
                        'initiator': 'auto-init'})
+        _cmp_finalize_outgoing(agent_context, ms)  # card-first ordering
         try:
             record = cmp_store.create_path(
                 ms.cmp, ms, title,

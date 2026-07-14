@@ -131,7 +131,7 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
                  transcript=transcript,
                  atg_block=_format_atg_block(atg_state))}],
             tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=600,
+            max_tokens=900,  # headroom for implicit-reasoning models
         )
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')
@@ -185,7 +185,7 @@ def name_path(user_text: str) -> dict:
             [{"role": "system", "content": prompts.PATH_NAME_SYSTEM},
              {"role": "user", "content": text[:1000]}],
             tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=120,
+            max_tokens=400,  # headroom for implicit-reasoning models
         )
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')

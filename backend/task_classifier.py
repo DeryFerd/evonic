@@ -116,7 +116,11 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
             [{"role": "system", "content": _BOUNDARY_SYSTEM},
              {"role": "user", "content": user_prompt}],
             tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=150,
+            # Generous budget: models like deepseek-v4-flash emit implicit
+            # reasoning_content even with thinking off — a tight cap gets
+            # fully consumed by reasoning and dies as generation_timeout
+            # before the single verdict token appears.
+            max_tokens=512,
         )
         _dur = time.time() - _t0
         if not response.get("success"):
@@ -184,7 +188,7 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
             tools=None,
             temperature=0.0,
             enable_thinking=False,
-            max_tokens=100,
+            max_tokens=400,  # headroom for implicit-reasoning models
         )
         if not response.get("success"):
             _logger.warning("Continuation classifier LLM call failed: %s",
@@ -286,7 +290,7 @@ def classify_task(user_message: str) -> str:
             tools=None,
             temperature=0.0,
             enable_thinking=False,
-            max_tokens=100,  # Increased from 10 to ensure model can produce full response
+            max_tokens=400,  # headroom: implicit-reasoning models burn budget on CoT
         )
         if not response.get("success"):
             _logger.warning("Task classifier LLM call failed [%s] (model=%s, %.1fs) — defaulting to complex",

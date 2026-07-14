@@ -135,7 +135,7 @@ def test_finalize_updates_path_and_clears_stale():
     with patch('backend.task_classifier._get_classifier_client',
                return_value=_scripted_client(card_json)):
         finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     assert p1['title'] == 'Client A website'
     assert p1['card_stale'] is False
     # second call with fresh card is a no-op (no LLM)

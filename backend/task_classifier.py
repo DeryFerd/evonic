@@ -66,7 +66,8 @@ The session contains several task paths (below). Decide exactly one:
   CONTINUE        - the message is about the ACTIVE path's SAME deliverable:
                     feedback, refinement, bug report, correction, approval,
                     or a question about that work.
-  RETURN:<id>     - the message resumes a specific NON-ACTIVE path.
+  RETURN:<id>     - the message resumes a specific NON-ACTIVE path
+                    (ids look like A1, A2, B1 - the letter is the level).
   DEP_BRANCH:<id> - a NEW goal with a DIFFERENT deliverable that uses the
                     results, tools, or context of path <id>. Examples:
                     "now make an invoice for the client A website" (after the
@@ -84,11 +85,11 @@ Also CONTINUE (never branch) for: approvals or acknowledgements of the
 active path's plan ("ok", "lanjutkan", "ya, setuju"), and small quick
 requests that a few tool calls satisfy — only substantial new goals
 deserve their own path. Explicitly mentioning a path id (e.g. "lanjutkan
-P2") is a RETURN to that path. When genuinely unsure, answer CONTINUE.
-Respond with exactly one token, e.g.: CONTINUE or RETURN:P2 or DEP_BRANCH:P1 or INDEP_BRANCH"""
+A2") is a RETURN to that path. When genuinely unsure, answer CONTINUE.
+Respond with exactly one token, e.g.: CONTINUE or RETURN:A1 or DEP_BRANCH:A1 or INDEP_BRANCH"""
 
 _BOUNDARY_RE = re.compile(
-    r'\b(CONTINUE|RETURN:(P\d+)|DEP_BRANCH:(P\d+)|INDEP_BRANCH)\b')
+    r'\b(CONTINUE|RETURN:([A-Z]+\d+)|DEP_BRANCH:([A-Z]+\d+)|INDEP_BRANCH)\b')
 
 
 def classify_boundary(map_text: str, active_card: str, other_cards: str,

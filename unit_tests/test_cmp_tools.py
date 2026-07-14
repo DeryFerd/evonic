@@ -35,10 +35,10 @@ def test_tools_hidden_without_flag():
 
 def test_executors_defend_when_disabled():
     switch, new = _executors(_ctx(enable_cmp=False))
-    assert 'error' in switch({'path_id': 'P1'})
+    assert 'error' in switch({'path_id': 'A1'})
     assert 'error' in new({'title': 'x'})
     switch, new = _executors({'id': 'a1', 'enable_cmp': True})  # no agent_state
-    assert 'error' in switch({'path_id': 'P1'})
+    assert 'error' in switch({'path_id': 'A1'})
     assert 'error' in new({'title': 'x'})
 
 
@@ -49,10 +49,10 @@ def test_new_path_auto_inits_first_path_from_current_work():
     ms.atg = {'status': 'done', 'dag': {'root_goal': 'build the todoweb app'}}
     _, new = _executors(_ctx(ms))
     result = new({'title': 'Invoice for client A', 'goal': 'make invoice',
-                  'depends_on': ['P1']})
-    assert result.get('path_id') == 'P2'
+                  'depends_on': ['A1']})
+    assert result.get('path_id') == 'B1'
     # P1 adopted the ongoing work's identity and snapshot
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     assert p1['title'] == 'build the todoweb app'
     assert p1['atg']['status'] == 'done'
     # fresh plan cycle for the new path
@@ -62,8 +62,8 @@ def test_new_path_auto_inits_first_path_from_current_work():
 def test_new_path_invalid_dependency():
     ms = AgentState()
     _, new = _executors(_ctx(ms))
-    result = new({'title': 'x', 'depends_on': ['P7']})
-    assert 'P7' in result['error']
+    result = new({'title': 'x', 'depends_on': ['Z7']})
+    assert 'Z7' in result['error']
 
 
 def test_new_path_requires_title():
@@ -79,17 +79,17 @@ def test_switch_path_round_trip():
     _, new = _executors(_ctx(ms))
     new({'title': 'second task'})
     switch, _ = _executors(_ctx(ms))
-    result = switch({'path_id': 'P1'})
-    assert 'Switched to P1' in result['result']
-    assert result['path']['id'] == 'P1'
-    assert ms.cmp['active_id'] == 'P1'
+    result = switch({'path_id': 'A1'})
+    assert 'Switched to A1' in result['result']
+    assert result['path']['id'] == 'A1'
+    assert ms.cmp['active_id'] == 'A1'
     assert ms.plan_file == 'plan/one.md'  # restored
 
 
 def test_switch_path_invalid_target_lists_valid_ids():
     ms = AgentState()
     switch, new = _executors(_ctx(ms))
-    assert 'new_path' in switch({'path_id': 'P1'})['error']  # no paths yet
+    assert 'new_path' in switch({'path_id': 'A1'})['error']  # no paths yet
     new({'title': 'second'})
-    err = switch({'path_id': 'P9'})['error']
-    assert 'P1' in err  # grounding: valid ids listed
+    err = switch({'path_id': 'Z9'})['error']
+    assert 'A1' in err  # grounding: valid ids listed

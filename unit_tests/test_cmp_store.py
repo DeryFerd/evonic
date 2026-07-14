@@ -27,8 +27,8 @@ def _init(ms=None, ts=1000):
 def test_new_cmp_first_path():
     ms = _init(ts=1000)
     cmp = ms.cmp
-    assert cmp['active_id'] == 'P1'
-    p1 = cmp['paths']['P1']
+    assert cmp['active_id'] == 'A1'
+    p1 = cmp['paths']['A1']
     assert p1['status'] == 'active'
     assert p1['segments'] == [[999, None]]
     assert p1['title'] == 'first task'
@@ -38,15 +38,15 @@ def test_create_path_branches_and_resets_task_state():
     atg = {'status': 'done', 'dag': {'root_goal': 'g'}}
     ms = _init(_ms(mode='execute', plan_file='plan/old.md', atg=atg), ts=1000)
     record = store.create_path(ms.cmp, ms, 'invoice task', goal='make invoice',
-                               depends_on=['P1'], now_ts=2000)
+                               depends_on=['A1'], now_ts=2000)
 
-    assert record['id'] == 'P2'
-    assert ms.cmp['active_id'] == 'P2'
-    assert record['depends_on'] == ['P1']
+    assert record['id'] == 'B1'  # dependency child → next level letter
+    assert ms.cmp['active_id'] == 'B1'
+    assert record['depends_on'] == ['A1']
     assert record['segments'] == [[1999, None]]
 
     # old path suspended: segment closed at turn boundary, state snapshotted
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     assert p1['status'] == 'dormant'
     assert p1['segments'] == [[999, 1999]]
     assert p1['mode'] == 'execute'
@@ -63,7 +63,7 @@ def test_create_path_branches_and_resets_task_state():
 def test_create_path_unknown_dependency_raises():
     ms = _init()
     with pytest.raises(ValueError):
-        store.create_path(ms.cmp, ms, 'x', depends_on=['P9'])
+        store.create_path(ms.cmp, ms, 'x', depends_on=['Z9'])
 
 
 # ── Switch / snapshot round-trip ─────────────────────────────────────────────
@@ -77,7 +77,7 @@ def test_switch_restores_task_state_round_trip():
     ms.plan_file = 'plan/two.md'
     ms.atg = {'status': 'compiled', 'dag': {'root_goal': 'task two'}}
 
-    target = store.switch_to(ms.cmp, ms, 'P1', now_ts=3000)
+    target = store.switch_to(ms.cmp, ms, 'A1', now_ts=3000)
 
     # P1's full state restored verbatim — fixes the single-slot ms.atg
     assert ms.mode == 'execute'
@@ -85,29 +85,29 @@ def test_switch_restores_task_state_round_trip():
     assert ms.atg == atg1
     # stored snapshot cleared while live (no double truth)
     assert target['atg'] is None and target['plan_file'] is None
-    # P2 snapshotted
-    p2 = ms.cmp['paths']['P2']
+    # A2 snapshotted
+    p2 = ms.cmp['paths']['A2']
     assert p2['status'] == 'dormant'
     assert p2['plan_file'] == 'plan/two.md'
     assert p2['atg']['status'] == 'compiled'
     # segments: P1 reopened, P2 closed
-    assert ms.cmp['paths']['P1']['segments'] == [[999, 1999], [2999, None]]
+    assert ms.cmp['paths']['A1']['segments'] == [[999, 1999], [2999, None]]
     assert p2['segments'] == [[1999, 2999]]
-    assert ms.cmp['active_id'] == 'P1'
+    assert ms.cmp['active_id'] == 'A1'
 
 
 def test_switch_to_unknown_or_active_raises():
     ms = _init()
     with pytest.raises(ValueError):
-        store.switch_to(ms.cmp, ms, 'P9')
+        store.switch_to(ms.cmp, ms, 'Z9')
     with pytest.raises(ValueError):
-        store.switch_to(ms.cmp, ms, 'P1')  # already active
+        store.switch_to(ms.cmp, ms, 'A1')  # already active
     # error message lists valid targets
     store.create_path(ms.cmp, ms, 'second')
     try:
-        store.switch_to(ms.cmp, ms, 'P9')
+        store.switch_to(ms.cmp, ms, 'Z9')
     except ValueError as e:
-        assert 'P1' in str(e)
+        assert 'A1' in str(e)
 
 
 # ── Hysteresis / caps ────────────────────────────────────────────────────────
@@ -115,12 +115,12 @@ def test_switch_to_unknown_or_active_raises():
 def test_hysteresis_archives_after_k_turns():
     ms = _init(ts=1000)
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     archived = []
     for _ in range(store.CMP_DORMANT_TURNS_K):
         archived = store.tick_hysteresis(ms.cmp)
     assert p1['status'] == 'archived'
-    assert archived == ['P1']
+    assert archived == ['A1']
     # archived paths drop their atg snapshot
     assert p1['atg'] is None
 
@@ -129,10 +129,10 @@ def test_return_resets_dormant_counter():
     ms = _init(ts=1000)
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
     store.tick_hysteresis(ms.cmp)
-    assert ms.cmp['paths']['P1']['dormant_turns'] == 1
-    store.switch_to(ms.cmp, ms, 'P1', now_ts=3000)
-    assert ms.cmp['paths']['P1']['dormant_turns'] == 0
-    assert ms.cmp['paths']['P1']['status'] == 'active'
+    assert ms.cmp['paths']['A1']['dormant_turns'] == 1
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=3000)
+    assert ms.cmp['paths']['A1']['dormant_turns'] == 0
+    assert ms.cmp['paths']['A1']['status'] == 'active'
 
 
 def test_caps_prune_oldest_archived_to_stubs():
@@ -146,7 +146,7 @@ def test_caps_prune_oldest_archived_to_stubs():
     store.enforce_caps(ms.cmp)
     assert len(ms.cmp['paths']) == store.MAX_PATHS + 4  # stubs replace, not delete
     # earliest archived became a stub (map node + segments survive)
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     assert p1['goal'] == '' and p1['atg'] is None
     assert p1['segments']  # transcript ref survives
 
@@ -171,13 +171,13 @@ def test_cmp_survives_agent_state_round_trip():
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
     restored = AgentState.deserialize(ms.serialize())
     assert restored.cmp == json.loads(json.dumps(ms.cmp))
-    assert restored.cmp['active_id'] == 'P2'
+    assert restored.cmp['active_id'] == 'A2'
 
 
 def test_dependency_ancestors_bounded():
     ms = _init(ts=1000)
-    store.create_path(ms.cmp, ms, 'b', depends_on=['P1'], now_ts=2000)
-    store.create_path(ms.cmp, ms, 'c', depends_on=['P2'], now_ts=3000)
-    assert store.dependency_ancestors(ms.cmp, 'P3') == ['P2', 'P1']
-    assert store.dependency_ancestors(ms.cmp, 'P3', max_depth=1) == ['P2']
-    assert store.dependency_ancestors(ms.cmp, 'P1') == []
+    store.create_path(ms.cmp, ms, 'b', depends_on=['A1'], now_ts=2000)
+    store.create_path(ms.cmp, ms, 'c', depends_on=['B1'], now_ts=3000)
+    assert store.dependency_ancestors(ms.cmp, 'C1') == ['B1', 'A1']
+    assert store.dependency_ancestors(ms.cmp, 'C1', max_depth=1) == ['B1']
+    assert store.dependency_ancestors(ms.cmp, 'A1') == []

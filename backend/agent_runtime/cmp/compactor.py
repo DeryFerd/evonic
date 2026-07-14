@@ -102,6 +102,7 @@ def _mechanical_card(path: dict, entries: list, atg_state) -> dict:
     facts, artifacts, goal = lift_atg_facts(atg_state)
     return {
         'title': path.get('title') or str(first_user)[:60],
+        'action': path.get('action') or '',
         'goal': path.get('goal') or goal or str(first_user)[:300],
         'outcome': str(last_final)[:300],
         'key_facts': facts,
@@ -174,7 +175,7 @@ def finalize_active_card(chatlog, cmp: dict, ms) -> None:
         if not path.get('card_stale', True):
             return
         card = generate_card(chatlog, path, atg_state=ms.atg)
-        for key in ('title', 'goal', 'outcome', 'key_facts', 'artifacts'):
+        for key in ('title', 'action', 'goal', 'outcome', 'key_facts', 'artifacts'):
             if card.get(key):
                 path[key] = card[key]
         path['card_stale'] = False

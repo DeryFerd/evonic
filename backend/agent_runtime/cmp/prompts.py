@@ -6,6 +6,7 @@ You summarize ONE task thread from an AI-agent session into a fixed-schema
 card that lets the agent resume this task later without the transcript.
 Respond with ONLY a JSON object, no prose:
 {"title": "<= 60 chars",
+ "action": "2-4 word verb phrase naming the task, e.g. 'create report'",
  "goal": "one sentence: what the task is trying to achieve",
  "outcome": "one sentence: where it stands now; empty string if just started",
  "key_facts": ["<= 6 short strings: decisions made, constraints discovered, FAILURES AND THEIR CAUSES, locations"],

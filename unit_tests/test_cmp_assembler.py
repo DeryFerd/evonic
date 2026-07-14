@@ -51,7 +51,7 @@ def test_return_rehydrates_tail_from_closed_segments():
     log.append({'type': 'user', 'ts': 3100, 'content': 'back to the website',
                 'session_id': 's'})
     ms = _cmp_two_paths()
-    store.switch_to(ms.cmp, ms, 'P1', now_ts=3100)  # P1 segs [999,2099],[3099,None]
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=3100)  # P1 segs [999,2099],[3099,None]
     msgs = assembler.build_history(log, None, ms.cmp)
     text = ' '.join(str(m.get('content')) for m in msgs)
     assert 'back to the website' in text          # open segment
@@ -82,6 +82,24 @@ def test_closed_tail_is_bounded():
     contents = [str(m.get('content')) for m in msgs]
     assert len(contents) == 4                     # only the tail survives
     assert contents[-1] == 'a19' or 'a' in contents[-1]
+
+
+def test_dependency_ancestor_transcript_stays_loaded():
+    """A child path keeps its parents' transcript detail in memory (the
+    child consumes their results); non-ancestor paths stay offloaded."""
+    log = _chatlog('sess-ancestor')
+    _fill_two_paths(log)  # A1 turn (report-ish), A2 turn (server config)
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(ms, title='website', now_ts=1000)          # A1
+    store.create_path(ms.cmp, ms, 'server config', now_ts=2100)      # A2
+    log.append({'type': 'user', 'ts': 3100, 'content': 'buat invoice dari website itu',
+                'session_id': 's'})
+    store.create_path(ms.cmp, ms, 'invoice', depends_on=['A1'], now_ts=3100)  # B1
+    msgs = assembler.build_history(log, None, ms.cmp)
+    text = ' '.join(str(m.get('content')) for m in msgs)
+    assert 'buat invoice dari website itu' in text   # active B1
+    assert 'website scaffolded' in text              # ancestor A1 loaded
+    assert 'server configured' not in text           # non-ancestor A2 offloaded
 
 
 def test_should_filter_gates():

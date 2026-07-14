@@ -1845,7 +1845,7 @@ def api_chat_agent_state(agent_id):
                     'mermaid': render_map(state.cmp),
                     'paths': [
                         {k: p.get(k) for k in
-                         ('id', 'title', 'status', 'goal', 'outcome',
+                         ('id', 'title', 'status', 'action', 'goal', 'outcome',
                           'key_facts', 'artifacts', 'depends_on', 'last_active')}
                         for _, p in sorted(state.cmp['paths'].items())
                     ],

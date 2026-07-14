@@ -58,11 +58,11 @@ def test_full_session_lifecycle():
     # ── Turn 3: return to P1 → rehydration ──────────────────────────────────
     log.append({'type': 'user', 'ts': 3000, 'content': RETURN_MSG, 'session_id': 's'})
     with patch('backend.agent_runtime.cmp.detector.detect',
-               return_value={'decision': 'return', 'target': 'P1',
+               return_value={'decision': 'return', 'target': 'A1',
                              'layer': 'L3'}), _mock_card():
         result = on_turn_boundary(AGENT, ms, log, RETURN_MSG)
     assert result['decision'] == 'return'
-    assert ms.cmp['active_id'] == 'P1'
+    assert ms.cmp['active_id'] == 'A1'
     assert ms.mode == 'execute'  # P1's snapshot restored
 
     msgs = assembler.build_history(log, None, ms.cmp)

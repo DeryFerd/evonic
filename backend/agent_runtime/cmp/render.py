@@ -1,52 +1,58 @@
 """
 CMP — session map + card rendering for LLM context injection.
 
-Renders the cmp dict into the "### Session Paths (CMP)" block that
-AgentState.render() includes each turn. Tiers (paper §4.2-4.3):
-  - map (Mermaid): always, topology + status + position only
-  - active path: full card
-  - dependency ancestors of the active path: compact cards (pinned)
-  - dormant paths: one-line cards
-  - archived paths: map node only
-Hard cap keeps the whole section bounded regardless of session length.
+Map notation (paper figure / user's goal spec): edges carry the path's
+action label and originate from the dependency parent (or the Agent root
+for independent paths); the active node is marked with a trailing `*`:
+
+    flowchart TD
+      Agent((Agent))
+      Agent -->|create report| A1["Perusahaan A"]
+      Agent -->|create article| A2["blog"]
+      A1 -->|create invoice| B1["client X"]
+      A1 -->|create invoice| B2["client Y *"]
+
+Path ids are level-based (A=root, B=child, C=grandchild…) — see
+store._compute_path_id. Tiers below the map: the active path renders its
+full IPPC card; dependency ancestors of the active path render compact
+cards; EVERY other path renders a one-line snippet (its detail is
+offloaded — only the interface-preserving summary stays in context).
 """
 from __future__ import annotations
 
-from backend.agent_runtime.cmp.store import dependency_ancestors
+import re
+
+from backend.agent_runtime.cmp.store import dependency_ancestors, sort_path_ids
 
 RENDER_MAX_CHARS = 4000
 
-_STATUS_LABEL = {
-    "active": "ACTIVE",
-    "dormant": "dormant",
-    "archived": "archived",
-}
+_LABEL_SAFE_RE = re.compile(r'[|"\[\]{}<>`]')
 
 
-def _node_label(path: dict, active: bool) -> str:
-    title = path.get("title") or path["id"]
-    status = "ACTIVE" if active else _STATUS_LABEL.get(path.get("status"), "?")
-    outcome = (path.get("outcome") or "").strip()
-    suffix = f": {outcome[:40]}" if outcome and not active else ""
-    return f'{path["id"]}["{title[:48]} [{status}]{suffix}"]'
+def _safe(text: str, cap: int) -> str:
+    return _LABEL_SAFE_RE.sub('', str(text or ''))[:cap].strip()
 
 
 def render_map(cmp: dict) -> str:
-    """Compact Mermaid flowchart of the session graph."""
-    lines = ["flowchart TD", "  U((user))"]
-    for pid in sorted(cmp["paths"]):
+    """Mermaid flowchart: action-labelled edges from the dependency parent
+    (Agent root for independent paths), `*` marks the active node."""
+    lines = ["flowchart TD", "  Agent((Agent))"]
+    ordered = sort_path_ids(cmp["paths"])
+    for pid in ordered:
         path = cmp["paths"][pid]
-        lines.append(f"  U --> {_node_label(path, pid == cmp['active_id'])}")
-    for pid in sorted(cmp["paths"]):
-        for dep in cmp["paths"][pid].get("depends_on") or []:
-            if dep in cmp["paths"]:
-                lines.append(f"  {pid} -. depends .-> {dep}")
+        star = " *" if pid == cmp["active_id"] else ""
+        node = f'{pid}["{_safe(path.get("title"), 48)}{star}"]'
+        label = _safe(path.get("action") or "task", 32)
+        deps = [d for d in (path.get("depends_on") or []) if d in cmp["paths"]]
+        source = deps[0] if deps else "Agent"
+        lines.append(f"  {source} -->|{label}| {node}")
+        for extra in deps[1:]:
+            lines.append(f"  {pid} -. also uses .-> {extra}")
     return "\n".join(lines)
 
 
 def _full_card(path: dict) -> list:
-    lines = [f"**{path['id']} — {path.get('title') or '(untitled)'}** "
-             f"(active)"]
+    lines = [f"**{path['id']} — {path.get('title') or '(untitled)'}** (active)"]
     if path.get("goal"):
         lines.append(f"- goal: {path['goal']}")
     if path.get("outcome"):
@@ -73,9 +79,10 @@ def _compact_card(path: dict, reason: str) -> list:
     return lines
 
 
-def _one_line_card(path: dict) -> str:
+def _snippet_card(path: dict) -> str:
     summary = path.get("outcome") or path.get("goal") or ""
-    return f"- {path['id']} {path.get('title') or ''} — {summary[:100]} (dormant)"
+    return (f"- {path['id']} {path.get('title') or ''} "
+            f"[{path.get('status')}] — {summary[:100]}")
 
 
 def render_cmp_section(cmp: dict) -> str:
@@ -94,13 +101,12 @@ def render_cmp_section(cmp: dict) -> str:
         lines.append("")
         lines.extend(_compact_card(cmp["paths"][dep_id], "dependency of active path"))
 
-    dormant = [p for pid, p in sorted(cmp["paths"].items())
-               if p.get("status") == "dormant"
-               and pid != active_id and pid not in ancestors]
-    if dormant:
+    others = [cmp["paths"][pid] for pid in sort_path_ids(cmp["paths"])
+              if pid != active_id and pid not in ancestors]
+    if others:
         lines.append("")
-        lines.append("Other recent paths:")
-        lines.extend(_one_line_card(p) for p in dormant)
+        lines.append("Offloaded paths (details load on return):")
+        lines.extend(_snippet_card(p) for p in others)
 
     lines.append("")
     lines.append("Use switch_path(path_id) to resume another path, or "

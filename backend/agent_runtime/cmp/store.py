@@ -9,6 +9,7 @@ what fixes the single-slot `ms.atg` limitation.
 """
 from __future__ import annotations
 
+import re
 import time
 
 CMP_VERSION = 1
@@ -33,16 +34,67 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+ACTION_MAX = 32
+
+_PATH_ID_RE = re.compile(r'^([A-Z]+)(\d+)$')
+
+
 def clamp_card_fields(card: dict) -> dict:
     """Enforce field caps in place; returns the card for chaining."""
     card["title"] = str(card.get("title") or "")[:TITLE_MAX]
     card["goal"] = str(card.get("goal") or "")[:GOAL_MAX]
     card["outcome"] = str(card.get("outcome") or "")[:OUTCOME_MAX]
+    card["action"] = str(card.get("action") or "")[:ACTION_MAX]
     card["key_facts"] = [str(f)[:KEY_FACT_CHARS]
                          for f in (card.get("key_facts") or [])[:KEY_FACTS_MAX]]
     card["artifacts"] = [str(a)[:KEY_FACT_CHARS]
                          for a in (card.get("artifacts") or [])[:ARTIFACTS_MAX]]
     return card
+
+
+def _id_sort_key(pid: str):
+    m = _PATH_ID_RE.match(pid or '')
+    return (m.group(1), int(m.group(2))) if m else (pid, 0)
+
+
+def sort_path_ids(ids) -> list:
+    """Level-then-index ordering (A1, A2, A10, B1 — not lexicographic)."""
+    return sorted(ids, key=_id_sort_key)
+
+
+def path_level(cmp: dict, pid: str) -> int:
+    """Dependency depth of a path: root=0 (letter A), child of root=1 (B)…"""
+    seen = set()
+    def depth(p):
+        if p in seen or p not in cmp["paths"]:
+            return 0
+        seen.add(p)
+        deps = cmp["paths"][p].get("depends_on") or []
+        return 0 if not deps else 1 + max(depth(d) for d in deps)
+    return depth(pid)
+
+
+def _compute_path_id(cmp: dict, depends_on: list) -> str:
+    """Level-based id (paper map notation): the letter encodes the dependency
+    level (A=root, B=child, C=grandchild…), the number is the next free index
+    within that level — siblings across different parents share the level
+    counter (A1, A2 / B1, B2, B3 / C1…)."""
+    if not depends_on:
+        level = 0
+    else:
+        level = 1 + max(path_level(cmp, d) for d in depends_on)
+    letter = chr(ord('A') + min(level, 25))
+    highest = 0
+    for pid in cmp.get("paths") or {}:
+        m = _PATH_ID_RE.match(pid)
+        if m and m.group(1) == letter:
+            highest = max(highest, int(m.group(2)))
+    return f"{letter}{highest + 1}"
+
+
+def _default_action(title: str) -> str:
+    """Mechanical edge label until the compactor refines it."""
+    return ' '.join((title or '').split()[:4])[:ACTION_MAX]
 
 
 def new_cmp(ms, title: str, goal: str = "", now_ts: int = None) -> dict:
@@ -51,10 +103,9 @@ def new_cmp(ms, title: str, goal: str = "", now_ts: int = None) -> dict:
     now_ts = now_ts if now_ts is not None else _now_ms()
     cmp = {
         "version": CMP_VERSION,
-        "active_id": "P1",
-        "next_id": 2,
+        "active_id": "A1",
         "paths": {
-            "P1": _new_path_record("P1", title, goal, now_ts),
+            "A1": _new_path_record("A1", title, goal, now_ts),
         },
         "stats": {"switches": 0, "branches": 0, "detector_llm_calls": 0},
     }
@@ -72,6 +123,7 @@ def _new_path_record(pid: str, title: str, goal: str, now_ts: int,
         "status": "active",
         "goal": goal,
         "outcome": "",
+        "action": _default_action(title),
         "key_facts": [],
         "artifacts": [],
         "depends_on": list(depends_on or []),
@@ -96,7 +148,7 @@ def valid_targets(cmp: dict) -> list:
     """[(id, title)] of switchable (non-active) paths, newest first."""
     out = [(p["id"], p["title"]) for p in cmp["paths"].values()
            if p["id"] != cmp["active_id"]]
-    return sorted(out, key=lambda t: t[0], reverse=True)
+    return sorted(out, key=lambda t: _id_sort_key(t[0]), reverse=True)
 
 
 def create_path(cmp: dict, ms, title: str, goal: str = "",
@@ -115,8 +167,7 @@ def create_path(cmp: dict, ms, title: str, goal: str = "",
 
     _suspend_active(cmp, ms, now_ts)
 
-    pid = f"P{cmp['next_id']}"
-    cmp["next_id"] += 1
+    pid = _compute_path_id(cmp, depends_on)
     record = _new_path_record(pid, title, goal, now_ts, depends_on=depends_on)
     cmp["paths"][pid] = record
     cmp["active_id"] = pid
@@ -228,7 +279,8 @@ def enforce_caps(cmp: dict) -> None:
     for path in archived[:to_prune]:
         stub = {k: path[k] for k in
                 ("id", "title", "status", "outcome", "segments", "depends_on")}
-        stub.update({"goal": "", "key_facts": [], "artifacts": [],
+        stub.update({"goal": "", "action": path.get("action", ""),
+                     "key_facts": [], "artifacts": [],
                      "last_active": path.get("last_active", 0),
                      "dormant_turns": 0, "card_stale": False,
                      "mode": None, "plan_file": None,

@@ -389,24 +389,36 @@ class ChatLog:
 
     def get_entries_for_llm_segments(self, segments: List[list],
                                      after_ts: Optional[int] = None,
-                                     closed_tail_semantic: int = 6) -> List[Dict[str, Any]]:
+                                     closed_tail_semantic: int = 6,
+                                     extra_groups: Optional[List[tuple]] = None) -> List[Dict[str, Any]]:
         """CMP: LLM messages scoped to a path's transcript segments.
 
-        segments: [[start, end|None], ...] ts ranges with exclusive-start
-        semantics (start < ts <= end); end None = the open segment. Entries
-        from CLOSED segments (earlier visits to the path) are trimmed to the
-        last `closed_tail_semantic` semantic messages — the rehydration tail —
-        while the open segment loads in full. after_ts (summary watermark)
-        lower-bounds everything.
+        segments: the ACTIVE path's [[start, end|None], ...] ts ranges with
+        exclusive-start semantics (start < ts <= end); end None = the open
+        segment. Entries from CLOSED segments (earlier visits) are trimmed to
+        the last `closed_tail_semantic` semantic messages — the rehydration
+        tail — while the open segment loads in full.
 
-        Filtering happens on RAW entries (reconstruction drops ts) and then
-        reuses _reconstruct_llm_messages, so tool-call grouping and
+        extra_groups: optional [(segments, tail_semantic), ...] for the active
+        path's dependency ancestors — their transcripts stay loaded (bounded
+        per-group tail) so a child task keeps its parents' detail in memory.
+        after_ts (summary watermark) lower-bounds everything.
+
+        Filtering happens on RAW entries (reconstruction drops ts); all kept
+        entries merge in chronological order through the one
+        _reconstruct_llm_messages pass, so tool-call grouping and
         orphan-dropping behave exactly like get_entries_for_llm at segment
         and watermark edges.
         """
-        segs = [s for s in (segments or []) if s and s[0] is not None]
-        open_entries: List[dict] = []
-        closed_entries: List[dict] = []
+        def _norm(segs):
+            return [s for s in (segs or []) if s and s[0] is not None]
+
+        # (segments, tail, open_loads_full)
+        groups = [(_norm(segments), closed_tail_semantic, True)]
+        for extra_segs, extra_tail in (extra_groups or []):
+            groups.append((_norm(extra_segs), extra_tail, False))
+
+        collected = [{'open': [], 'closed': []} for _ in groups]
         for raw in self._iter_lines_forward():
             entry = self._parse(raw)
             if entry is None or entry.get('type') not in _LLM_CONTEXT_TYPES:
@@ -414,25 +426,37 @@ class ChatLog:
             ts = entry.get('ts', 0)
             if after_ts is not None and ts <= after_ts:
                 continue
-            for start, end in segs:
-                if ts > start and (end is None or ts <= end):
-                    (open_entries if end is None else closed_entries).append(entry)
+            placed = False
+            for gi, (segs, _tail, open_full) in enumerate(groups):
+                for start, end in segs:
+                    if ts > start and (end is None or ts <= end):
+                        bucket = 'open' if (end is None and open_full) else 'closed'
+                        collected[gi][bucket].append(entry)
+                        placed = True
+                        break
+                if placed:
                     break
 
-        if closed_entries and closed_tail_semantic >= 0:
+        def _tail_trim(entries, tail):
+            if not entries or tail < 0:
+                return entries
             kept: List[dict] = []
             semantic = 0
-            for entry in reversed(closed_entries):
+            for entry in reversed(entries):
                 kept.append(entry)
                 if entry.get('type') in _SUMMARY_COUNT_TYPES:
                     semantic += 1
-                    if semantic >= closed_tail_semantic:
+                    if semantic >= tail:
                         break
             kept.reverse()
-            closed_entries = kept
+            return kept
 
-        # Closed segments always precede the open one chronologically.
-        return _reconstruct_llm_messages(closed_entries + open_entries)
+        merged: List[dict] = []
+        for gi, (_segs, tail, _open_full) in enumerate(groups):
+            merged.extend(_tail_trim(collected[gi]['closed'], tail))
+            merged.extend(collected[gi]['open'])
+        merged.sort(key=lambda e: e.get('ts', 0))
+        return _reconstruct_llm_messages(merged)
 
     def clear(self) -> None:
         """Truncate the session log file, removing all entries."""

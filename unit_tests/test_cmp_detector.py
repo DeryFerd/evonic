@@ -14,7 +14,7 @@ def _session():
     ms = AgentState(mode='execute')
     ms.cmp = store.new_cmp(ms, title='client A website', goal='build site',
                            now_ts=1000)
-    p1 = ms.cmp['paths']['P1']
+    p1 = ms.cmp['paths']['A1']
     p1['artifacts'] = ['/projects/client-a-web/']
     p1['key_facts'] = ['deploy failed: missing DATABASE_URL']
     store.create_path(ms.cmp, ms, 'server config', goal='configure nginx',
@@ -37,13 +37,13 @@ def test_every_message_reaches_the_llm():
     """No keyword short-circuits at all (user requirement): acks, approval
     particles, follow-ups, overlaps — the LLM owns every routing decision."""
     ms = _session()
-    ms.cmp['paths']['P2']['artifacts'] = ['/etc/nginx/nginx.conf']
+    ms.cmp['paths']['A2']['artifacts'] = ['/etc/nginx/nginx.conf']
     for msg in (
         'ok sip',
         'oke lanjutkan sesuai plan itu saja',
         'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout',
         'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text',
-        'tolong lanjutkan pekerjaan yang ada di P1 sekarang juga',
+        'tolong lanjutkan pekerjaan yang ada di A1 sekarang juga',
     ):
         with _patch_l2l3():
             import backend.task_classifier as tc
@@ -84,13 +84,13 @@ def test_kanban_return_regression():
     was swallowed by the old approval guard while P4 sat in plan mode."""
     ms = _session()
     ms.mode = 'plan'
-    with _patch_l2l3(boundary={'decision': 'return', 'target': 'P1'}):
+    with _patch_l2l3(boundary={'decision': 'return', 'target': 'A1'}):
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms,
                         'oke, sip, btw yg issue kanban state race condition tadi udah solved kah?')
         assert result['layer'] == 'LLM'
         tc.classify_boundary.assert_called_once()
-        assert (result['decision'], result['target']) == ('return', 'P1')
+        assert (result['decision'], result['target']) == ('return', 'A1')
 
 
 def test_generic_title_word_does_not_short_circuit():
@@ -101,10 +101,10 @@ def test_generic_title_word_does_not_short_circuit():
     ms.cmp = store.new_cmp(
         ms, title='tolong cari bug di 3 plugin paling aktif', now_ts=1000)
     store.create_path(ms.cmp, ms, 'other work', now_ts=1500)
-    store.switch_to(ms.cmp, ms, 'P1', now_ts=2000)
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=2000)
     ms.mode = 'execute'
     # P1 card is empty (key_facts/artifacts never filled)
-    with _patch_l2l3(boundary={'decision': 'dep_branch', 'target': 'P1'}):
+    with _patch_l2l3(boundary={'decision': 'dep_branch', 'target': 'A1'}):
         import backend.task_classifier as tc
         result = detect(ms.cmp, ms,
                         'tolong gabungkan chart agent test di token monitor plugin')
@@ -121,7 +121,7 @@ def test_l3_sees_recent_deliverable_tail():
 
     def fake_boundary(map_text, active_card, other_cards, user_text):
         captured['active'] = active_card
-        return {'decision': 'dep_branch', 'target': 'P2'}
+        return {'decision': 'dep_branch', 'target': 'A2'}
 
     with patch.multiple('backend.task_classifier',
                         classify_task=MagicMock(return_value='complex'),
@@ -180,8 +180,8 @@ def test_l3_decisions_flow_through():
     ms = _session()
     for boundary, expected in [
         ({'decision': 'indep_branch', 'target': None}, ('indep_branch', None)),
-        ({'decision': 'return', 'target': 'P1'}, ('return', 'P1')),
-        ({'decision': 'dep_branch', 'target': 'P1'}, ('dep_branch', 'P1')),
+        ({'decision': 'return', 'target': 'A1'}, ('return', 'A1')),
+        ({'decision': 'dep_branch', 'target': 'A1'}, ('dep_branch', 'A1')),
         ({'decision': 'continue', 'target': None}, ('continue', None)),
     ]:
         with _patch_l2l3(boundary=boundary):
@@ -193,11 +193,11 @@ def test_l3_decisions_flow_through():
 def test_l3_invalid_targets_degrade_safely():
     ms = _session()
     # return to unknown/active path → continue
-    for target in ('P9', 'P2'):
+    for target in ('Z9', 'A2'):
         with _patch_l2l3(boundary={'decision': 'return', 'target': target}):
             assert detect(ms.cmp, ms, LONG_NEW_TASK)['decision'] == 'continue'
     # dep_branch on unknown path → independent branch
-    with _patch_l2l3(boundary={'decision': 'dep_branch', 'target': 'P9'}):
+    with _patch_l2l3(boundary={'decision': 'dep_branch', 'target': 'Z9'}):
         result = detect(ms.cmp, ms, LONG_NEW_TASK)
         assert result['decision'] == 'indep_branch' and result['target'] is None
 
@@ -223,10 +223,10 @@ def test_classify_boundary_parse_matrix():
 
     cases = [
         ('CONTINUE', ('continue', None)),
-        ('RETURN:P2', ('return', 'P2')),
-        ('DEP_BRANCH:P1', ('dep_branch', 'P1')),
+        ('RETURN:A2', ('return', 'A2')),
+        ('DEP_BRANCH:B1', ('dep_branch', 'B1')),
         ('INDEP_BRANCH', ('indep_branch', None)),
-        ('I think RETURN:P2 fits best', ('return', 'P2')),  # embedded token
+        ('I think RETURN:A2 fits best', ('return', 'A2')),  # embedded token
         ('gibberish with no token', ('continue', None)),
     ]
     for content, expected in cases:

@@ -1836,6 +1836,22 @@ def api_chat_agent_state(agent_id):
             'active_model': _resolve_active_model(),
             'loaded_skills': loaded_skills,
         }
+        # CMP session-path map (for the Session State panel's map modal)
+        if state.cmp and state.cmp.get('paths'):
+            try:
+                from backend.agent_runtime.cmp.render import render_map
+                payload['cmp'] = {
+                    'active_id': state.cmp.get('active_id'),
+                    'mermaid': render_map(state.cmp),
+                    'paths': [
+                        {k: p.get(k) for k in
+                         ('id', 'title', 'status', 'goal', 'outcome',
+                          'key_facts', 'artifacts', 'depends_on', 'last_active')}
+                        for _, p in sorted(state.cmp['paths'].items())
+                    ],
+                }
+            except Exception:
+                pass
     elif _is_explorer:
         # Minimal state, but still surface the explorer's model badge.
         payload = {

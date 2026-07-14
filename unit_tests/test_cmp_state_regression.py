@@ -45,6 +45,53 @@ def test_persist_split_carries_cmp():
     assert data['cmp'] == ms.cmp
 
 
+def test_chat_state_api_exposes_cmp_map():
+    import json as _json
+    from app import app
+    from models.db import db
+    from backend.agent_runtime.cmp import store
+
+    db.create_agent({'id': 'cmp_api_agent', 'name': 'C', 'system_prompt': ''})
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(ms, title='website task', goal='build it', now_ts=1000)
+    store.create_path(ms.cmp, ms, 'invoice task', depends_on=['P1'], now_ts=2000)
+    from backend.agent_runtime.llm_loop import _persist_agent_state_split
+    _persist_agent_state_split(ms, 'cmp_api_agent', 'sess-api-1')
+
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess['authenticated'] = True
+        res = client.get('/api/agents/cmp_api_agent/chat/state?session_id=sess-api-1')
+        assert res.status_code == 200
+        data = res.get_json()
+    cmp = data.get('cmp')
+    assert cmp and cmp['active_id'] == 'P2'
+    assert 'flowchart TD' in cmp['mermaid']
+    ids = [p['id'] for p in cmp['paths']]
+    assert ids == ['P1', 'P2']
+    assert cmp['paths'][1]['depends_on'] == ['P1']
+    # cards carry what the modal needs, nothing sensitive extra
+    assert set(cmp['paths'][0]) == {'id', 'title', 'status', 'goal', 'outcome',
+                                    'key_facts', 'artifacts', 'depends_on',
+                                    'last_active'}
+
+
+def test_chat_state_api_no_cmp_key_when_absent():
+    from app import app
+    from models.db import db
+
+    db.create_agent({'id': 'cmp_api_agent2', 'name': 'C', 'system_prompt': ''})
+    from backend.agent_runtime.llm_loop import _persist_agent_state_split
+    _persist_agent_state_split(AgentState(), 'cmp_api_agent2', 'sess-api-2')
+
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess['authenticated'] = True
+        res = client.get('/api/agents/cmp_api_agent2/chat/state?session_id=sess-api-2')
+        assert res.status_code == 200
+        assert 'cmp' not in res.get_json()
+
+
 def test_clear_resets_cmp_key():
     # /clear writes a full-replace session_data including explicit cmp None
     import inspect

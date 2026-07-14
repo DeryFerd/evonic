@@ -95,6 +95,7 @@ function _renderAgentStateCore(containerIds, data) {
     var empty = '<p class="text-sm text-gray-400 dark:text-gray-500 italic">No state yet.</p>';
     var hasAnyState = data.focus ||
         data.active_model ||
+        (data.cmp && data.cmp.paths && data.cmp.paths.length > 0) ||
         (data.states && Object.keys(data.states).length > 0);
     if (!hasAnyState) {
         (Array.isArray(containerIds) ? containerIds : [containerIds]).forEach(function(id) {
@@ -123,6 +124,23 @@ function _renderAgentStateCore(containerIds, data) {
         } else {
             cards += '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 ml-1">Model: ' + esc(am.name) + '</span>';
         }
+    }
+
+    // CMP session-path map badge (clickable — opens the graph modal)
+    if (data.cmp && data.cmp.paths && data.cmp.paths.length > 0) {
+        _cmpMapData = data.cmp;
+        var activePath = null;
+        for (var pi = 0; pi < data.cmp.paths.length; pi++) {
+            if (data.cmp.paths[pi].id === data.cmp.active_id) { activePath = data.cmp.paths[pi]; break; }
+        }
+        var activeTitle = activePath ? activePath.title : '';
+        cards += '<span onclick="_openCmpMap()"' +
+            ' class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium' +
+            ' bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1' +
+            ' cursor-pointer hover:bg-purple-200 dark:hover:bg-purple-800"' +
+            ' title="' + esc(activeTitle) + ' — click to view the session path map">' +
+            'Paths: ' + data.cmp.paths.length +
+            ' <span class="ml-1 opacity-75">▸ map</span></span>';
     }
 
     // Raw JSON for debug
@@ -227,4 +245,186 @@ function _unloadSkill(skillId) {
             }
         })
         .catch(function(e) { console.error('[AgentState] Skill unload error:', e); });
+}
+
+/* ========================================
+   CMP Session Path Map (modal + SVG graph)
+   ======================================== */
+
+var _cmpMapData = null;
+var _cmpSelectedPath = null;
+
+var _CMP_STATUS_STYLE = {
+    active:   { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
+    dormant:  { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'dormant' },
+    archived: { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
+};
+
+function _openCmpMap() {
+    if (!_cmpMapData || !_cmpMapData.paths || !_cmpMapData.paths.length) return;
+    _cmpSelectedPath = _cmpMapData.active_id;
+    var existing = document.getElementById('cmp-map-modal');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'cmp-map-modal';
+    overlay.setAttribute('style',
+        'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;' +
+        'justify-content:center;background:rgba(0,0,0,0.55);padding:16px;');
+    overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) _closeCmpMap();
+    });
+
+    var panel = document.createElement('div');
+    panel.className = 'bg-white dark:bg-gray-800 rounded-lg shadow-xl';
+    panel.setAttribute('style',
+        'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+
+    panel.innerHTML =
+        '<div class="flex items-center justify-between mb-3">' +
+        '  <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Session Path Map</h3>' +
+        '  <div class="flex items-center gap-2">' +
+        '    <button onclick="_toggleCmpSource()" class="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline cursor-pointer">Mermaid source</button>' +
+        '    <button onclick="_closeCmpMap()" class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-300 cursor-pointer" title="Close">×</button>' +
+        '  </div>' +
+        '</div>' +
+        '<div id="cmp-map-svg" class="overflow-x-auto text-gray-800 dark:text-gray-100"></div>' +
+        '<pre id="cmp-map-source" class="hidden mt-3 rounded p-2 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">' +
+        esc(_cmpMapData.mermaid || '') + '</pre>' +
+        '<div id="cmp-map-detail" class="mt-3 border-t border-gray-100 dark:border-gray-700 pt-3 text-sm"></div>';
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', _cmpEscHandler);
+
+    document.getElementById('cmp-map-svg').innerHTML = _buildCmpSvg(_cmpMapData);
+    _cmpRenderDetail();
+}
+
+function _closeCmpMap() {
+    var el = document.getElementById('cmp-map-modal');
+    if (el) el.remove();
+    document.removeEventListener('keydown', _cmpEscHandler);
+}
+
+function _cmpEscHandler(e) { if (e.key === 'Escape') _closeCmpMap(); }
+
+function _toggleCmpSource() {
+    var el = document.getElementById('cmp-map-source');
+    if (el) el.classList.toggle('hidden');
+}
+
+function _cmpSelectPath(pathId) {
+    _cmpSelectedPath = pathId;
+    var svgHost = document.getElementById('cmp-map-svg');
+    if (svgHost) svgHost.innerHTML = _buildCmpSvg(_cmpMapData);
+    _cmpRenderDetail();
+}
+
+function _cmpRenderDetail() {
+    var host = document.getElementById('cmp-map-detail');
+    if (!host || !_cmpMapData) return;
+    var p = null;
+    for (var i = 0; i < _cmpMapData.paths.length; i++) {
+        if (_cmpMapData.paths[i].id === _cmpSelectedPath) { p = _cmpMapData.paths[i]; break; }
+    }
+    if (!p) { host.innerHTML = ''; return; }
+    var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
+    var html = '<div class="flex items-center gap-2 mb-1">' +
+        '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
+        '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
+        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>';
+    if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
+    if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
+    if (p.key_facts && p.key_facts.length) {
+        html += '<ul class="text-xs text-gray-500 dark:text-gray-400 mt-1 space-y-0.5">';
+        for (var k = 0; k < p.key_facts.length; k++) html += '<li>• ' + esc(p.key_facts[k]) + '</li>';
+        html += '</ul>';
+    }
+    if (p.artifacts && p.artifacts.length) {
+        html += '<div class="text-[10px] text-gray-400 dark:text-gray-500 mt-1 font-mono break-all">' + esc(p.artifacts.join('  ')) + '</div>';
+    }
+    if (p.depends_on && p.depends_on.length) {
+        html += '<div class="text-xs text-gray-500 dark:text-gray-400 mt-1">depends on: ' + esc(p.depends_on.join(', ')) + '</div>';
+    }
+    host.innerHTML = html;
+}
+
+/**
+ * Lightweight offline SVG rendering of the session graph (no mermaid.js
+ * dependency): USER root on top, path nodes in a grid, dependency edges
+ * dashed. Click a node to inspect its card.
+ */
+function _buildCmpSvg(cmp) {
+    var paths = cmp.paths || [];
+    var NODE_W = 168, NODE_H = 46, GAP_X = 28, GAP_Y = 56, PER_ROW = 3;
+    var cols = Math.min(PER_ROW, Math.max(1, paths.length));
+    var rows = Math.ceil(paths.length / PER_ROW);
+    var width = cols * NODE_W + (cols - 1) * GAP_X + 20;
+    var userY = 10, userH = 34;
+    var gridTop = userY + userH + 34;
+    var height = gridTop + rows * NODE_H + (rows - 1) * GAP_Y + 16;
+
+    var pos = {};
+    for (var i = 0; i < paths.length; i++) {
+        var col = i % PER_ROW, row = Math.floor(i / PER_ROW);
+        pos[paths[i].id] = {
+            x: 10 + col * (NODE_W + GAP_X),
+            y: gridTop + row * (NODE_H + GAP_Y)
+        };
+    }
+    var userX = width / 2 - 34;
+
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" style="min-width:320px">';
+    svg += '<defs><marker id="cmp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+           '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/></marker></defs>';
+
+    // user root
+    svg += '<ellipse cx="' + (userX + 34) + '" cy="' + (userY + userH / 2) + '" rx="34" ry="' + (userH / 2) + '" fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>';
+    svg += '<text x="' + (userX + 34) + '" y="' + (userY + userH / 2 + 4) + '" text-anchor="middle" font-size="11" fill="currentColor">user</text>';
+
+    // creation edges (user -> each path)
+    for (var c = 0; c < paths.length; c++) {
+        var cp = pos[paths[c].id];
+        svg += '<line x1="' + (userX + 34) + '" y1="' + (userY + userH) + '" x2="' + (cp.x + NODE_W / 2) + '" y2="' + cp.y + '" stroke="#9ca3af" stroke-width="1" opacity="0.45"/>';
+    }
+
+    // dependency edges (dashed, arrowed): consumer -> producer
+    for (var d = 0; d < paths.length; d++) {
+        var deps = paths[d].depends_on || [];
+        var from = pos[paths[d].id];
+        for (var e = 0; e < deps.length; e++) {
+            var to = pos[deps[e]];
+            if (!to) continue;
+            var x1 = from.x + NODE_W / 2, y1 = from.y + NODE_H;
+            var x2 = to.x + NODE_W / 2, y2 = to.y + NODE_H;
+            var midY = Math.max(y1, y2) + 26;
+            svg += '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + midY + ', ' + x2 + ' ' + midY + ', ' + x2 + ' ' + (y2 + 4) + '"' +
+                   ' fill="none" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#cmp-arrow)" opacity="0.8"/>';
+        }
+    }
+
+    // path nodes
+    for (var n = 0; n < paths.length; n++) {
+        var p = paths[n];
+        var xy = pos[p.id];
+        var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
+        var isActive = p.id === cmp.active_id;
+        var isSelected = p.id === _cmpSelectedPath;
+        var title = (p.title || '').length > 20 ? (p.title || '').slice(0, 19) + '…' : (p.title || '');
+        svg += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
+        svg += '<rect x="' + xy.x + '" y="' + xy.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"' +
+               ' fill="' + st.fill + '" stroke="' + st.stroke + '"' +
+               ' stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
+               (isSelected ? ' stroke-dasharray="none" filter="drop-shadow(0 0 3px ' + st.stroke + ')"' : '') + '/>';
+        svg += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 19) + '" font-size="11" font-weight="600" fill="currentColor">' +
+               esc(p.id) + (isActive ? ' ●' : '') + '</text>';
+        svg += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 34) + '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
+        svg += '<text x="' + (xy.x + NODE_W - 8) + '" y="' + (xy.y + 19) + '" text-anchor="end" font-size="9" fill="' + st.stroke + '">' +
+               (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';
+        svg += '</g>';
+    }
+
+    svg += '</svg>';
+    return svg;
 }

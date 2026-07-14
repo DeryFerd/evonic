@@ -116,6 +116,45 @@ def test_compile_executor_defends_when_disabled():
     assert 'error' in executor({'goal': 'do something'})
 
 
+# ── save_plan ATG enforcement ────────────────────────────────────────────────
+# Probe with an empty filename: passing the ATG gate yields the filename
+# validation error instead of the redirect (no file I/O in tests).
+
+def _save_plan_exec(ctx):
+    from backend.tools.registry import _builtin_save_plan_factory
+    return _builtin_save_plan_factory(ctx)[1]
+
+
+def test_save_plan_redirects_to_compile_when_atg_applies():
+    ms = AgentState()  # plan mode, complex (auto_trivial False), no atg
+    result = _save_plan_exec({'id': 'a1', 'enable_atg': True,
+                              'agent_state': ms})({'filename': 'x.md',
+                                                   'content': '#'})
+    assert 'compile_task_graph' in result['error']
+
+
+def test_save_plan_allowed_for_trivial_task():
+    ms = AgentState(mode='execute', auto_trivial=True)
+    result = _save_plan_exec({'id': 'a1', 'enable_atg': True,
+                              'agent_state': ms})({'filename': '', 'content': ''})
+    assert 'filename' in result['error']  # passed the ATG gate
+
+
+def test_save_plan_allowed_after_failed_compilation():
+    ms = AgentState()
+    ms.atg = {'status': 'failed', 'error': 'boom'}
+    result = _save_plan_exec({'id': 'a1', 'enable_atg': True,
+                              'agent_state': ms})({'filename': '', 'content': ''})
+    assert 'filename' in result['error']
+
+
+def test_save_plan_unaffected_without_flag():
+    result = _save_plan_exec({'id': 'a1',
+                              'agent_state': AgentState()})({'filename': '',
+                                                             'content': ''})
+    assert 'filename' in result['error']
+
+
 # ── Eligibility gate ─────────────────────────────────────────────────────────
 
 def test_not_eligible_without_flag():

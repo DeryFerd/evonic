@@ -669,6 +669,20 @@ def _builtin_save_plan_factory(agent_context: dict):
         if ms is None:
             return {"error": "Agent state is not enabled for this agent."}
 
+        # ATG enforcement: flagged agents on complex tasks must compile a task
+        # graph first — small models ignore the prompt instruction alone.
+        # save_plan unlocks once a compile was attempted (any atg status,
+        # including 'failed') or for trivial-classified tasks.
+        if (agent_context.get('enable_atg')
+                and not getattr(ms, 'auto_trivial', False)
+                and not getattr(ms, 'atg', None)):
+            return {"error": (
+                "This agent plans with Atomic Task Graph. Call "
+                "compile_task_graph(goal, context) with the task goal instead "
+                "of save_plan — the compiled graph becomes your plan file. "
+                "save_plan is only available if graph compilation fails."
+            )}
+
         filename = arguments.get('filename', '').strip()
         content = arguments.get('content', '')
 
@@ -772,6 +786,8 @@ def _builtin_compile_task_graph_factory(agent_context: dict):
                 context_excerpt=(arguments.get('context') or '')[:4000],
             )
         except CompilationError as e:
+            # Mark the attempt so save_plan's ATG redirect unlocks as fallback.
+            ms.atg = {"status": "failed", "error": str(e)[:500]}
             return {"error": f"Task graph compilation failed: {e}. "
                              "You can retry with a clearer goal, or fall back to save_plan."}
 

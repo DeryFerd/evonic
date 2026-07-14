@@ -167,6 +167,16 @@
                 <div id="ev-update-banner-actions" class="flex items-center shrink-0"></div>
             </div>
         </div>
+        <!-- WhatsApp disconnect warning banner (hidden by default) -->
+        <div id="wa-disconnect-banner" style="display:none;background:#f59e0b;color:#1c1917;border-bottom:2px solid #d97706;">
+            <div class="max-w-[1600px] mx-auto px-4 py-2 flex items-center justify-between text-sm">
+                <div class="flex items-center gap-2">
+                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                    <span id="wa-disconnect-banner-text"></span>
+                </div>
+                <button onclick="document.getElementById('wa-disconnect-banner').style.display='none'" class="text-amber-900 hover:text-black font-bold text-lg leading-none" title="Dismiss">&times;</button>
+            </div>
+        </div>
         <!-- System alert banners (critical background errors) -->
         <div id="ev-system-alerts"></div>
         <!-- Thin loading bar at the bottom edge of the navbar -->
@@ -247,19 +257,42 @@
     <script>
     // WhatsApp disconnect badge — derived from live bridge status, silent-fail
     (function () {
+        var STATUS_LABELS = {disconnected: 'WA Disconnected', qr_pending: 'QR Pending'};
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+        function updateDisconnectBanner(agents) {
+            var banner = document.getElementById('wa-disconnect-banner');
+            if (!banner) return;
+            if (agents.length === 0) {
+                banner.style.display = 'none';
+            } else {
+                var items = agents.map(function (a) {
+                    return '<a href="/agents/' + esc(a.id || '') + '" class="underline font-semibold hover:text-black">' + esc(a.name) + '</a> (' + esc(STATUS_LABELS[a.status] || a.status) + ')';
+                });
+                document.getElementById('wa-disconnect-banner-text').innerHTML =
+                    '<strong>WhatsApp channel alert:</strong> ' + items.join(', ');
+                banner.style.display = '';
+            }
+        }
         function updateWABadge() {
             fetch('/api/whatsapp/disconnected-count')
                 .then(function (r) { return r.ok ? r.json() : null; })
                 .then(function (data) {
                     if (!data) return;
                     var badge = document.getElementById('wa-disconnect-badge');
-                    if (!badge) return;
-                    if (data.count > 0) {
-                        badge.textContent = data.count;
-                        badge.classList.remove('hidden');
-                    } else {
-                        badge.classList.add('hidden');
+                    window._waDisconnectedAgents = (data && data.agents) ? data.agents : [];
+                    if (badge) {
+                        if (data.count > 0) {
+                            badge.textContent = data.count;
+                            badge.classList.remove('hidden');
+                        } else {
+                            badge.classList.add('hidden');
+                        }
                     }
+                    updateDisconnectBanner(window._waDisconnectedAgents);
                 })
                 .catch(function () {});
         }

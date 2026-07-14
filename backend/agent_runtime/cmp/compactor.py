@@ -121,18 +121,17 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
         if not transcript.strip():
             return clamp_card_fields(_mechanical_card(path, entries, atg_state))
 
-        from backend.task_classifier import _get_classifier_client
+        from backend.task_classifier import _get_classifier_client, classifier_chat
         client = _get_classifier_client('cmp_model_id')
         import time as _time
         _t0 = _time.time()
-        response = client.chat_completion(
+        response = classifier_chat(
+            client,
             [{"role": "system", "content": prompts.CARD_SYSTEM},
              {"role": "user", "content": prompts.CARD_USER.format(
                  transcript=transcript,
                  atg_block=_format_atg_block(atg_state))}],
-            tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=900,  # headroom for implicit-reasoning models
-        )
+            max_tokens=900, log_label="CMP card")
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})
@@ -179,14 +178,13 @@ def name_path(user_text: str) -> dict:
     if not text:
         return mechanical
     try:
-        from backend.task_classifier import _get_classifier_client
+        from backend.task_classifier import _get_classifier_client, classifier_chat
         client = _get_classifier_client('cmp_model_id')
-        response = client.chat_completion(
+        response = classifier_chat(
+            client,
             [{"role": "system", "content": prompts.PATH_NAME_SYSTEM},
              {"role": "user", "content": text[:1000]}],
-            tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=400,  # headroom for implicit-reasoning models
-        )
+            max_tokens=400, log_label="CMP naming")
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})

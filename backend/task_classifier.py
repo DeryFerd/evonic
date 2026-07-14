@@ -112,16 +112,11 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
                        f"## Active path\n{active_card}\n\n"
                        f"## Other paths\n{other_cards}\n\n"
                        f"## New message\n{text[:4000]}")
-        response = client.chat_completion(
+        response = classifier_chat(
+            client,
             [{"role": "system", "content": _BOUNDARY_SYSTEM},
              {"role": "user", "content": user_prompt}],
-            tools=None, temperature=0.0, enable_thinking=False,
-            # Generous budget: models like deepseek-v4-flash emit implicit
-            # reasoning_content even with thinking off — a tight cap gets
-            # fully consumed by reasoning and dies as generation_timeout
-            # before the single verdict token appears.
-            max_tokens=512,
-        )
+            max_tokens=512, log_label="CMP boundary")
         _dur = time.time() - _t0
         if not response.get("success"):
             _logger.warning("CMP boundary LLM call failed [%s] (model=%s, %.1fs) — defaulting to continue",
@@ -181,15 +176,12 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
 
     try:
         client = _get_classifier_client('cmp_model_id')
-        response = client.chat_completion(
+        response = classifier_chat(
+            client,
             [{"role": "system",
               "content": _CONTINUATION_SYSTEM.format(goal=previous_goal.strip()[:1000])},
              {"role": "user", "content": text[:4000]}],
-            tools=None,
-            temperature=0.0,
-            enable_thinking=False,
-            max_tokens=400,  # headroom for implicit-reasoning models
-        )
+            max_tokens=400, log_label="CMP continuation")
         if not response.get("success"):
             _logger.warning("Continuation classifier LLM call failed: %s",
                             response.get("error_type"))
@@ -204,6 +196,25 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
     except Exception as e:
         _logger.warning("Continuation classifier failed, defaulting to continuation: %s", e)
         return "continuation"
+
+
+def classifier_chat(client, messages, max_tokens: int, log_label: str = "classifier"):
+    """chat_completion for classifier-style calls, with ONE retry at a doubled
+    budget when the model burns the whole max_tokens on implicit reasoning
+    (finish_reason=length with empty content → error_type generation_timeout;
+    deepseek-style models emit CoT even with thinking off, so any fixed budget
+    occasionally loses the race)."""
+    response = client.chat_completion(
+        messages, tools=None, temperature=0.0, enable_thinking=False,
+        max_tokens=max_tokens)
+    if (not response.get("success")
+            and response.get("error_type") == "generation_timeout"):
+        _logger.info("%s hit generation_timeout (model=%s) — retrying with max_tokens=%d",
+                     log_label, getattr(client, 'model', None), max_tokens * 2)
+        response = client.chat_completion(
+            messages, tools=None, temperature=0.0, enable_thinking=False,
+            max_tokens=max_tokens * 2)
+    return response
 
 
 def _get_classifier_client(setting_key: str = 'task_classifier_model_id') -> LLMClient:
@@ -285,13 +296,8 @@ def classify_task(user_message: str) -> str:
             {"role": "system", "content": _CLASSIFIER_SYSTEM},
             {"role": "user", "content": text},
         ]
-        response = client.chat_completion(
-            messages,
-            tools=None,
-            temperature=0.0,
-            enable_thinking=False,
-            max_tokens=400,  # headroom: implicit-reasoning models burn budget on CoT
-        )
+        response = classifier_chat(client, messages, max_tokens=400,
+                                   log_label="task classifier")
         if not response.get("success"):
             _logger.warning("Task classifier LLM call failed [%s] (model=%s, %.1fs) — defaulting to complex",
                             response.get("error_type"), getattr(client, 'model', None),

@@ -127,6 +127,39 @@ def test_cmp_model_setting_resolution():
         llm.assert_called_once_with()
 
 
+def test_classifier_chat_retries_generation_timeout_with_doubled_budget():
+    from unittest.mock import MagicMock
+    from backend.task_classifier import classifier_chat
+
+    client = MagicMock()
+    client.chat_completion.side_effect = [
+        {'success': False, 'error_type': 'generation_timeout'},
+        {'success': True, 'response': {'choices': [{'message': {'content': 'OK'}}]}},
+    ]
+    response = classifier_chat(client, [{'role': 'user', 'content': 'x'}],
+                               max_tokens=400)
+    assert response['success']
+    assert client.chat_completion.call_count == 2
+    assert client.chat_completion.call_args_list[0][1]['max_tokens'] == 400
+    assert client.chat_completion.call_args_list[1][1]['max_tokens'] == 800
+
+    # only ONE retry — a second timeout returns the failure
+    client = MagicMock()
+    client.chat_completion.return_value = {'success': False,
+                                           'error_type': 'generation_timeout'}
+    response = classifier_chat(client, [{'role': 'user', 'content': 'x'}],
+                               max_tokens=400)
+    assert not response['success']
+    assert client.chat_completion.call_count == 2
+
+    # other error types never retry
+    client = MagicMock()
+    client.chat_completion.return_value = {'success': False,
+                                           'error_type': 'api_error'}
+    classifier_chat(client, [{'role': 'user', 'content': 'x'}], max_tokens=400)
+    assert client.chat_completion.call_count == 1
+
+
 def test_cmp_model_settings_api():
     from app import app
     with app.test_client() as client:

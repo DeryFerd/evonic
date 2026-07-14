@@ -386,7 +386,20 @@ def run_setup(
             _update_env_var(env_path, "SECRET_KEY", _key)
             os.environ["SECRET_KEY"] = _key
 
-        # 1. Create model in DB as default
+        # 1a. Ensure provider exists in providers table
+        if not db.get_provider(provider):
+            db.create_provider({
+                "id": provider,
+                "name": provider_cfg.get("label", provider),
+                "type": provider_cfg.get("type", "remote"),
+                "base_url": resolved_base_url,
+                "api_key": api_key or "",
+                "api_format": provider_cfg.get("api_format", "openai"),
+            })
+        elif api_key:
+            db.update_provider(provider, {"api_key": api_key, "base_url": resolved_base_url})
+
+        # 1b. Create model in DB as default
         model_id = db.generate_model_id(provider, model_name)
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
@@ -580,7 +593,20 @@ def run_reconfigure(
     resolved_base_url = (base_url or provider_cfg["base_url"]).rstrip("/")
 
     try:
-        # 1. Update or create model in DB as default
+        # 1a. Ensure provider exists in providers table
+        if not db.get_provider(provider):
+            db.create_provider({
+                "id": provider,
+                "name": provider_cfg.get("label", provider),
+                "type": provider_cfg.get("type", "remote"),
+                "base_url": resolved_base_url,
+                "api_key": api_key or "",
+                "api_format": provider_cfg.get("api_format", "openai"),
+            })
+        elif api_key:
+            db.update_provider(provider, {"api_key": api_key, "base_url": resolved_base_url})
+
+        # 1b. Update or create model in DB as default
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
             model_api_format = "ollama"

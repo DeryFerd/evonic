@@ -345,6 +345,7 @@ def run_tool_loop(agent: Dict[str, Any],
     # Helper: build model_config dict from a model DB row
     def _build_model_config(_model: dict) -> dict:
         return {
+            'provider': _model.get('provider'),
             'base_url': _model.get('base_url'),
             'api_key': _model.get('api_key'),
             'model_name': _model.get('model_name'),
@@ -354,6 +355,7 @@ def run_tool_loop(agent: Dict[str, Any],
             'max_tokens': _model.get('max_tokens', 32768),
             'temperature': _model.get('temperature'),
             'vision_supported': bool(_model.get('vision_supported', False)),
+            'api_format': _model.get('api_format', 'openai'),
         }
 
     # Resolve agent's default model for LLM calls

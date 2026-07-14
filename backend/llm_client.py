@@ -211,6 +211,11 @@ class LLMClient:
                          If None, uses the default model from DB or config.py defaults.
         """
         if model_config:
+            try:
+                from models.db import db
+                model_config = db.resolve_model_config(model_config)
+            except Exception:
+                pass
             self.base_url = model_config.get("base_url")
             self.api_key = model_config.get("api_key")
             self.model = model_config.get("model_name")
@@ -226,6 +231,7 @@ class LLMClient:
 
                 dm = db.get_default_model()
                 if dm:
+                    dm = db.resolve_model_config(dm)
                     self.base_url = dm.get("base_url")
                     self.api_key = dm.get("api_key")
                     self.model = dm.get("model_name")
@@ -256,6 +262,7 @@ class LLMClient:
                 self.temperature = None
                 self.api_format = "openai"
         self._cached_model_name = None
+        self._codex_provider_id = model_config.get("provider", "codex") if model_config else "codex"
         # Cache for global LLM settings (avoids repeated DB reads in hot path).
         # TTL-based, simple dict — intentionally lock-free (worst case: 1 extra DB read).
         self._settings_cache = {}
@@ -313,6 +320,8 @@ class LLMClient:
 
     def test_connection(self) -> Dict[str, Any]:
         """Test connection to the model endpoint."""
+        if self.api_format == "codex":
+            return self._test_codex_connection()
         try:
             if self.api_format == "ollama":
                 models_url = f"{self.base_url}/tags"
@@ -340,6 +349,91 @@ class LLMClient:
             return {"success": False, "error": _format_llm_error("connection_error")}
         except Exception as e:
             return {"success": False, "error": _format_llm_error("unknown_error")}
+
+    def _codex_chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        log_file: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delegate chat completion to CodexClient (Responses API)."""
+        from models.db import db as _db
+        from backend.provider.oauth_codex import get_valid_token
+        from backend.provider.codex_client import CodexClient
+
+        start_time = time.time()
+        token = get_valid_token(_db, self._codex_provider_id)
+        if not token:
+            return {
+                "response": {"error": _format_llm_error("auth_error")},
+                "duration_ms": 0,
+                "success": False,
+                "error_type": "auth_error",
+                "error_detail": "Codex OAuth token missing or expired. Reconnect in Settings.",
+            }
+
+        client = CodexClient(token, self.base_url)
+        if max_tokens is None:
+            max_tokens = self.max_tokens
+        result = client.send_request(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens or 4096,
+            temperature=temperature if temperature is not None else self.temperature,
+            tools=tools,
+            timeout=self.timeout or 120,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        if not result.get("success"):
+            from evaluator.api_logger import log_api_call as _log_call
+            _log_call(messages, None, duration_ms, error=result.get("error", ""), log_file=log_file)
+            return {
+                "response": {"error": _format_llm_error(result.get("error_type", "unknown_error"))},
+                "duration_ms": duration_ms,
+                "success": False,
+                "error_type": result.get("error_type", "unknown_error"),
+                "error_detail": result.get("error", ""),
+            }
+
+        # Extract content for logging
+        choices = result["response"].get("choices", [])
+        response_text = ""
+        thinking_text = ""
+        if choices:
+            msg = choices[0].get("message", {})
+            response_text = msg.get("content", "")
+            thinking_text = msg.get("reasoning_content", "")
+        log_api_call(messages, response_text, duration_ms, log_file=log_file, thinking=thinking_text or None)
+
+        return {
+            "response": result["response"],
+            "duration_ms": duration_ms,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "success": True,
+        }
+
+    def _test_codex_connection(self) -> Dict[str, Any]:
+        """Test connection to Codex via OAuth token."""
+        try:
+            from models.db import db as _db
+            from backend.provider.oauth_codex import get_valid_token
+            from backend.provider.codex_client import CodexClient
+
+            provider = _db.get_provider(self._codex_provider_id or "codex")
+            if not provider:
+                return {"success": False, "error": "Codex provider not found"}
+            token = get_valid_token(_db, provider["id"])
+            if not token:
+                return {"success": False, "error": "Not connected to Codex. Complete OAuth flow first."}
+            client = CodexClient(token, self.base_url)
+            return client.test_connection()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def chat_completion(
         self,
@@ -376,6 +470,9 @@ class LLMClient:
             exponential backoff (max 60s between retries). Configurable
             retry count via llm_max_retries setting (DB default: 5).
         """
+        if self.api_format == "codex":
+            return self._codex_chat_completion(messages, tools, temperature, max_tokens, log_file)
+
         is_ollama_fmt = self.api_format == "ollama" or (
             self.base_url and "ollama.com" in self.base_url
         )

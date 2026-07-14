@@ -603,6 +603,7 @@ const ALLOWED_ATTRS = {
     pre:  ['class'],
     span: ['class', 'style', 'aria-hidden'],
     img:  ['src', 'alt', 'class', 'loading'],
+    ol:   ['start'],
 };
 
 function _walkSanitize(node) {
@@ -1735,13 +1736,10 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
             var title = $(this).attr('data-wikilink');
             if (title) document.dispatchEvent(new CustomEvent('evonic:wikilink-click', { detail: { title: title } }));
         });
-        // Render non-image file badge with download link
+        // Render non-image file (send_file) as a type-aware, previewable card.
+        // Images stay inline via the markdown body.
         if (meta.attachment_info && !meta.attachment_info.is_image) {
-            const info = meta.attachment_info;
-            const $badge = $('<div class="flex items-center gap-1.5 mb-1 px-2 py-1 rounded text-xs text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700">')
-                .append($('<svg class="w-3.5 h-3.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h6.879a1.5 1.5 0 0 1 1.06.44l4.122 4.12A1.5 1.5 0 0 1 17 7.622V16.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16.5v-13Z"/></svg>'))
-                .append($('<a class="truncate underline hover:no-underline" href="/api/attachments/' + info.attachment_id + '/download" download>').text(info.filename));
-            $bubble.prepend($badge);
+            $bubble.prepend($('<div class="mb-2">').append(buildAttachmentCard(meta.attachment_info)));
         }
     }
 
@@ -1936,7 +1934,7 @@ function _buildCard(item, agentIdFallback, imageUrls) {
     return $card;
 }
 
-function openSavedArtifact(url, filename, category, gallery) {
+function openSavedArtifact(url, filename, category, gallery, opts = {}) {
     if (category === 'image') {
         const urls = (gallery && gallery.urls && gallery.urls.length) ? gallery.urls : [url];
         let idx = (gallery && typeof gallery.index === 'number') ? gallery.index : 0;
@@ -1945,7 +1943,52 @@ function openSavedArtifact(url, filename, category, gallery) {
         lb.open(urls, idx);
         return;
     }
-    _openViewerModal(url, filename, category);
+    _openViewerModal(url, filename, category, opts);
+}
+
+function buildAttachmentCard(info) {
+    const filename = info.filename || 'file';
+    const viewUrl = `/api/attachments/${encodeURIComponent(info.attachment_id)}/view`;
+    const downloadUrl = `/api/attachments/${encodeURIComponent(info.attachment_id)}/download`;
+    const category = info.is_image ? 'image' : categorizeArtifact(filename);
+    const sizeStr = _formatSize(info.size_bytes);
+
+    const open = () => openSavedArtifact(viewUrl, filename, category, null, {
+        downloadUrl, allowDelete: false,
+    });
+
+    const $card = $('<div class="bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg p-2 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors flex items-center gap-2.5 group max-w-sm">');
+
+    let $thumb;
+    if (category === 'image') {
+        $thumb = $('<div class="w-10 h-10 rounded-md overflow-hidden flex-shrink-0 bg-gray-100 dark:bg-gray-800 flex items-center justify-center cursor-pointer">');
+        const $img = $('<img class="w-full h-full object-cover" alt="">').attr('src', viewUrl);
+        $img.on('error', function () {
+            $(this).remove();
+            $thumb.append(_iconEl('image', 'w-10 h-10').addClass('rounded-md'));
+        });
+        $thumb.append($img);
+    } else {
+        $thumb = _iconEl(category, 'w-10 h-10').addClass('cursor-pointer');
+    }
+    $thumb.on('click', open);
+    $card.append($thumb);
+
+    const $meta = $('<div class="flex-1 min-w-0 cursor-pointer">');
+    $meta.append(
+        $('<p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">').attr('title', filename).text(filename),
+        $('<p class="text-xs text-gray-400">').text(sizeStr)
+    );
+    $meta.on('click', open);
+    $card.append($meta);
+
+    const $dl = $('<a class="p-1.5 text-indigo-500 hover:text-indigo-700 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0" title="Download">')
+        .attr({ href: downloadUrl, download: filename })
+        .html(_DOWNLOAD_SVG);
+    $dl.on('click', (e) => e.stopPropagation());
+    $card.append($dl);
+
+    return $card;
 }
 
 let _escHandler = null;
@@ -2025,8 +2068,10 @@ async function _deleteArtifactFromViewer(url, filename) {
     }
 }
 
-function _openViewerModal(url, filename, category) {
+function _openViewerModal(url, filename, category, opts = {}) {
     _closeViewerModal();
+    const downloadUrl = opts.downloadUrl || url;
+    const allowDelete = opts.allowDelete !== false;
 
     const $overlay = $('<div id="chat-artifact-viewer-modal" class="fixed inset-0 flex items-center justify-center p-4" style="z-index:200;background:rgba(0,0,0,0.6);">');
     $overlay.on('click', (e) => { if (e.target === $overlay[0]) _closeViewerModal(); });
@@ -2041,7 +2086,7 @@ function _openViewerModal(url, filename, category) {
     );
     const $actions = $('<div class="flex items-center gap-2 flex-shrink-0">');
     const $dl = $('<a class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Download">')
-        .attr({ href: url, download: filename })
+        .attr({ href: downloadUrl, download: filename })
         .html(_DOWNLOAD_SVG + '<span>Download</span>');
     const $copy = $('<button class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Copy content">')
         .html('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg><span>Copy</span>');
@@ -2049,9 +2094,13 @@ function _openViewerModal(url, filename, category) {
     const $close = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">')
         .html('<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>');
     $close.on('click', _closeViewerModal);
-    const $delete = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors" title="Delete">').html(_TRASH_SVG);
-    $delete.on('click', (e) => { e.stopPropagation(); _deleteArtifactFromViewer(url, filename); });
-    $actions.append($dl, $copy, $delete, $close);
+    $actions.append($dl, $copy);
+    if (allowDelete) {
+        const $delete = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors" title="Delete">').html(_TRASH_SVG);
+        $delete.on('click', (e) => { e.stopPropagation(); _deleteArtifactFromViewer(url, filename); });
+        $actions.append($delete);
+    }
+    $actions.append($close);
     $head.append($title, $actions);
 
     const $body = $('<div class="flex-1 overflow-y-auto p-6">');

@@ -61,11 +61,11 @@ def api_create_model():
     if data["type"] not in ("remote", "local"):
         return jsonify({"success": False, "error": "type must be remote or local"}), 400
 
-    # Validate provider
-    valid_providers = ("openrouter", "togetherai", "ollama", "ollama_cloud", "opencode_zen", "opencode_go", "deepseek", "llama.cpp", "custom")
-    if data["provider"] not in valid_providers:
+    # Validate provider exists in DB
+    provider = db.get_provider(data["provider"])
+    if not provider:
         return jsonify(
-            {"success": False, "error": f"provider must be one of {valid_providers}"}
+            {"success": False, "error": f"Unknown provider: {data['provider']}. Create it first via Settings > Providers."}
         ), 400
 
     try:
@@ -210,13 +210,26 @@ def api_test_model(model_id):
         return jsonify({"error": "Model not found"}), 404
 
     try:
+        model = db.resolve_model_config(model)
+        api_format = model.get("api_format", "openai")
+        provider_id = model.get("provider", "")
+
+        if api_format == "codex":
+            from backend.provider.oauth_codex import get_valid_token
+            token = get_valid_token(db, provider_id)
+            if not token:
+                return jsonify({"success": False, "error": "Not connected. Complete OAuth flow first."})
+            from backend.provider.codex_client import CodexClient
+            base_url = model.get("base_url") or "https://chatgpt.com/backend-api/codex"
+            client = CodexClient(token, base_url)
+            result = client.test_connection()
+            return jsonify(result)
+
         # Try to reach the base URL
         base_url = model.get("base_url")
         if not base_url:
             return jsonify({"success": False, "error": "No base_url configured"}), 400
 
-        # Choose the correct endpoint based on API format
-        api_format = model.get("api_format", "openai")
         if api_format == "ollama":
             models_url = f"{base_url}/tags"
         else:

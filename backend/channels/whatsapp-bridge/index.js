@@ -140,7 +140,8 @@ async function startBaileys() {
             reconnectAttempts = 0;
             sawReplaced = false;
             botId = sock.user?.id || '';
-            botLid = sock.user?.lid || '';
+            // Baileys v7 sometimes omits lid from sock.user — fall back to creds.
+            botLid = sock.user?.lid || state.creds?.me?.lid || '';
             console.log('[whatsapp-bridge] Connected to WhatsApp (id=%s, lid=%s)', botId, botLid);
         }
 

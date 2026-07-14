@@ -17,6 +17,21 @@ from backend.provider.oauth_codex import CODEX_BASE_URL, extract_account_id
 _log = logging.getLogger(__name__)
 
 
+def _map_usage(usage) -> Dict[str, Any]:
+    """Map Responses API usage (input_tokens/output_tokens) to the
+    OpenAI-chat-style keys (prompt_tokens/completion_tokens) that the rest
+    of the pipeline (context monitor, traces, dashboards) reads."""
+    if not isinstance(usage, dict) or not usage:
+        return {}
+    prompt = usage.get("input_tokens", 0) or 0
+    completion = usage.get("output_tokens", 0) or 0
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": usage.get("total_tokens", 0) or (prompt + completion),
+    }
+
+
 class CodexClient:
     """Client for the OpenAI Codex Responses API (SSE transport)."""
 
@@ -115,6 +130,7 @@ class CodexClient:
                 tool_calls = []
                 response_id = ""
                 model_used = ""
+                usage: Dict[str, Any] = {}
 
                 for line in resp.iter_lines():
                     if not line or not line.startswith("data: "):
@@ -162,6 +178,7 @@ class CodexClient:
                         r = event.get("response", {})
                         if not response_id:
                             response_id = r.get("id", "")
+                        usage = _map_usage(r.get("usage"))
 
         full_content = "".join(content_parts)
         full_thinking = "".join(thinking_parts)
@@ -187,7 +204,7 @@ class CodexClient:
                         "finish_reason": "stop" if not tool_calls else "tool_calls",
                     }
                 ],
-                "usage": {},
+                "usage": usage,
             },
         }
 
@@ -251,7 +268,7 @@ class CodexClient:
                         "finish_reason": "stop" if not tool_calls else "tool_calls",
                     }
                 ],
-                "usage": {},
+                "usage": _map_usage(data.get("usage")),
             },
         }
 

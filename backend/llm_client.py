@@ -409,12 +409,23 @@ class LLMClient:
             thinking_text = msg.get("reasoning_content", "")
         log_api_call(messages, response_text, duration_ms, log_file=log_file, thinking=thinking_text or None)
 
+        # Usage is mapped by CodexClient from the Responses API's
+        # input_tokens/output_tokens. Hardcoded zeros here previously froze
+        # the context monitor (guarded on prompt_tokens > 0) at whatever the
+        # last non-codex model reported.
+        usage = result["response"].get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
         return {
             "response": result["response"],
+            "request_payload": {"model": self.model, "messages": messages,
+                                "tools": tools},
             "duration_ms": duration_ms,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": usage.get("total_tokens",
+                                      prompt_tokens + completion_tokens),
             "success": True,
         }
 

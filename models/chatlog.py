@@ -438,16 +438,23 @@ class ChatLog:
                     break
 
         def _tail_trim(entries, tail):
+            """Rehydration tail: the last `tail` SEMANTIC messages only
+            (user/final/intermediate). Mechanical entries (tool calls/outputs,
+            thinking) are dropped — the paper's card-first rehydration: the
+            IPPC card carries the facts, the tail is conversational
+            continuity. Seen live: a tool-heavy closed segment dragged ~50k
+            tokens of tool outputs back into context through the tail."""
             if not entries or tail < 0:
                 return entries
             kept: List[dict] = []
             semantic = 0
             for entry in reversed(entries):
+                if entry.get('type') not in _SUMMARY_COUNT_TYPES:
+                    continue
                 kept.append(entry)
-                if entry.get('type') in _SUMMARY_COUNT_TYPES:
-                    semantic += 1
-                    if semantic >= tail:
-                        break
+                semantic += 1
+                if semantic >= tail:
+                    break
             kept.reverse()
             return kept
 

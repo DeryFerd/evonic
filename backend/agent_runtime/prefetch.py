@@ -83,7 +83,6 @@ class TurnPrefetcher:
             from models.db import db
             from models.chatlog import chatlog_manager
             from backend.agent_runtime import context as _ctx
-            from backend.agent_runtime.memory_manager import get_memories_for_context, resolve_memory_engine
             from backend.channels.registry import channel_manager
 
             # Rebuild system prompt (may have changed since last turn)
@@ -215,12 +214,6 @@ class TurnPrefetcher:
             while (len(fresh_messages) > 1
                    and fresh_messages[-1].get('role') == 'assistant'):
                 fresh_messages.pop()
-
-            # Inject long-term memories (engine resolved per-agent → env default)
-            memory_section = get_memories_for_context(
-                agent_id, fresh_messages, engine=resolve_memory_engine(agent))
-            if memory_section:
-                fresh_messages.insert(1, {"role": "system", "content": memory_section})
 
             # Inject inter-agent context notes
             if ctx.external_user_id.startswith("__agent__"):

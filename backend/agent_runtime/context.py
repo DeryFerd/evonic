@@ -306,15 +306,13 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
 
     # Memory Retrieval Protocol — coach the agent on the retrieval side of
-    # long-term memory (the capture side is covered above). Relevant facts are
-    # auto-injected each turn, but the agent should reach for these tools when it
-    # needs more than what was injected.
+    # long-term memory (the capture side is covered above). Memories are NOT
+    # auto-injected; the agent must use recall() to explicitly fetch them.
     parts.append("")
     parts.append("## Memory Retrieval Protocol")
     parts.append(
-        "You have long-term memory that persists across conversations. Relevant facts "
-        "are injected automatically each turn under a \"## Memory\" heading, so you "
-        "usually do not need to fetch them. When you need MORE than what was injected:"
+        "You have long-term memory that persists across conversations. You MUST use "
+        "the `recall` tool to look up past facts — nothing is injected automatically."
     )
     parts.append(
         "- `recall(query=\"...\")` — fast keyword lookup of a specific stored fact "
@@ -1001,17 +999,9 @@ def get_compiled_context(agent_id: str, user_id: str = None) -> dict:
         }
     }
 
-    # If user_id provided, also return memories and summary (actual LLM context extras)
+    # If user_id provided, also return summary (actual LLM context extra)
     if user_id:
-        from backend.agent_runtime.memory_manager import get_memories_for_context
         session_id = db.get_or_create_session(agent_id, user_id)
-        fake_messages = [{"role": "system", "content": system_prompt}]
-        memory_text = get_memories_for_context(agent_id, fake_messages)
-        mem_tokens = 0
-        if memory_text:
-            result["memories"] = memory_text
-            mem_tokens = _token_count(memory_text)
-            result["tokens"]["memories"] = mem_tokens
 
         summary_record = db.get_summary(session_id, agent_id=agent_id)
         sum_tokens = 0
@@ -1021,8 +1011,8 @@ def get_compiled_context(agent_id: str, user_id: str = None) -> dict:
             sum_tokens = _token_count(summary_text)
             result["tokens"]["summary"] = sum_tokens
 
-        # Recalculate total to include memories and summary
-        result["tokens"]["total"] = sp_tokens + tool_tokens + mem_tokens + sum_tokens
+        # Recalculate total to include summary
+        result["tokens"]["total"] = sp_tokens + tool_tokens + sum_tokens
 
     return result
 

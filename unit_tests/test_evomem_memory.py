@@ -39,66 +39,6 @@ class TestEngineSelection:
         assert get_engine() == "evomem"
 
 
-class TestGetMemoriesForContext:
-    """Test get_memories_for_context with mocked database."""
-
-    def test_fts5_returns_formatted_markdown(self, monkeypatch):
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "fts5")
-        monkeypatch.delenv("EVONIC_MEMORY_ENGINE", raising=False)
-        fake_memories = [
-            {"id": 1, "content": "User prefers Python", "category": "preference"},
-        ]
-        with patch("backend.agent_runtime.memory_manager.db.search_memories",
-                   return_value=fake_memories):
-            from backend.agent_runtime.memory_manager import get_memories_for_context
-            msgs = [{"role": "user", "content": "What language?"}]
-            result = get_memories_for_context("test-agent", msgs)
-            assert result is not None
-            assert "User prefers Python" in result
-            assert "## Memory" in result
-
-    def test_fts5_no_memories_returns_none(self, monkeypatch):
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "fts5")
-        with patch("backend.agent_runtime.memory_manager.db.search_memories", return_value=[]), \
-             patch("backend.agent_runtime.memory_manager.db.get_recent_memories", return_value=[]):
-            from backend.agent_runtime.memory_manager import get_memories_for_context
-            msgs = [{"role": "user", "content": "query"}]
-            result = get_memories_for_context("test-agent", msgs)
-            assert result is None
-
-    def test_fts5_no_user_message_uses_recent(self, monkeypatch):
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "fts5")
-        fake_recent = [
-            {"id": 2, "content": "User prefers Golang", "category": "preference"},
-        ]
-        with patch("backend.agent_runtime.memory_manager.db.search_memories", return_value=[]), \
-             patch("backend.agent_runtime.memory_manager.db.get_recent_memories", return_value=fake_recent):
-            from backend.agent_runtime.memory_manager import get_memories_for_context
-            msgs = []  # No user message
-            result = get_memories_for_context("test-agent", msgs)
-            assert result is not None
-            assert "User prefers Golang" in result
-
-    def test_evomem_primary_fallback_to_fts5(self, monkeypatch):
-        """When evomem is primary but fails, fall back to FTS5."""
-        monkeypatch.setenv("EVONIC_MEMORY_ENGINE", "evomem")
-        fake_fts5 = [
-            {"id": 3, "content": "User prefers Rust", "category": "preference"},
-        ]
-        with patch(
-            "backend.agent_runtime.memory_manager._try_evomem_retrieval",
-            return_value=None  # evomem fails
-        ), patch(
-            "backend.agent_runtime.memory_manager.db.search_memories",
-            return_value=fake_fts5
-        ):
-            from backend.agent_runtime.memory_manager import get_memories_for_context
-            msgs = [{"role": "user", "content": "language preference"}]
-            result = get_memories_for_context("test-agent", msgs)
-            assert result is not None
-            assert "User prefers Rust" in result
-
-
 class TestStoreMemory:
     """`store_memory` (the `remember` tool) pins a fact into the running session
     summary — no LLM, no direct long-term write. The summarizer persists it later."""

@@ -762,6 +762,28 @@ def api_task_classifier():
     })
 
 
+@settings_bp.route('/api/settings/cmp-model', methods=['GET', 'PUT'])
+def api_cmp_model():
+    """Get or set the model used by CMP (Context Memory Path): path-change
+    boundary detection and path card summarization. Empty = fall back to
+    the Task Classifier model, then the default model."""
+    from models.db import db
+    if request.method == 'PUT':
+        data = request.get_json() or {}
+        model_id = data.get('model_id', '') or ''
+        if model_id:
+            model = db.get_model_by_id(model_id)
+            if not model:
+                return jsonify({'success': False, 'error': 'Model not found'}), 404
+            model_id = model['id']  # canonicalize legacy ids
+        old_model_id = db.get_setting('cmp_model_id', '')
+        db.set_setting('cmp_model_id', model_id)
+        if old_model_id != model_id:
+            _audit_setting_change('cmp_model_id', old_model_id, model_id)
+        return jsonify({'success': True, 'model_id': model_id or None})
+    return jsonify({'model_id': db.get_setting('cmp_model_id', '') or None})
+
+
 # ---- Default Model operations ----
 
 @settings_bp.route('/api/settings/default-model', methods=['GET'])

@@ -121,7 +121,7 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
             return clamp_card_fields(_mechanical_card(path, entries, atg_state))
 
         from backend.task_classifier import _get_classifier_client
-        client = _get_classifier_client()
+        client = _get_classifier_client('cmp_model_id')
         response = client.chat_completion(
             [{"role": "system", "content": prompts.CARD_SYSTEM},
              {"role": "user", "content": prompts.CARD_USER.format(

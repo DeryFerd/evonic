@@ -92,6 +92,55 @@ def test_chat_state_api_no_cmp_key_when_absent():
         assert 'cmp' not in res.get_json()
 
 
+def test_cmp_model_setting_resolution():
+    """cmp_model_id → task_classifier_model_id → default fallback chain."""
+    from unittest.mock import MagicMock, patch
+    from backend.task_classifier import _get_classifier_client
+
+    model = {'id': 'm-cmp', 'name': 'CmpModel', 'model_name': 'x'}
+    fallback_model = {'id': 'm-cls', 'name': 'ClsModel', 'model_name': 'y'}
+
+    def _db(settings, models):
+        db = MagicMock()
+        db.get_setting.side_effect = lambda k, d='': settings.get(k, d)
+        db.get_model_by_id.side_effect = lambda mid: models.get(mid)
+        return db
+
+    with patch('models.db.db', _db({'cmp_model_id': 'm-cmp'}, {'m-cmp': model})), \
+         patch('backend.task_classifier.LLMClient') as llm:
+        _get_classifier_client('cmp_model_id')
+        llm.assert_called_once_with(model_config=model)
+
+    # unset cmp model → task classifier model
+    with patch('models.db.db',
+               _db({'task_classifier_model_id': 'm-cls'}, {'m-cls': fallback_model})), \
+         patch('backend.task_classifier.LLMClient') as llm:
+        _get_classifier_client('cmp_model_id')
+        llm.assert_called_once_with(model_config=fallback_model)
+
+    # nothing configured → default client
+    with patch('models.db.db', _db({}, {})), \
+         patch('backend.task_classifier.LLMClient') as llm:
+        _get_classifier_client('cmp_model_id')
+        llm.assert_called_once_with()
+
+
+def test_cmp_model_settings_api():
+    from app import app
+    with app.test_client() as client:
+        with client.session_transaction() as sess:
+            sess['authenticated'] = True
+        res = client.get('/api/settings/cmp-model')
+        assert res.status_code == 200
+        assert res.get_json()['model_id'] is None
+        # unknown model rejected
+        res = client.put('/api/settings/cmp-model', json={'model_id': 'nope'})
+        assert res.status_code == 404
+        # clearing works
+        res = client.put('/api/settings/cmp-model', json={'model_id': ''})
+        assert res.status_code == 200 and res.get_json()['success']
+
+
 def test_clear_resets_cmp_key():
     # /clear writes a full-replace session_data including explicit cmp None
     import inspect

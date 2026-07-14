@@ -146,6 +146,24 @@
                 <span class="save-status" aria-live="polite"></span>
             </div>
         </div>
+        <div class="setting-row stacked" data-search="cmp path detection model context memory path boundary switch">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Path Detection Model (CMP)</div>
+                <div class="setting-row-desc">
+                    Model used by Context Memory Path for task-boundary decisions
+                    (continue / return / branch) and path card summarization.
+                    Accuracy here decides when a new session path is opened —
+                    a stronger model is recommended if path switching misfires.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="cmp-model-select" class="setting-select"
+                        data-setting-key="cmp_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
     </div>
 </section>
 

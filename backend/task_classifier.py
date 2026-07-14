@@ -90,7 +90,7 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
     if not text:
         return fallback
     try:
-        client = _get_classifier_client()
+        client = _get_classifier_client('cmp_model_id')
         user_prompt = (f"## Path map\n{map_text}\n\n"
                        f"## Active path\n{active_card}\n\n"
                        f"## Other paths\n{other_cards}\n\n"
@@ -153,7 +153,7 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
         return "continuation"
 
     try:
-        client = _get_classifier_client()
+        client = _get_classifier_client('cmp_model_id')
         response = client.chat_completion(
             [{"role": "system",
               "content": _CONTINUATION_SYSTEM.format(goal=previous_goal.strip()[:1000])},
@@ -179,11 +179,18 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
         return "continuation"
 
 
-def _get_classifier_client() -> LLMClient:
-    """Build an LLMClient for classification, using the configured model or default."""
+def _get_classifier_client(setting_key: str = 'task_classifier_model_id') -> LLMClient:
+    """Build an LLMClient for classification, using the configured model or default.
+
+    setting_key selects which System Settings model applies (e.g.
+    'cmp_model_id' for CMP path-change detection). A purpose-specific key
+    that is unset falls back to the task classifier model, then default.
+    """
     try:
         from models.db import db
-        model_id = db.get_setting('task_classifier_model_id', '')
+        model_id = db.get_setting(setting_key, '')
+        if not model_id and setting_key != 'task_classifier_model_id':
+            model_id = db.get_setting('task_classifier_model_id', '')
         if model_id:
             model = db.get_model_by_id(model_id)
             if model:

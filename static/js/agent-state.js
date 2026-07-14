@@ -350,81 +350,138 @@ function _cmpRenderDetail() {
     host.innerHTML = html;
 }
 
+
 /**
- * Lightweight offline SVG rendering of the session graph (no mermaid.js
- * dependency): USER root on top, path nodes in a grid, dependency edges
- * dashed. Click a node to inspect its card.
+ * Offline SVG rendering of the session graph (no mermaid.js dependency) as a
+ * proper TREE: the Agent root on top, each path positioned under its
+ * dependency parent, solid arrows carrying the action label. Extra
+ * dependencies (beyond the primary parent) render as dashed arrows.
+ * Click a node to inspect its card.
  */
 function _buildCmpSvg(cmp) {
     var paths = cmp.paths || [];
-    var NODE_W = 168, NODE_H = 46, GAP_X = 28, GAP_Y = 56, PER_ROW = 3;
-    var cols = Math.min(PER_ROW, Math.max(1, paths.length));
-    var rows = Math.ceil(paths.length / PER_ROW);
-    var width = cols * NODE_W + (cols - 1) * GAP_X + 20;
-    var userY = 10, userH = 34;
-    var gridTop = userY + userH + 34;
-    var height = gridTop + rows * NODE_H + (rows - 1) * GAP_Y + 16;
+    var NODE_W = 172, NODE_H = 48, GAP_X = 26, GAP_Y = 74;
+    var ROOT = '__agent__';
 
-    var pos = {};
-    for (var i = 0; i < paths.length; i++) {
-        var col = i % PER_ROW, row = Math.floor(i / PER_ROW);
-        pos[paths[i].id] = {
-            x: 10 + col * (NODE_W + GAP_X),
-            y: gridTop + row * (NODE_H + GAP_Y)
-        };
-    }
-    var userX = width / 2 - 34;
-
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '" viewBox="0 0 ' + width + ' ' + height + '" style="min-width:320px">';
-    svg += '<defs><marker id="cmp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
-           '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/></marker></defs>';
-
-    // user root
-    svg += '<ellipse cx="' + (userX + 34) + '" cy="' + (userY + userH / 2) + '" rx="34" ry="' + (userH / 2) + '" fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>';
-    svg += '<text x="' + (userX + 34) + '" y="' + (userY + userH / 2 + 4) + '" text-anchor="middle" font-size="11" fill="currentColor">user</text>';
-
-    // creation edges (user -> each path)
-    for (var c = 0; c < paths.length; c++) {
-        var cp = pos[paths[c].id];
-        svg += '<line x1="' + (userX + 34) + '" y1="' + (userY + userH) + '" x2="' + (cp.x + NODE_W / 2) + '" y2="' + cp.y + '" stroke="#9ca3af" stroke-width="1" opacity="0.45"/>';
+    // Build the tree: primary parent = first known dependency, else Agent.
+    var byId = {};
+    for (var i = 0; i < paths.length; i++) byId[paths[i].id] = paths[i];
+    var children = {};
+    children[ROOT] = [];
+    var extraDeps = [];  // [fromId, toId] dashed secondary dependencies
+    for (var j = 0; j < paths.length; j++) {
+        var p = paths[j];
+        var deps = (p.depends_on || []).filter(function (d) { return byId[d]; });
+        var parent = deps.length ? deps[0] : ROOT;
+        (children[parent] = children[parent] || []).push(p.id);
+        for (var k = 1; k < deps.length; k++) extraDeps.push([p.id, deps[k]]);
     }
 
-    // dependency edges (dashed, arrowed): consumer -> producer
-    for (var d = 0; d < paths.length; d++) {
-        var deps = paths[d].depends_on || [];
-        var from = pos[paths[d].id];
-        for (var e = 0; e < deps.length; e++) {
-            var to = pos[deps[e]];
-            if (!to) continue;
-            var x1 = from.x + NODE_W / 2, y1 = from.y + NODE_H;
-            var x2 = to.x + NODE_W / 2, y2 = to.y + NODE_H;
-            var midY = Math.max(y1, y2) + 26;
-            svg += '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + midY + ', ' + x2 + ' ' + midY + ', ' + x2 + ' ' + (y2 + 4) + '"' +
-                   ' fill="none" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#cmp-arrow)" opacity="0.8"/>';
+    // Tidy tree layout: subtree width = max(node, sum of children), parents
+    // centered over their children.
+    var widths = {};
+    function subtreeWidth(id) {
+        var kids = children[id] || [];
+        if (!kids.length) return (widths[id] = NODE_W);
+        var total = 0;
+        for (var c = 0; c < kids.length; c++) {
+            total += subtreeWidth(kids[c]);
+            if (c > 0) total += GAP_X;
+        }
+        return (widths[id] = Math.max(NODE_W, total));
+    }
+    subtreeWidth(ROOT);
+
+    var pos = {};   // id -> {x, y} of node top-left
+    var maxDepth = 0;
+    function place(id, left, depth) {
+        var kids = children[id] || [];
+        var w = widths[id];
+        pos[id] = { x: left + (w - NODE_W) / 2, y: depth * (NODE_H + GAP_Y) + 10 };
+        if (depth > maxDepth) maxDepth = depth;
+        var cursor = left + (w > NODE_W ? 0 : (NODE_W - w) / 2);
+        if (w <= NODE_W && kids.length) cursor = left + (NODE_W - widths[kids[0]]) / 2;
+        for (var c = 0; c < kids.length; c++) {
+            place(kids[c], cursor, depth + 1);
+            cursor += widths[kids[c]] + GAP_X;
         }
     }
+    place(ROOT, 10, 0);
 
-    // path nodes
-    for (var n = 0; n < paths.length; n++) {
-        var p = paths[n];
-        var xy = pos[p.id];
-        var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
-        var isActive = p.id === cmp.active_id;
-        var isSelected = p.id === _cmpSelectedPath;
-        var title = (p.title || '').length > 20 ? (p.title || '').slice(0, 19) + '…' : (p.title || '');
-        svg += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
-        svg += '<rect x="' + xy.x + '" y="' + xy.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"' +
-               ' fill="' + st.fill + '" stroke="' + st.stroke + '"' +
-               ' stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
-               (isSelected ? ' stroke-dasharray="none" filter="drop-shadow(0 0 3px ' + st.stroke + ')"' : '') + '/>';
-        svg += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 19) + '" font-size="11" font-weight="600" fill="currentColor">' +
-               esc(p.id) + (isActive ? ' ●' : '') + '</text>';
-        svg += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 34) + '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
-        svg += '<text x="' + (xy.x + NODE_W - 8) + '" y="' + (xy.y + 19) + '" text-anchor="end" font-size="9" fill="' + st.stroke + '">' +
-               (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';
-        svg += '</g>';
+    var width = widths[ROOT] + 20;
+    var height = (maxDepth + 1) * (NODE_H + GAP_Y) - GAP_Y + 24;
+
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height +
+        '" viewBox="0 0 ' + width + ' ' + height + '" style="min-width:320px">';
+    svg += '<defs>' +
+        '<marker id="cmp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker>' +
+        '<marker id="cmp-arrow-dep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/></marker>' +
+        '</defs>';
+
+    // Tree edges (parent -> child) with the action label at the midpoint.
+    function edge(fromX, fromY, toX, toY, label) {
+        var midX = (fromX + toX) / 2, midY = (fromY + toY) / 2;
+        var d = 'M ' + fromX + ' ' + fromY +
+                ' C ' + fromX + ' ' + (fromY + 26) + ', ' + toX + ' ' + (toY - 30) +
+                ', ' + toX + ' ' + (toY - 4);
+        var out = '<path d="' + d + '" fill="none" stroke="#9ca3af" stroke-width="1.2" opacity="0.7" marker-end="url(#cmp-arrow)"/>';
+        if (label) {
+            out += '<text x="' + midX + '" y="' + (midY - 2) + '" text-anchor="middle" font-size="9"' +
+                ' fill="currentColor" opacity="0.65" font-style="italic">' + esc(label) + '</text>';
+        }
+        return out;
     }
 
-    svg += '</svg>';
+    var edges = '', nodes = '';
+
+    // Agent root
+    var rootPos = pos[ROOT];
+    var rootCx = rootPos.x + NODE_W / 2;
+    nodes += '<ellipse cx="' + rootCx + '" cy="' + (rootPos.y + NODE_H / 2) + '" rx="42" ry="20"' +
+        ' fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>' +
+        '<text x="' + rootCx + '" y="' + (rootPos.y + NODE_H / 2 + 4) + '" text-anchor="middle" font-size="12"' +
+        ' font-weight="600" fill="currentColor">Agent</text>';
+
+    for (var n = 0; n < paths.length; n++) {
+        var pn = paths[n];
+        var xy = pos[pn.id];
+        var st = _CMP_STATUS_STYLE[pn.status] || _CMP_STATUS_STYLE.archived;
+        var isActive = pn.id === cmp.active_id;
+        var isSelected = pn.id === _cmpSelectedPath;
+        var title = (pn.title || '').length > 21 ? (pn.title || '').slice(0, 20) + '…' : (pn.title || '');
+
+        // edge from primary parent
+        var deps = (pn.depends_on || []).filter(function (d) { return byId[d]; });
+        var parentPos = deps.length ? pos[deps[0]] : rootPos;
+        var fromY = deps.length ? parentPos.y + NODE_H : rootPos.y + NODE_H / 2 + 20;
+        edges += edge(parentPos.x + NODE_W / 2, fromY,
+                      xy.x + NODE_W / 2, xy.y, pn.action || '');
+
+        nodes += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(pn.id) + '\')">';
+        nodes += '<rect x="' + xy.x + '" y="' + xy.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"' +
+            ' fill="' + st.fill + '" stroke="' + st.stroke + '"' +
+            ' stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
+            (isSelected ? ' filter="drop-shadow(0 0 3px ' + st.stroke + ')"' : '') + '/>';
+        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 19) + '" font-size="11" font-weight="600" fill="currentColor">' +
+            esc(pn.id) + (isActive ? ' ●' : '') + '</text>';
+        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 35) + '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
+        nodes += '<text x="' + (xy.x + NODE_W - 8) + '" y="' + (xy.y + 19) + '" text-anchor="end" font-size="9" fill="' + st.stroke + '">' +
+            (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';
+        nodes += '</g>';
+    }
+
+    // Secondary dependencies (dashed purple)
+    for (var e = 0; e < extraDeps.length; e++) {
+        var from = pos[extraDeps[e][0]], to = pos[extraDeps[e][1]];
+        if (!from || !to) continue;
+        var x1 = from.x + NODE_W / 2, y1 = from.y;
+        var x2 = to.x + NODE_W / 2, y2 = to.y + NODE_H;
+        edges += '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 - 30) + ', ' + x2 + ' ' + (y2 + 30) + ', ' + x2 + ' ' + (y2 + 4) + '"' +
+            ' fill="none" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#cmp-arrow-dep)" opacity="0.8"/>';
+    }
+
+    svg += edges + nodes + '</svg>';
     return svg;
 }

@@ -95,6 +95,7 @@ function _renderAgentStateCore(containerIds, data) {
     var empty = '<p class="text-sm text-gray-400 dark:text-gray-500 italic">No state yet.</p>';
     var hasAnyState = data.focus ||
         data.active_model ||
+        (data.cmp && data.cmp.paths && data.cmp.paths.length > 0) ||
         (data.states && Object.keys(data.states).length > 0);
     if (!hasAnyState) {
         (Array.isArray(containerIds) ? containerIds : [containerIds]).forEach(function(id) {
@@ -125,8 +126,21 @@ function _renderAgentStateCore(containerIds, data) {
         }
     }
 
-    // Raw JSON for debug
-    var rawJson = JSON.stringify(data, null, 2);
+    // CMP session-path map badge (clickable — opens the graph modal)
+    if (data.cmp && data.cmp.paths && data.cmp.paths.length > 0) {
+        _cmpMapData = data.cmp;
+        var activePath = null;
+        for (var pi = 0; pi < data.cmp.paths.length; pi++) {
+            if (data.cmp.paths[pi].id === data.cmp.active_id) { activePath = data.cmp.paths[pi]; break; }
+        }
+        var activeTitle = activePath ? activePath.title : '';
+        cards += '<span onclick="_openCmpMap()"' +
+            ' class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium' +
+            ' bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1' +
+            ' cursor-pointer hover:bg-purple-200 dark:hover:bg-purple-800"' +
+            ' title="' + esc(activeTitle) + ' — click to view the session path map">' +
+            'CMP: ' + data.cmp.paths.length + ' cards</span>';
+    }
 
     var html = '<div class="space-y-2 text-sm">';
 
@@ -150,14 +164,6 @@ function _renderAgentStateCore(containerIds, data) {
         }
         html += '</ul></div>';
     }
-
-    // Debug: raw JSON toggle
-    html += '<div class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">';
-    html += '<div class="flex justify-end">';
-    html += '<button onclick="this.parentElement.nextElementSibling.classList.toggle(\'hidden\');this.textContent=this.parentElement.nextElementSibling.classList.contains(\'hidden\')?\'Show Raw JSON\':\'Hide Raw JSON\'" class="text-[10px] text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline cursor-pointer">Show Raw JSON</button>';
-    html += '</div>';
-    html += '<pre class="hidden mt-1 rounded p-2 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">' + esc(rawJson) + '</pre>';
-    html += '</div>';
 
     html += '</div>';
 
@@ -227,4 +233,245 @@ function _unloadSkill(skillId) {
             }
         })
         .catch(function(e) { console.error('[AgentState] Skill unload error:', e); });
+}
+
+/* ========================================
+   CMP Session Path Map (modal + SVG graph)
+   ======================================== */
+
+var _cmpMapData = null;
+var _cmpSelectedPath = null;
+
+var _CMP_STATUS_STYLE = {
+    active:   { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
+    dormant:  { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'dormant' },
+    archived: { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
+};
+
+function _openCmpMap() {
+    if (!_cmpMapData || !_cmpMapData.paths || !_cmpMapData.paths.length) return;
+    _cmpSelectedPath = _cmpMapData.active_id;
+    var existing = document.getElementById('cmp-map-modal');
+    if (existing) existing.remove();
+
+    var overlay = document.createElement('div');
+    overlay.id = 'cmp-map-modal';
+    overlay.setAttribute('style',
+        'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;' +
+        'justify-content:center;background:rgba(0,0,0,0.55);padding:16px;');
+    overlay.addEventListener('click', function (e) {
+        if (e.target === overlay) _closeCmpMap();
+    });
+
+    var panel = document.createElement('div');
+    panel.className = 'bg-white dark:bg-gray-800 rounded-lg shadow-xl';
+    panel.setAttribute('style',
+        'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+
+    panel.innerHTML =
+        '<div class="flex items-center justify-between mb-3">' +
+        '  <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Session Path Map</h3>' +
+        '  <div class="flex items-center gap-2">' +
+        '    <button onclick="_toggleCmpSource()" class="text-xs text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline cursor-pointer">Mermaid source</button>' +
+        '    <button onclick="_closeCmpMap()" class="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-300 cursor-pointer" title="Close">×</button>' +
+        '  </div>' +
+        '</div>' +
+        '<div id="cmp-map-svg" class="overflow-x-auto text-gray-800 dark:text-gray-100"></div>' +
+        '<pre id="cmp-map-source" class="hidden mt-3 rounded p-2 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200">' +
+        esc(_cmpMapData.mermaid || '') + '</pre>' +
+        '<div id="cmp-map-detail" class="mt-3 border-t border-gray-100 dark:border-gray-700 pt-3 text-sm"></div>';
+
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', _cmpEscHandler);
+
+    document.getElementById('cmp-map-svg').innerHTML = _buildCmpSvg(_cmpMapData);
+    _cmpRenderDetail();
+}
+
+function _closeCmpMap() {
+    var el = document.getElementById('cmp-map-modal');
+    if (el) el.remove();
+    document.removeEventListener('keydown', _cmpEscHandler);
+}
+
+function _cmpEscHandler(e) { if (e.key === 'Escape') _closeCmpMap(); }
+
+function _toggleCmpSource() {
+    var el = document.getElementById('cmp-map-source');
+    if (el) el.classList.toggle('hidden');
+}
+
+function _cmpSelectPath(pathId) {
+    _cmpSelectedPath = pathId;
+    var svgHost = document.getElementById('cmp-map-svg');
+    if (svgHost) svgHost.innerHTML = _buildCmpSvg(_cmpMapData);
+    _cmpRenderDetail();
+}
+
+function _cmpRenderDetail() {
+    var host = document.getElementById('cmp-map-detail');
+    if (!host || !_cmpMapData) return;
+    var p = null;
+    for (var i = 0; i < _cmpMapData.paths.length; i++) {
+        if (_cmpMapData.paths[i].id === _cmpSelectedPath) { p = _cmpMapData.paths[i]; break; }
+    }
+    if (!p) { host.innerHTML = ''; return; }
+    var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
+    var html = '<div class="flex items-center gap-2 mb-1">' +
+        '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
+        '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
+        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>';
+    if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
+    if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
+    if (p.key_facts && p.key_facts.length) {
+        html += '<ul class="text-xs text-gray-500 dark:text-gray-400 mt-1 space-y-0.5">';
+        for (var k = 0; k < p.key_facts.length; k++) html += '<li>• ' + esc(p.key_facts[k]) + '</li>';
+        html += '</ul>';
+    }
+    if (p.artifacts && p.artifacts.length) {
+        html += '<div class="text-[10px] text-gray-400 dark:text-gray-500 mt-1 font-mono break-all">' + esc(p.artifacts.join('  ')) + '</div>';
+    }
+    if (p.depends_on && p.depends_on.length) {
+        html += '<div class="text-xs text-gray-500 dark:text-gray-400 mt-1">depends on: ' + esc(p.depends_on.join(', ')) + '</div>';
+    }
+    host.innerHTML = html;
+}
+
+
+/**
+ * Offline SVG rendering of the session graph (no mermaid.js dependency) as a
+ * proper TREE: the Agent root on top, each path positioned under its
+ * dependency parent, solid arrows carrying the action label. Extra
+ * dependencies (beyond the primary parent) render as dashed arrows.
+ * Click a node to inspect its card.
+ */
+function _buildCmpSvg(cmp) {
+    var paths = cmp.paths || [];
+    var NODE_W = 172, NODE_H = 48, GAP_X = 26, GAP_Y = 74;
+    var ROOT = '__agent__';
+
+    // Build the tree: primary parent = first known dependency, else Agent.
+    var byId = {};
+    for (var i = 0; i < paths.length; i++) byId[paths[i].id] = paths[i];
+    var children = {};
+    children[ROOT] = [];
+    var extraDeps = [];  // [fromId, toId] dashed secondary dependencies
+    for (var j = 0; j < paths.length; j++) {
+        var p = paths[j];
+        var deps = (p.depends_on || []).filter(function (d) { return byId[d]; });
+        var parent = deps.length ? deps[0] : ROOT;
+        (children[parent] = children[parent] || []).push(p.id);
+        for (var k = 1; k < deps.length; k++) extraDeps.push([p.id, deps[k]]);
+    }
+
+    // Tidy tree layout: subtree width = max(node, sum of children), parents
+    // centered over their children.
+    var widths = {};
+    function subtreeWidth(id) {
+        var kids = children[id] || [];
+        if (!kids.length) return (widths[id] = NODE_W);
+        var total = 0;
+        for (var c = 0; c < kids.length; c++) {
+            total += subtreeWidth(kids[c]);
+            if (c > 0) total += GAP_X;
+        }
+        return (widths[id] = Math.max(NODE_W, total));
+    }
+    subtreeWidth(ROOT);
+
+    var pos = {};   // id -> {x, y} of node top-left
+    var maxDepth = 0;
+    function place(id, left, depth) {
+        var kids = children[id] || [];
+        var w = widths[id];
+        pos[id] = { x: left + (w - NODE_W) / 2, y: depth * (NODE_H + GAP_Y) + 10 };
+        if (depth > maxDepth) maxDepth = depth;
+        var cursor = left + (w > NODE_W ? 0 : (NODE_W - w) / 2);
+        if (w <= NODE_W && kids.length) cursor = left + (NODE_W - widths[kids[0]]) / 2;
+        for (var c = 0; c < kids.length; c++) {
+            place(kids[c], cursor, depth + 1);
+            cursor += widths[kids[c]] + GAP_X;
+        }
+    }
+    place(ROOT, 10, 0);
+
+    var width = widths[ROOT] + 20;
+    var height = (maxDepth + 1) * (NODE_H + GAP_Y) - GAP_Y + 24;
+
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height +
+        '" viewBox="0 0 ' + width + ' ' + height + '" style="min-width:320px">';
+    svg += '<defs>' +
+        '<marker id="cmp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker>' +
+        '<marker id="cmp-arrow-dep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/></marker>' +
+        '</defs>';
+
+    // Tree edges (parent -> child) with the action label at the midpoint.
+    function edge(fromX, fromY, toX, toY, label) {
+        var midX = (fromX + toX) / 2, midY = (fromY + toY) / 2;
+        var d = 'M ' + fromX + ' ' + fromY +
+                ' C ' + fromX + ' ' + (fromY + 26) + ', ' + toX + ' ' + (toY - 30) +
+                ', ' + toX + ' ' + (toY - 4);
+        var out = '<path d="' + d + '" fill="none" stroke="#9ca3af" stroke-width="1.2" opacity="0.7" marker-end="url(#cmp-arrow)"/>';
+        if (label) {
+            out += '<text x="' + midX + '" y="' + (midY - 2) + '" text-anchor="middle" font-size="9"' +
+                ' fill="currentColor" opacity="0.65" font-style="italic">' + esc(label) + '</text>';
+        }
+        return out;
+    }
+
+    var edges = '', nodes = '';
+
+    // Agent root
+    var rootPos = pos[ROOT];
+    var rootCx = rootPos.x + NODE_W / 2;
+    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 24);
+    var rootRx = Math.max(42, agentLabel.length * 4 + 14);
+    nodes += '<ellipse cx="' + rootCx + '" cy="' + (rootPos.y + NODE_H / 2) + '" rx="' + rootRx + '" ry="20"' +
+        ' fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>' +
+        '<text x="' + rootCx + '" y="' + (rootPos.y + NODE_H / 2 + 4) + '" text-anchor="middle" font-size="12"' +
+        ' font-weight="600" fill="currentColor">' + esc(agentLabel) + '</text>';
+
+    for (var n = 0; n < paths.length; n++) {
+        var pn = paths[n];
+        var xy = pos[pn.id];
+        var st = _CMP_STATUS_STYLE[pn.status] || _CMP_STATUS_STYLE.archived;
+        var isActive = pn.id === cmp.active_id;
+        var isSelected = pn.id === _cmpSelectedPath;
+        var title = (pn.title || '').length > 21 ? (pn.title || '').slice(0, 20) + '…' : (pn.title || '');
+
+        // edge from primary parent
+        var deps = (pn.depends_on || []).filter(function (d) { return byId[d]; });
+        var parentPos = deps.length ? pos[deps[0]] : rootPos;
+        var fromY = deps.length ? parentPos.y + NODE_H : rootPos.y + NODE_H / 2 + 20;
+        edges += edge(parentPos.x + NODE_W / 2, fromY,
+                      xy.x + NODE_W / 2, xy.y, pn.action || '');
+
+        nodes += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(pn.id) + '\')">';
+        nodes += '<rect x="' + xy.x + '" y="' + xy.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"' +
+            ' fill="' + st.fill + '" stroke="' + st.stroke + '"' +
+            ' stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
+            (isSelected ? ' filter="drop-shadow(0 0 3px ' + st.stroke + ')"' : '') + '/>';
+        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 19) + '" font-size="11" font-weight="600" fill="currentColor">' +
+            esc(pn.id) + (isActive ? ' ●' : '') + '</text>';
+        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 35) + '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
+        nodes += '<text x="' + (xy.x + NODE_W - 8) + '" y="' + (xy.y + 19) + '" text-anchor="end" font-size="9" fill="' + st.stroke + '">' +
+            (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';
+        nodes += '</g>';
+    }
+
+    // Secondary dependencies (dashed purple)
+    for (var e = 0; e < extraDeps.length; e++) {
+        var from = pos[extraDeps[e][0]], to = pos[extraDeps[e][1]];
+        if (!from || !to) continue;
+        var x1 = from.x + NODE_W / 2, y1 = from.y;
+        var x2 = to.x + NODE_W / 2, y2 = to.y + NODE_H;
+        edges += '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 - 30) + ', ' + x2 + ' ' + (y2 + 30) + ', ' + x2 + ' ' + (y2 + 4) + '"' +
+            ' fill="none" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#cmp-arrow-dep)" opacity="0.8"/>';
+    }
+
+    svg += edges + nodes + '</svg>';
+    return svg;
 }

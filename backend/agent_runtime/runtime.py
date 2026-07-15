@@ -1617,13 +1617,16 @@ class AgentRuntime:
                 _logger.exception("CMP early boundary hook failed — full-history turn")
                 _cmp_filter_state = None
 
-        # Build messages for LLM (summary-aware)
-        # Try prefetched context from the previous turn's background warmup
-        # (only when disable_turn_prefetch is not set). A CMP switch/branch
-        # this turn invalidates the hit: it was assembled for the OLD path.
+        # Build messages for LLM (summary-aware). A prefetch is valid only if
+        # it was assembled under the current summary watermark; summarization
+        # can advance asynchronously after the background warmup completes.
+        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
+        summary_watermark = (summary_record.get('last_message_ts')
+                             if summary_record else None)
         _prefetch = None
         if not agent.get('disable_turn_prefetch', 0) and not _cmp_switched_this_turn:
-            _prefetch = self._prefetcher.try_get(ctx.session_id)
+            _prefetch = self._prefetcher.try_get(
+                ctx.session_id, summary_watermark=summary_watermark)
         if _prefetch and _prefetch.agent_id == agent_id:
             system_prompt = _prefetch.system_prompt
             tools = _prefetch.tools
@@ -1722,7 +1725,6 @@ class AgentRuntime:
                 parts.insert(0, {"type": "text", "text": "What is in this media?"})
             return {**msg, 'content': parts}
 
-        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
         chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
 
         # Compute whether describe_image is assigned so the _apply_multimodal

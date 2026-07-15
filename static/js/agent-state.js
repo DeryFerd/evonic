@@ -363,19 +363,24 @@ function _cmpRenderDetail() {
     //             once offloaded. The Full→Offload gap is the compression CMP buys.
     var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
     var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
-    var ctxHtml = '<div class="text-right text-xs leading-tight">' +
-        '<div class="' + (isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300') +
-        ' font-semibold">Full: ' + _cmpFmtTokens(full) +
-        (isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>') + '</div>' +
-        '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) +
-        (isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>') + '</div></div>';
+    var fullCls = isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300';
+    var fullNote = isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var offNote = isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>';
+    var isMobile = window.innerWidth <= 640;
+
+    // Desktop: token figures sit top-right of the header. Mobile: they move to
+    // a full-width block at the very bottom (after the note).
+    var ctxHeader = isMobile ? '' :
+        '<div class="text-right text-xs leading-tight">' +
+        '<div class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + fullNote + '</div>' +
+        '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) + offNote + '</div></div>';
 
     var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
         '<div class="flex items-center gap-2">' +
         '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
         '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
         (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>' +
-        ctxHtml + '</div>';
+        ctxHeader + '</div>';
     if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
     if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
     if (p.key_facts && p.key_facts.length) {
@@ -388,6 +393,11 @@ function _cmpRenderDetail() {
     }
     if (p.depends_on && p.depends_on.length) {
         html += '<div class="text-xs text-gray-500 dark:text-gray-400 mt-1">depends on: ' + esc(p.depends_on.join(', ')) + '</div>';
+    }
+    if (isMobile) {
+        html += '<div class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700 flex gap-4 text-xs">' +
+            '<div><span class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + '</span>' + fullNote + '</div>' +
+            '<div><span class="text-gray-500 dark:text-gray-300 font-semibold">Offload: ' + _cmpFmtTokens(offloadTok) + '</span>' + offNote + '</div></div>';
     }
     host.innerHTML = html;
 }

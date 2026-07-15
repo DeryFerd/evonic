@@ -1,10 +1,10 @@
 {
   "id": "write_file",
   "name": "Write File",
-  "description": "Write full content to a NEW file. Refuses to overwrite existing files — use str_replace (or patch) for edits.",
+  "description": "Write full content to a NEW file. Refuses to overwrite existing files \u2014 use str_replace (or patch) for edits.",
   "function": {
     "name": "write_file",
-    "description": "Write content to a file at the specified path. Creates the file if it does not exist. IMPORTANT: This tool is for NEW files ONLY — it REFUSES to overwrite existing files. If the target file already exists, use str_replace (or patch) instead for surgical, line-level edits. Parent directories are created automatically by default.",
+    "description": "Write content to a new file. Refuses to overwrite existing files \u2014 use str_replace for edits.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -14,22 +14,25 @@
         },
         "content": {
           "type": "string",
-          "description": "Full content to write to the file. Written exactly as provided — no automatic newline is appended.",
+          "description": "Full content to write.",
           "view": "plain-text"
         },
         "overwrite": {
           "type": "boolean",
-          "description": "DEPRECATED. The write_file tool does NOT overwrite existing files — use str_replace for edits. This flag is ignored."
+          "description": "DEPRECATED. Use str_replace for edits instead."
         },
         "create_dirs": {
           "type": "boolean",
           "description": "Whether to automatically create missing parent directories. Defaults to true."
         }
       },
-      "required": ["file_path", "content"]
+      "required": [
+        "file_path",
+        "content"
+      ]
     }
   },
-  "mock_response": "file_path = args.get('file_path', '')\ncontent = args.get('content', '')\nexists = False\nif not file_path:\n    result = {'error': \"Missing required argument: 'file_path'\"}\nelif exists:\n    result = {'error': f'File already exists: {file_path}. The write_file tool is for creating NEW files only — use str_replace instead.', 'isError': True, 'edit_recipe': {'tool': 'str_replace', 'file_path': file_path}}\nelse:\n    result = {'result': 'success', 'bytes_written': len(content.encode('utf-8')), 'created': not exists}",
+  "mock_response": "file_path = args.get('file_path', '')\ncontent = args.get('content', '')\nexists = False\nif not file_path:\n    result = {'error': \"Missing required argument: 'file_path'\"}\nelif exists:\n    result = {'error': f'File already exists: {file_path}. The write_file tool is for creating NEW files only \u2014 use str_replace instead.', 'isError': True, 'edit_recipe': {'tool': 'str_replace', 'file_path': file_path}}\nelse:\n    result = {'result': 'success', 'bytes_written': len(content.encode('utf-8')), 'created': not exists}",
   "mock_response_type": "python",
   "created_at": "2026-04-12T00:00:00.000000",
   "updated_at": "2026-04-12T00:00:00.000000"

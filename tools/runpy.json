@@ -2,16 +2,16 @@
   "id": "runpy",
   "name": "Run Python",
   "description": "Execute Python code in a sandboxed Docker container with persistent state per session.",
-  "system_prompt": "## runpy — Python Sandbox\n\nWhen using the `runpy` tool, the working directory is `/workspace`. Always use paths relative to `/workspace` (e.g. `templates/index.html`, `static/style.css`) — never bare filenames.\n\n### evonic helpers\n\n**File & directory** (import directly: `from evonic import tree, find, stats`)\n- `tree()` — directory tree; first line is `(cwd: /workspace)` for orientation\n- `find(glob_pattern, path='.')` — list files matching a glob\n- `stats()` — workspace summary (file count, size, git branch)\n\n**display** — structured output (`from evonic import display`)\n- `json(obj)` · `diff(a, b)` · `truncate(text, max_lines=50)`\n\n**http** — network (requires network=bridge) (`from evonic import http`)\n- `get(url, headers=None, timeout=10)` · `post(url, data=None, json=None, headers=None)` · `download(url, path)`\n\n### Code style\n- Write **compact** Python code — no unnecessary comments\n- Only use comments for non-obvious logic or important caveats\n- Prefer one-liners and concise expressions over verbose equivalents\n- Skip docstrings unless the code block is complex (>10 lines)\n- This reduces token usage without sacrificing readability\n\n### Priority rule\nUse `evonic` helpers first. Fall back to standard Python (`os`, `pathlib`, etc.) only when evonic doesn't cover the need.",
+  "system_prompt": "## runpy \u2014 Python Sandbox\n\nWhen using the `runpy` tool, the working directory is `/workspace`. Always use paths relative to `/workspace` (e.g. `templates/index.html`, `static/style.css`) \u2014 never bare filenames.\n\n### evonic helpers\n\n**File & directory** (import directly: `from evonic import tree, find, stats`)\n- `tree()` \u2014 directory tree; first line is `(cwd: /workspace)` for orientation\n- `find(glob_pattern, path='.')` \u2014 list files matching a glob\n- `stats()` \u2014 workspace summary (file count, size, git branch)\n\n**display** \u2014 structured output (`from evonic import display`)\n- `json(obj)` \u00b7 `diff(a, b)` \u00b7 `truncate(text, max_lines=50)`\n\n**http** \u2014 network (requires network=bridge) (`from evonic import http`)\n- `get(url, headers=None, timeout=10)` \u00b7 `post(url, data=None, json=None, headers=None)` \u00b7 `download(url, path)`\n\n### Code style\n- Write **compact** Python code \u2014 no unnecessary comments\n- Only use comments for non-obvious logic or important caveats\n- Prefer one-liners and concise expressions over verbose equivalents\n- Skip docstrings unless the code block is complex (>10 lines)\n- This reduces token usage without sacrificing readability\n\n### Priority rule\nUse `evonic` helpers first. Fall back to standard Python (`os`, `pathlib`, etc.) only when evonic doesn't cover the need.",
   "function": {
     "name": "runpy",
-    "description": "Execute Python code in an isolated Docker container. The container persists across calls within the same session — files and installed packages are available in subsequent calls. Working directory is /workspace.\n\nPre-installed evonic helpers: top-level: tree(), find(), stats() | display: json(), diff(), truncate() | http: get(), post(), download()\n\nFirst call includes available_helpers listing all modules and functions. Use action='destroy' to tear down the container.",
+    "description": "Execute Python code in an isolated Docker container.",
     "parameters": {
       "type": "object",
       "properties": {
         "code": {
           "type": "string",
-          "description": "Python source code to execute. Runs via 'python3 -' (stdin). All standard library modules are available. Install packages with pip inside the code if needed.",
+          "description": "Python source code to execute.",
           "view": "code"
         },
         "action": {
@@ -20,7 +20,7 @@
             "run",
             "destroy"
           ],
-          "description": "Action to perform. 'run' (default) executes the code. 'destroy' tears down the container for this session and frees resources."
+          "description": "'run' to execute, 'destroy' to tear down the container."
         },
         "timeout": {
           "type": "integer",

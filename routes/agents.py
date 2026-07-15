@@ -1844,7 +1844,9 @@ def api_chat_agent_state(agent_id):
                 agent_name = (agent_row or {}).get('name') or agent_id.replace('_', ' ').title()
                 payload['cmp'] = {
                     'active_id': state.cmp.get('active_id'),
+                    'agent_id': agent_id,
                     'agent_name': agent_name,
+                    'has_avatar': bool((agent_row or {}).get('avatar_path')),
                     'mermaid': render_map(state.cmp, agent_name),
                     'paths': [
                         {k: p.get(k) for k in

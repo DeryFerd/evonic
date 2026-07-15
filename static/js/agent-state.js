@@ -356,6 +356,19 @@ function _cmpRenderDetail() {
  * encodes CMP status (active/dormant/archived); the active node glows.
  * Click a node to inspect its card. No mermaid.js dependency.
  */
+// Deterministic avatar background color — MUST mirror agent-sidebar.js so the
+// hub color matches the agent's sidebar avatar exactly.
+var _CMP_AVATAR_COLORS = [
+    'hsl(200, 70%, 40%)', 'hsl(260, 60%, 45%)', 'hsl(330, 60%, 42%)',
+    'hsl(160, 55%, 35%)', 'hsl(30, 70%, 38%)', 'hsl(290, 50%, 40%)',
+    'hsl(80, 50%, 32%)', 'hsl(10, 65%, 40%)',
+];
+function _cmpAvatarColor(id) {
+    var h = 0, s = String(id || '');
+    for (var i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
+    return _CMP_AVATAR_COLORS[Math.abs(h) % _CMP_AVATAR_COLORS.length];
+}
+
 function _buildCmpSvg(cmp) {
     var paths = cmp.paths || [];
     var ROOT = '__agent__';
@@ -385,6 +398,17 @@ function _buildCmpSvg(cmp) {
     }
     countLeaves(ROOT);
 
+    // "Loaded" set: the active path plus its transitive dependency ancestors —
+    // exactly the paths whose transcript stays in the context window (mirrors
+    // cmp/assembler.build_history). Rendered dark-green to signal "in memory".
+    var loaded = {}; loaded[cmp.active_id] = true;
+    (function walk(id) {
+        var deps = (byId[id] && byId[id].depends_on) || [];
+        for (var d = 0; d < deps.length; d++) {
+            if (byId[deps[d]] && !loaded[deps[d]]) { loaded[deps[d]] = true; walk(deps[d]); }
+        }
+    })(cmp.active_id);
+
     // Radial placement: center at math-origin; angle = middle of the node's
     // arc, radius = depth * ring. Start fanning from the top (-90°).
     var node = {};   // id -> {x, y, r, angle, depth}
@@ -405,8 +429,9 @@ function _buildCmpSvg(cmp) {
     var START = -Math.PI / 2;
     place(ROOT, START, START + 2 * Math.PI, 0);
 
-    // Bounds → shift into positive canvas coords.
-    var minX = -60, maxX = 60, minY = -60, maxY = 60;
+    // Bounds → shift into positive canvas coords. Reserve room for the center
+    // hub (r=46) plus the agent-name label below it (~+62).
+    var minX = -60, maxX = 60, minY = -56, maxY = 74;
     for (var id in node) {
         var n = node[id];
         minX = Math.min(minX, n.x - NODE_W / 2); maxX = Math.max(maxX, n.x + NODE_W / 2);
@@ -467,13 +492,20 @@ function _buildCmpSvg(cmp) {
         var p = paths[m], nn = node[p.id];
         var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
         var isActive = p.id === cmp.active_id, isSel = p.id === _cmpSelectedPath;
+        var isLoaded = !!loaded[p.id];
+        // Opaque fills so the connector lines never show through the node.
+        // Green fill = memory loaded into context (active = bright, ancestors
+        // = darker green); neutral slate otherwise. Stroke keeps status color,
+        // but the loaded chain gets a green stroke to reinforce "in context".
+        var fill = isActive ? '#17402a' : (isLoaded ? '#0f2c1c' : '#232c3d');
+        var stroke = isActive ? '#22c55e' : (isLoaded ? '#3f9e6a' : st.stroke);
         var nx = nn.x + offX - NODE_W / 2, ny = nn.y + offY - NODE_H / 2;
         var title = (p.title || '').length > 15 ? (p.title || '').slice(0, 14) + '…' : (p.title || '');
         nodes += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
         nodes += '<rect x="' + nx.toFixed(1) + '" y="' + ny.toFixed(1) + '" width="' + NODE_W +
-            '" height="' + NODE_H + '" rx="9" fill="' + st.fill + '" stroke="' + st.stroke +
+            '" height="' + NODE_H + '" rx="9" fill="' + fill + '" stroke="' + stroke +
             '" stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
-            (isSel ? ' filter="drop-shadow(0 0 4px ' + st.stroke + ')"' : '') + '/>';
+            (isActive || isSel ? ' filter="drop-shadow(0 0 4px ' + stroke + ')"' : '') + '/>';
         nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
             '" font-size="11" font-weight="600" fill="currentColor">' + esc(p.id) +
             (isActive ? ' ●' : '') + '</text>';
@@ -485,13 +517,37 @@ function _buildCmpSvg(cmp) {
         nodes += '</g>';
     }
 
-    // ── central Agent hub ─────────────────────────────────────────────────────
-    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 20);
-    var hubR = Math.max(46, agentLabel.length * 4.2 + 16);
-    var hub = '<circle cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) + '" r="' + hubR.toFixed(1) +
-        '" fill="#111827" stroke="#6366f1" stroke-width="2"/>' +
-        '<text x="' + cx.toFixed(1) + '" y="' + (cy + 4).toFixed(1) +
-        '" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">' +
+    // ── central Agent hub: the agent's avatar (image if any, else initial +
+    //    sidebar-matching color) ────────────────────────────────────────────
+    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 24);
+    var hubR = 46;
+    var initial = (agentLabel.charAt(0) || 'A').toUpperCase();
+    var bg = _cmpAvatarColor(cmp.agent_id || agentLabel);
+    var cxs = cx.toFixed(1), cys = cy.toFixed(1);
+
+    // Base colored circle + initial — shown as-is when there's no avatar, and
+    // as the fallback layer beneath the image if it fails to load.
+    var hub = '<circle cx="' + cxs + '" cy="' + cys + '" r="' + hubR +
+        '" fill="' + bg + '" stroke="#6366f1" stroke-width="2"/>' +
+        '<text x="' + cxs + '" y="' + (cy + 8).toFixed(1) +
+        '" text-anchor="middle" font-size="24" font-weight="700" fill="#ffffff">' +
+        esc(initial) + '</text>';
+
+    if (cmp.has_avatar && cmp.agent_id) {
+        var clip = 'cmp-hub-clip';
+        var url = '/api/agents/' + encodeURIComponent(cmp.agent_id) + '/avatar?size=small';
+        hub = '<defs><clipPath id="' + clip + '"><circle cx="' + cxs + '" cy="' + cys +
+                '" r="' + hubR + '"/></clipPath></defs>' + hub +
+            '<image href="' + esc(url) + '" x="' + (cx - hubR).toFixed(1) + '" y="' +
+                (cy - hubR).toFixed(1) + '" width="' + (hubR * 2) + '" height="' + (hubR * 2) +
+                '" clip-path="url(#' + clip + ')" preserveAspectRatio="xMidYMid slice"/>' +
+            '<circle cx="' + cxs + '" cy="' + cys + '" r="' + hubR +
+                '" fill="none" stroke="#6366f1" stroke-width="2"/>';
+    }
+
+    // Agent name below the avatar.
+    hub += '<text x="' + cxs + '" y="' + (cy + hubR + 16).toFixed(1) +
+        '" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor">' +
         esc(agentLabel) + '</text>';
 
     return svg + edges + nodes + hub + '</svg>';

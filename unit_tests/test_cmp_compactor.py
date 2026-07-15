@@ -123,6 +123,37 @@ def test_lift_atg_facts():
     assert lift_atg_facts(None) == ([], [], "")
 
 
+# ── token estimates ──────────────────────────────────────────────────────────
+
+def test_path_and_card_token_estimates():
+    from backend.agent_runtime.cmp.compactor import (
+        card_token_estimate, path_token_estimate)
+
+    entries = [
+        {'type': 'user', 'ts': 1100, 'content': 'buatkan laporan invoice ' * 40},
+        {'type': 'tool_call', 'ts': 1200, 'function': 'bash',
+         'params': {'script': 'ls -la ' * 30}},
+        {'type': 'tool_output', 'ts': 1300, 'content': 'X' * 4000},
+        {'type': 'final', 'ts': 1400, 'content': 'laporan selesai'},
+    ]
+    path = {'id': 'A1', 'segments': [[1000, None]],
+            'title': 'Laporan invoice', 'goal': 'buat laporan',
+            'outcome': 'selesai', 'key_facts': ['fakta a', 'fakta b'],
+            'artifacts': ['/out/report.pdf']}
+
+    transcript_tokens = path_token_estimate(FakeChatlog(entries), path)
+    card_tokens = card_token_estimate(path)
+
+    # transcript (tool dumps + prose) dwarfs the compact card
+    assert transcript_tokens > 500
+    assert 0 < card_tokens < 100
+    assert transcript_tokens > card_tokens * 5
+
+    # empty path → 0, never raises
+    assert path_token_estimate(FakeChatlog([]), {'id': 'x', 'segments': []}) == 0
+    assert card_token_estimate({'id': 'x'}) == 0
+
+
 # ── name_path ────────────────────────────────────────────────────────────────
 
 def test_name_path_uses_llm_naming():

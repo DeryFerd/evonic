@@ -166,6 +166,37 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
         return clamp_card_fields(_mechanical_card(path, entries, atg_state))
 
 
+def path_token_estimate(chatlog, path: dict) -> int:
+    """Estimated token size of a path's transcript (its chatlog segments) —
+    what it costs / would cost in the context window. Best-effort, 0 on
+    failure."""
+    try:
+        from backend.llm_usage_events import estimate_tokens
+        total = 0
+        for entry in collect_path_entries(chatlog, path):
+            total += estimate_tokens(str(entry.get('content') or ''))
+            params = entry.get('params')
+            if params:
+                total += estimate_tokens(json.dumps(params, default=str))
+        return total
+    except Exception:
+        _logger.warning("CMP path token estimate failed", exc_info=True)
+        return 0
+
+
+def card_token_estimate(path: dict) -> int:
+    """Estimated token size of a path's IPPC card — the compact structured
+    summary that stays in the context window when the path is offloaded."""
+    try:
+        from backend.llm_usage_events import estimate_tokens
+        parts = [path.get('title'), path.get('goal'), path.get('outcome')]
+        parts.extend(path.get('key_facts') or [])
+        parts.extend(path.get('artifacts') or [])
+        return estimate_tokens('\n'.join(str(p) for p in parts if p))
+    except Exception:
+        return 0
+
+
 def name_path(user_text: str) -> dict:
     """Proper {'title','action'} for a NEW path from the user's request —
     one small LLM call at path creation (raw message excerpts as node names

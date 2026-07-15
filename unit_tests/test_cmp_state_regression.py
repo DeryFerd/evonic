@@ -73,7 +73,9 @@ def test_chat_state_api_exposes_cmp_map():
     # cards carry what the modal needs, nothing sensitive extra
     assert set(cmp['paths'][0]) == {'id', 'title', 'status', 'action', 'goal',
                                     'outcome', 'key_facts', 'artifacts',
-                                    'depends_on', 'last_active'}
+                                    'depends_on', 'last_active',
+                                    'tokens', 'card_tokens'}
+    assert all('tokens' in c and 'card_tokens' in c for c in cmp['paths'])
     # dependency child gets the next level letter
     assert cmp['paths'][1]['id'] == 'B1'
 

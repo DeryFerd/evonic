@@ -320,6 +320,26 @@ function _cmpSelectPath(pathId) {
     _cmpRenderDetail();
 }
 
+/** ids whose transcript is loaded into context = active path + its transitive
+ *  dependency ancestors (mirrors cmp/assembler.build_history). */
+function _cmpLoadedSet(cmp) {
+    var byId = {}, loaded = {};
+    (cmp.paths || []).forEach(function (p) { byId[p.id] = p; });
+    loaded[cmp.active_id] = true;
+    (function walk(id) {
+        var deps = (byId[id] && byId[id].depends_on) || [];
+        for (var i = 0; i < deps.length; i++) {
+            if (byId[deps[i]] && !loaded[deps[i]]) { loaded[deps[i]] = true; walk(deps[i]); }
+        }
+    })(cmp.active_id);
+    return loaded;
+}
+
+function _cmpFmtTokens(n) {
+    n = n || 0;
+    return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+}
+
 function _cmpRenderDetail() {
     var host = document.getElementById('cmp-map-detail');
     if (!host || !_cmpMapData) return;
@@ -329,10 +349,28 @@ function _cmpRenderDetail() {
     }
     if (!p) { host.innerHTML = ''; return; }
     var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
-    var html = '<div class="flex items-center gap-2 mb-1">' +
+
+    // Context cost: loaded paths spend their full transcript; offloaded paths
+    // spend only their IPPC card (the transcript loads on return).
+    var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
+    var tx = p.tokens || 0, cardTok = p.card_tokens || 0;
+    var ctxHtml = '';
+    if (isLoaded) {
+        ctxHtml = '<div class="text-right text-xs leading-tight">' +
+            '<div class="text-green-500 dark:text-green-400 font-semibold">≈ ' + _cmpFmtTokens(tx) + ' tok in context</div>' +
+            '<div class="text-gray-400 dark:text-gray-500 text-[10px]">full transcript loaded</div></div>';
+    } else {
+        ctxHtml = '<div class="text-right text-xs leading-tight">' +
+            '<div class="text-gray-500 dark:text-gray-400 font-semibold">≈ ' + _cmpFmtTokens(cardTok) + ' tok in context</div>' +
+            '<div class="text-gray-400 dark:text-gray-500 text-[10px]">card only · full ≈ ' + _cmpFmtTokens(tx) + ' tok on return</div></div>';
+    }
+
+    var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
+        '<div class="flex items-center gap-2">' +
         '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
         '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
-        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>';
+        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>' +
+        ctxHtml + '</div>';
     if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
     if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
     if (p.key_facts && p.key_facts.length) {
@@ -401,13 +439,7 @@ function _buildCmpSvg(cmp) {
     // "Loaded" set: the active path plus its transitive dependency ancestors —
     // exactly the paths whose transcript stays in the context window (mirrors
     // cmp/assembler.build_history). Rendered dark-green to signal "in memory".
-    var loaded = {}; loaded[cmp.active_id] = true;
-    (function walk(id) {
-        var deps = (byId[id] && byId[id].depends_on) || [];
-        for (var d = 0; d < deps.length; d++) {
-            if (byId[deps[d]] && !loaded[deps[d]]) { loaded[deps[d]] = true; walk(deps[d]); }
-        }
-    })(cmp.active_id);
+    var loaded = _cmpLoadedSet(cmp);
 
     // Radial placement: center at math-origin; angle = middle of the node's
     // arc, radius = depth * ring. Start fanning from the top (-90°).

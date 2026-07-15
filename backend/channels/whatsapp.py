@@ -426,9 +426,14 @@ class WhatsAppChannel(BaseChannel):
         if self._process and self._process.poll() is None:
             self._process.terminate()
             try:
-                self._process.wait(timeout=10)
+                self._process.wait(timeout=15)
             except subprocess.TimeoutExpired:
+                _logger.error(
+                    "WhatsApp bridge did not finish graceful shutdown for channel %s — forcing exit",
+                    self.channel_id,
+                )
                 self._process.kill()
+                self._process.wait(timeout=5)
         self._process = None
         _logger.info("WhatsApp channel %s stopped", self.channel_id)
 

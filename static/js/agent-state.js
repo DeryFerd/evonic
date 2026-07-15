@@ -265,19 +265,24 @@ function _openCmpMap() {
     var existing = document.getElementById('cmp-map-modal');
     if (existing) existing.remove();
 
+    var isMobile = window.innerWidth <= 640;
+
     var overlay = document.createElement('div');
     overlay.id = 'cmp-map-modal';
     overlay.setAttribute('style',
-        'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;' +
-        'justify-content:center;background:rgba(0,0,0,0.55);padding:16px;');
+        'position:fixed;inset:0;z-index:1000;display:flex;justify-content:center;' +
+        'background:rgba(0,0,0,0.55);' +
+        (isMobile ? 'align-items:stretch;padding:0;' : 'align-items:center;padding:16px;'));
     overlay.addEventListener('click', function (e) {
         if (e.target === overlay) _closeCmpMap();
     });
 
     var panel = document.createElement('div');
-    panel.className = 'bg-white dark:bg-gray-800 rounded-lg shadow-xl';
-    panel.setAttribute('style',
-        'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+    panel.className = 'bg-white dark:bg-gray-800 shadow-xl' + (isMobile ? '' : ' rounded-lg');
+    // Mobile: fill the screen (width maxed out); desktop: centered 760px card.
+    panel.setAttribute('style', isMobile
+        ? 'width:100%;max-width:100%;height:100%;overflow-y:auto;padding:14px;'
+        : 'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
 
     panel.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +
@@ -475,9 +480,13 @@ function _buildCmpSvg(cmp) {
     function px(id) { return node[id].x + offX; }
     function py(id) { return node[id].y + offY; }
 
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + Math.round(width) +
-        '" height="' + Math.round(height) + '" viewBox="0 0 ' + Math.round(width) +
-        ' ' + Math.round(height) + '" style="min-width:320px">';
+    // Responsive: the viewBox drives scaling — width:100% up to the natural
+    // size means the map shrinks to fit a narrow (mobile) container instead of
+    // overflowing, and never upscales past its natural size on desktop.
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' +
+        Math.round(width) + ' ' + Math.round(height) +
+        '" style="width:100%;max-width:' + Math.round(width) +
+        'px;height:auto;display:block;margin:0 auto">';
 
     // ── curved edges (drawn first, under nodes) ──────────────────────────────
     function polar(r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }

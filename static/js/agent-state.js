@@ -142,9 +142,6 @@ function _renderAgentStateCore(containerIds, data) {
             'CMP: ' + data.cmp.paths.length + ' cards</span>';
     }
 
-    // Raw JSON for debug
-    var rawJson = JSON.stringify(data, null, 2);
-
     var html = '<div class="space-y-2 text-sm">';
 
     // Status cards row
@@ -167,14 +164,6 @@ function _renderAgentStateCore(containerIds, data) {
         }
         html += '</ul></div>';
     }
-
-    // Debug: raw JSON toggle
-    html += '<div class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">';
-    html += '<div class="flex justify-end">';
-    html += '<button onclick="this.parentElement.nextElementSibling.classList.toggle(\'hidden\');this.textContent=this.parentElement.nextElementSibling.classList.contains(\'hidden\')?\'Show Raw JSON\':\'Hide Raw JSON\'" class="text-[10px] text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline cursor-pointer">Show Raw JSON</button>';
-    html += '</div>';
-    html += '<pre class="hidden mt-1 rounded p-2 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">' + esc(rawJson) + '</pre>';
-    html += '</div>';
 
     html += '</div>';
 

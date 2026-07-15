@@ -229,9 +229,10 @@ async function startBaileys() {
                 statusCode, reasonName);
 
             const requestRepair = (why) => {
-                console.log('[whatsapp-bridge] %s — credentials preserved; manual logout/re-pair required', why);
+                console.log('[whatsapp-bridge] %s — credentials preserved; reconnecting', why);
                 currentQR = null;
                 pushStatus();
+                scheduleRestart();
             };
 
             switch (statusCode) {

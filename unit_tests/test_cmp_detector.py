@@ -33,13 +33,12 @@ def _patch_l2l3(task='complex', boundary=None):
 
 # ── Fully LLM-led: every non-empty message reaches classify_boundary ─────────
 
-def test_every_message_reaches_the_llm():
-    """No keyword short-circuits at all (user requirement): acks, approval
-    particles, follow-ups, overlaps — the LLM owns every routing decision."""
+def test_substantive_messages_reach_the_llm():
+    """Anything long enough to carry a subject reaches the LLM — no keyword
+    topic matching. Short retry/ack messages are guarded (below)."""
     ms = _session()
     ms.cmp['paths']['A2']['artifacts'] = ['/etc/nginx/nginx.conf']
     for msg in (
-        'ok sip',
         'oke lanjutkan sesuai plan itu saja',
         'kenapa hasil konfigurasi server production sekarang masih menunjukkan error timeout',
         'tambahkan gzip compression pada /etc/nginx/nginx.conf untuk semua response text',
@@ -50,6 +49,32 @@ def test_every_message_reaches_the_llm():
             result = detect(ms.cmp, ms, msg)
             assert result['layer'] == 'LLM'
             tc.classify_boundary.assert_called_once()
+
+
+def test_short_retry_message_continues_without_switching():
+    """Live regression: 'coba lagi' during an active turn (interrupted +
+    retried) was classified return->A3 by the LLM, silently abandoning the
+    active path. A short message with no path id can't express a new subject
+    → guarded to continue, LLM not consulted."""
+    ms = _session()  # active = A2
+    for msg in ('coba lagi', 'ok', 'lanjut', 'ulangi ya'):
+        with _patch_l2l3(boundary={'decision': 'return', 'target': 'A1'}):
+            import backend.task_classifier as tc
+            result = detect(ms.cmp, ms, msg)
+            assert result == {'decision': 'continue', 'target': None,
+                              'layer': 'guard', 'reason': result['reason']}
+            tc.classify_boundary.assert_not_called()
+
+
+def test_short_message_with_explicit_path_id_still_reaches_llm():
+    """The guard bypasses when a path id is named ('lanjut A1') so a
+    deliberate short return still works."""
+    ms = _session()
+    with _patch_l2l3(boundary={'decision': 'return', 'target': 'A1'}):
+        import backend.task_classifier as tc
+        result = detect(ms.cmp, ms, 'lanjut A1')
+        assert result['layer'] == 'LLM'
+        tc.classify_boundary.assert_called_once()
 
 
 def test_empty_message_skips_llm():

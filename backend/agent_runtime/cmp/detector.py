@@ -22,6 +22,10 @@ import logging
 
 _logger = logging.getLogger(__name__)
 
+# A message this short can't express a new task subject → never switch on it
+# (retry/ack/continuation). Explicit path-id mentions bypass this rail.
+_SHORT_MSG_MAX_WORDS = 3
+
 
 def _render_cards_for_llm(cmp: dict, ms=None, recent_tail: str = '') -> tuple:
     """(map_text, active_card, other_cards) compact text views for L3."""
@@ -80,6 +84,20 @@ def detect(cmp: dict, ms, user_text: str, recent_tail: str = '') -> dict:
 
     if not text:
         return _done('continue', None, 'guard', 'empty message')
+
+    # Safety rail (NOT topic matching): a very short message with no explicit
+    # path-id cannot express a new task subject, so it can only be a retry /
+    # acknowledgement / continuation of the active work ("coba lagi", "ok",
+    # "lanjut", "ulangi"). Switching paths is a high-cost, silent action —
+    # never justify it on a near-zero-signal message. This prevents an
+    # interrupted-turn retry from being misread as a return to another path
+    # (live: 'coba lagi' during an active B3 turn switched to A3).
+    import re as _re
+    _mentions_pid = _re.search(r'\b[A-Z]\d+\b', text)
+    if len(text.split()) <= _SHORT_MSG_MAX_WORDS and not _mentions_pid:
+        return _done('continue', None, 'guard',
+                     f'short message (<= {_SHORT_MSG_MAX_WORDS} words), no path id — '
+                     'insufficient signal to switch')
 
     from backend.task_classifier import classify_boundary
     map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms, recent_tail)

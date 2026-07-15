@@ -1016,14 +1016,25 @@ def _exec_send_channel_message(args: dict, agent_context: dict) -> dict:
         channel = db.get_channel(target)
         if not channel:
             return {'error': f'Channel \'{target}\' not found.'}
-        # Ownership check
-        if channel.get('agent_id') != sender_id:
-            _logger.warning(
-                "send_channel_message: agent '%s' tried to use "
-                "channel '%s' owned by agent '%s' — blocked.",
-                sender_id, target, channel.get('agent_id'),
-            )
-            return {'error': 'You can only send via your own channels.'}
+        # Ownership check: dedicated channels require matching agent_id;
+        # shared channels (agent_id=None) allow any agent listed in routes.
+        if channel.get('agent_id') is not None:
+            if channel.get('agent_id') != sender_id:
+                _logger.warning(
+                    "send_channel_message: agent '%s' tried to use "
+                    "channel '%s' owned by agent '%s' — blocked.",
+                    sender_id, target, channel.get('agent_id'),
+                )
+                return {'error': 'You can only send via your own channels.'}
+        else:
+            # Shared channel — verify agent is in the route map
+            routes = (channel.get('config') or {}).get('routes') or {}
+            if sender_id not in routes.values():
+                _logger.warning(
+                    "send_channel_message: agent '%s' not in shared channel '%s' routes — blocked.",
+                    sender_id, target,
+                )
+                return {'error': 'You are not authorized to send via this shared channel.'}
         if channel.get('channel_type') == 'web':
             return {'error': 'Cannot send via web channels.'}
 

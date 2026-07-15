@@ -3,6 +3,7 @@
   "name": "Hello World",
   "version": "1.0.0",
   "description": "A simple greeting skill that says hello to anyone.",
+  "default_enabled": false,
   "author": "Evonic",
   "tools_file": "tools.json",
   "variables": []

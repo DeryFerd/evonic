@@ -417,6 +417,7 @@ function _buildCmpSvg(cmp) {
     var NODE_W = 128, NODE_H = 40;
     var R1 = 170, RING = 148;          // radius of first ring, then per level
     var PAD = 24;
+    var isDark = document.documentElement.classList.contains('dark');
 
     // Tree: primary parent = first known dependency, else the Agent hub.
     var byId = {};
@@ -508,7 +509,7 @@ function _buildCmpSvg(cmp) {
             if (label) {
                 var lx = (px(parentId) + px(childId)) / 2, ly = (py(parentId) + py(childId)) / 2;
                 out += '<text x="' + lx.toFixed(1) + '" y="' + (ly - 2).toFixed(1) +
-                    '" text-anchor="middle" font-size="9" fill="currentColor"' +
+                    '" text-anchor="middle" font-size="9" fill="' + (isDark ? 'currentColor' : '#64748b') + '"' +
                     ' opacity="0.6" font-style="italic">' + esc(label.slice(0, 22)) + '</text>';
             }
         }
@@ -537,7 +538,9 @@ function _buildCmpSvg(cmp) {
         // Green fill = memory loaded into context (active = bright, ancestors
         // = darker green); neutral slate otherwise. Stroke keeps status color,
         // but the loaded chain gets a green stroke to reinforce "in context".
-        var fill = isActive ? '#17402a' : (isLoaded ? '#0f2c1c' : '#232c3d');
+        var fill = isActive ? (isDark ? '#17402a' : '#dcfce7') :
+                   (isLoaded ? (isDark ? '#0f2c1c' : '#f0fdf4') :
+                               (isDark ? '#232c3d' : '#f8fafc'));
         var stroke = isActive ? '#22c55e' : (isLoaded ? '#3f9e6a' : st.stroke);
         var nx = nn.x + offX - NODE_W / 2, ny = nn.y + offY - NODE_H / 2;
         var title = (p.title || '').length > 15 ? (p.title || '').slice(0, 14) + '…' : (p.title || '');
@@ -547,10 +550,10 @@ function _buildCmpSvg(cmp) {
             '" stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
             (isActive || isSel ? ' filter="drop-shadow(0 0 4px ' + stroke + ')"' : '') + '/>';
         nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
-            '" font-size="11" font-weight="600" fill="currentColor">' + esc(p.id) +
+            '" font-size="11" font-weight="600" fill="' + (isDark ? 'currentColor' : '#1e293b') + '">' + esc(p.id) +
             (isActive ? ' ●' : '') + '</text>';
         nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 32).toFixed(1) +
-            '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
+            '" font-size="10" fill="' + (isDark ? 'currentColor' : '#475569') + '" opacity="0.75">' + esc(title) + '</text>';
         nodes += '<text x="' + (nx + NODE_W - 8).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
             '" text-anchor="end" font-size="8" fill="' + st.stroke + '">' +
             (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';

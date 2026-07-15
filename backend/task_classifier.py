@@ -75,17 +75,24 @@ The session contains several task paths (below). Decide exactly one:
                     "rebuild the server that hosts it".
   INDEP_BRANCH    - a new goal unrelated to any existing path.
 
-The test is the DELIVERABLE, not the topic: a new imperative goal is a
-BRANCH even when it involves the same project, tools, or domain as the
-active path — especially when the active path's work is already finished.
-CONTINUE only when the message is about the same deliverable the active
-path is producing.
+The test is the SUBJECT/DELIVERABLE, not the size or the phrasing. A message
+about a DIFFERENT subject than the active path (different entity, document,
+project, or kind of work) is a BRANCH or RETURN — never CONTINUE — even if it
+is short or sounds casual. Example: active path is about the user's SCHEDULE
+and the message is "gak usah, tolong checkkan invoice atas nama Intan" — that
+is about invoices, a different subject, so it BRANCHES (or RETURNS to an
+existing invoice path), NOT continue. A dismissal like "gak usah"/"no need"/
+"cancel that" followed by a new request means: classify the NEW request.
 
-Also CONTINUE (never branch) for: approvals or acknowledgements of the
-active path's plan ("ok", "lanjutkan", "ya, setuju"), and small quick
-requests that a few tool calls satisfy — only substantial new goals
-deserve their own path. Explicitly mentioning a path id (e.g. "lanjutkan
-A2") is a RETURN to that path. When genuinely unsure, answer CONTINUE.
+CONTINUE only when the message is about the SAME subject/deliverable the
+active path is producing: feedback, refinement, correction, follow-up, or a
+question about that same work. "Small/quick" alone does not make it a
+continue — a small request on a different subject still branches.
+
+Also CONTINUE for approvals or acknowledgements of the active path's plan
+("ok", "lanjutkan", "ya, setuju"). Explicitly mentioning a path id (e.g.
+"lanjutkan A2") is a RETURN to that path. When you cannot tell whether the
+subject is the same, answer CONTINUE.
 Respond with exactly one token, e.g.: CONTINUE or RETURN:A1 or DEP_BRANCH:A1 or INDEP_BRANCH"""
 
 _BOUNDARY_RE = re.compile(

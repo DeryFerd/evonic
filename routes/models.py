@@ -85,7 +85,7 @@ def api_create_model():
                 "temperature": data.get("temperature"),
                 "enabled": data.get("enabled", 1),
                 "is_default": data.get("is_default", 0),
-                "model_max_concurrent": data.get("model_max_concurrent", 1),
+                "model_max_concurrent": data.get("model_max_concurrent", 3),
                 "context_window": data.get("context_window", 0),
             }
         )

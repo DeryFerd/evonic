@@ -811,7 +811,7 @@ class SchemaMixin:
 
             # Migration: add model_max_concurrent column to llm_models if missing
             try:
-                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 1")
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 3")
             except sqlite3.OperationalError:
                 pass
 

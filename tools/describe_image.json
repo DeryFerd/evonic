@@ -4,7 +4,7 @@
   "description": "Analyze and describe an image using a vision-capable LLM.",
   "function": {
     "name": "describe_image",
-    "description": "Analyze an image file using a vision-capable LLM. Returns a text description of what is in the image. Use this to understand visual content without needing to feed the image directly to the main LLM. Requires the agent to have vision_enabled=1.",
+    "description": "Analyze an image file using a vision-capable LLM and return a text description.",
     "parameters": {
       "properties": {
         "path": {

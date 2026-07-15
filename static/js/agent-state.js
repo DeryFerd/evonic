@@ -254,19 +254,24 @@ function _openCmpMap() {
     var existing = document.getElementById('cmp-map-modal');
     if (existing) existing.remove();
 
+    var isMobile = window.innerWidth <= 640;
+
     var overlay = document.createElement('div');
     overlay.id = 'cmp-map-modal';
     overlay.setAttribute('style',
-        'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;' +
-        'justify-content:center;background:rgba(0,0,0,0.55);padding:16px;');
+        'position:fixed;inset:0;z-index:1000;display:flex;justify-content:center;' +
+        'background:rgba(0,0,0,0.55);' +
+        (isMobile ? 'align-items:stretch;padding:0;' : 'align-items:center;padding:16px;'));
     overlay.addEventListener('click', function (e) {
         if (e.target === overlay) _closeCmpMap();
     });
 
     var panel = document.createElement('div');
-    panel.className = 'bg-white dark:bg-gray-800 rounded-lg shadow-xl';
-    panel.setAttribute('style',
-        'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+    panel.className = 'bg-white dark:bg-gray-800 shadow-xl' + (isMobile ? '' : ' rounded-lg');
+    // Mobile: fill the screen (width maxed out); desktop: centered 760px card.
+    panel.setAttribute('style', isMobile
+        ? 'width:100%;max-width:100%;height:100%;overflow-y:auto;padding:14px;'
+        : 'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
 
     panel.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +
@@ -341,25 +346,30 @@ function _cmpRenderDetail() {
 
     // Per-path context size (independent numbers — NOT cumulative down the
     // dependency chain):
-    //   Full = this path's raw transcript size (what it costs while it is the
-    //          active/loaded path). Green when currently in context.
-    //   Card = its IPPC card — the tiny compressed summary it shrinks to once
-    //          offloaded. The Full→Card gap is exactly the compression CMP buys.
+    //   Full    = this path's raw transcript size (what it costs while it is
+    //             the active/loaded path). Green when currently in context.
+    //   Offload = its IPPC card — the tiny compressed summary it shrinks to
+    //             once offloaded. The Full→Offload gap is the compression CMP buys.
     var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
-    var full = p.tokens || 0, cardTok = p.card_tokens || 0;
-    var ctxHtml = '<div class="text-right text-xs leading-tight">' +
-        '<div class="' + (isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300') +
-        ' font-semibold">Full: ' + _cmpFmtTokens(full) +
-        (isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>') + '</div>' +
-        '<div class="text-gray-400 dark:text-gray-500">Card: ' + _cmpFmtTokens(cardTok) +
-        (isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>') + '</div></div>';
+    var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
+    var fullCls = isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300';
+    var fullNote = isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var offNote = isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>';
+    var isMobile = window.innerWidth <= 640;
+
+    // Desktop: token figures sit top-right of the header. Mobile: they move to
+    // a full-width block at the very bottom (after the note).
+    var ctxHeader = isMobile ? '' :
+        '<div class="text-right text-xs leading-tight">' +
+        '<div class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + fullNote + '</div>' +
+        '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) + offNote + '</div></div>';
 
     var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
         '<div class="flex items-center gap-2">' +
         '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
         '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
         (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>' +
-        ctxHtml + '</div>';
+        ctxHeader + '</div>';
     if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
     if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
     if (p.key_facts && p.key_facts.length) {
@@ -372,6 +382,11 @@ function _cmpRenderDetail() {
     }
     if (p.depends_on && p.depends_on.length) {
         html += '<div class="text-xs text-gray-500 dark:text-gray-400 mt-1">depends on: ' + esc(p.depends_on.join(', ')) + '</div>';
+    }
+    if (isMobile) {
+        html += '<div class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700 flex gap-4 text-xs">' +
+            '<div><span class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + '</span>' + fullNote + '</div>' +
+            '<div><span class="text-gray-500 dark:text-gray-300 font-semibold">Offload: ' + _cmpFmtTokens(offloadTok) + '</span>' + offNote + '</div></div>';
     }
     host.innerHTML = html;
 }
@@ -464,9 +479,13 @@ function _buildCmpSvg(cmp) {
     function px(id) { return node[id].x + offX; }
     function py(id) { return node[id].y + offY; }
 
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + Math.round(width) +
-        '" height="' + Math.round(height) + '" viewBox="0 0 ' + Math.round(width) +
-        ' ' + Math.round(height) + '" style="min-width:320px">';
+    // Responsive: the viewBox drives scaling — width:100% up to the natural
+    // size means the map shrinks to fit a narrow (mobile) container instead of
+    // overflowing, and never upscales past its natural size on desktop.
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' +
+        Math.round(width) + ' ' + Math.round(height) +
+        '" style="width:100%;max-width:' + Math.round(width) +
+        'px;height:auto;display:block;margin:0 auto">';
 
     // ── curved edges (drawn first, under nodes) ──────────────────────────────
     function polar(r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }

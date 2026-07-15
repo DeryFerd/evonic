@@ -596,7 +596,10 @@ class WhatsAppChannel(BaseChannel):
             label = "Replying to bot" if quoted_is_bot else "Replying to"
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 
-        session_id = db.get_or_create_session(agent_id, sender, self.channel_id)
+        if is_group:
+            session_id = db.get_or_create_session(agent_id, jid, self.channel_id)
+        else:
+            session_id = db.get_or_create_session(agent_id, sender, self.channel_id)
 
         # Persist the image to disk and build attachment_info — the in-memory
         # data URL alone is invisible to the agent (images are never auto-fed

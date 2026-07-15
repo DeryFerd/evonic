@@ -2594,9 +2594,6 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         "SECRET_KEY",
         "DEBUG",
         "ADMIN_PASSWORD_HASH",
-        "SANDBOX_NETWORK",
-        "LOG_FULL_THINKING",
-        "LOG_FULL_RESPONSE",
     ]
     for var in important_vars:
         val = os.getenv(var)

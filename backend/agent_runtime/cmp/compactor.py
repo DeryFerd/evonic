@@ -131,7 +131,8 @@ def generate_card(chatlog, path: dict, atg_state=None) -> dict:
              {"role": "user", "content": prompts.CARD_USER.format(
                  transcript=transcript,
                  atg_block=_format_atg_block(atg_state))}],
-            max_tokens=1024, log_label="CMP card")
+            max_tokens=1024, log_label="CMP card",
+            source="cmp", archive_category="card")
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})
@@ -215,7 +216,8 @@ def name_path(user_text: str) -> dict:
             client,
             [{"role": "system", "content": prompts.PATH_NAME_SYSTEM},
              {"role": "user", "content": text[:1000]}],
-            max_tokens=1024, log_label="CMP naming")
+            max_tokens=1024, log_label="CMP naming",
+            source="cmp", archive_category="naming")
         if not response.get('success'):
             raise ValueError(response.get('error_type') or 'LLM call failed')
         msg = (response.get('response', {}).get('choices') or [{}])[0].get('message', {})

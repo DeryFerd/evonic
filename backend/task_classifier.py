@@ -129,7 +129,8 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
             client,
             [{"role": "system", "content": _BOUNDARY_SYSTEM},
              {"role": "user", "content": user_prompt}],
-            max_tokens=1024, log_label="CMP boundary")
+            max_tokens=1024, log_label="CMP boundary",
+            source="cmp", archive_category="boundary")
         _dur = time.time() - _t0
         if not response.get("success"):
             _logger.warning("CMP boundary LLM call failed [%s] (model=%s, %.1fs) — defaulting to continue",
@@ -194,7 +195,8 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
             [{"role": "system",
               "content": _CONTINUATION_SYSTEM.format(goal=previous_goal.strip()[:1000])},
              {"role": "user", "content": text[:4000]}],
-            max_tokens=1024, log_label="CMP continuation")
+            max_tokens=1024, log_label="CMP continuation",
+            source="cmp", archive_category="boundary")
         if not response.get("success"):
             _logger.warning("Continuation classifier LLM call failed: %s",
                             response.get("error_type"))
@@ -211,23 +213,59 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
         return "continuation"
 
 
-def classifier_chat(client, messages, max_tokens: int, log_label: str = "classifier"):
+def classifier_chat(client, messages, max_tokens: int, log_label: str = "classifier",
+                    source: str = None, archive_category: str = None,
+                    agent_id: str = None, session_id: str = None):
     """chat_completion for classifier-style calls, with ONE retry at a doubled
     budget when the model burns the whole max_tokens on implicit reasoning
     (finish_reason=length with empty content → error_type generation_timeout;
     deepseek-style models emit CoT even with thinking off, so any fixed budget
-    occasionally loses the race)."""
-    response = client.chat_completion(
-        messages, tools=None, temperature=0.0, enable_thinking=False,
-        max_tokens=max_tokens)
-    if (not response.get("success")
-            and response.get("error_type") == "generation_timeout"):
-        _logger.info("%s hit generation_timeout (model=%s) — retrying with max_tokens=%d",
-                     log_label, getattr(client, 'model', None), max_tokens * 2)
+    occasionally loses the race).
+    
+    source: value for llm_usage source tag (token monitor).
+    archive_category: if set and SESSION_ARCHIVE enabled, write training example
+        to session_archive.db → cmp table. One of 'boundary', 'card', 'naming'.
+    """
+    from backend.llm_usage_events import usage_context
+    with usage_context(source=source or log_label):
         response = client.chat_completion(
             messages, tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=max_tokens * 2)
-    return response
+            max_tokens=max_tokens)
+        if (not response.get("success")
+                and response.get("error_type") == "generation_timeout"):
+            _logger.info("%s hit generation_timeout (model=%s) — retrying with max_tokens=%d",
+                         log_label, getattr(client, 'model', None), max_tokens * 2)
+            response = client.chat_completion(
+                messages, tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens * 2)
+        
+        # ── Archive CMP training example if configured ──
+        if archive_category and response.get("success"):
+            try:
+                from models.session_archive import SessionArchiver
+                msg_resp = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
+                output = (msg_resp.get("content")
+                          or msg_resp.get("reasoning_content") or "").strip()
+                system_prompt = ""
+                input_text = ""
+                for m in messages:
+                    if m.get("role") == "system":
+                        system_prompt = m.get("content", "")
+                    elif m.get("role") == "user":
+                        input_text = m.get("content", "")
+                SessionArchiver.write_cmp_example(
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    category=archive_category,
+                    system_prompt=system_prompt,
+                    input=input_text,
+                    output=output,
+                    model=getattr(client, 'model', None),
+                )
+            except Exception:
+                _logger.debug("CMP archive write failed", exc_info=True)
+        
+        return response
 
 
 def _get_classifier_client(setting_key: str = 'task_classifier_model_id') -> LLMClient:

@@ -340,22 +340,6 @@ function _cmpFmtTokens(n) {
     return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
 }
 
-/** Transitive dependency ancestors of a specific path (any node, not just
- *  the active one). */
-function _cmpAncestorsOf(cmp, id) {
-    var byId = {}, out = [], seen = {};
-    (cmp.paths || []).forEach(function (p) { byId[p.id] = p; });
-    (function walk(pid) {
-        var deps = (byId[pid] && byId[pid].depends_on) || [];
-        for (var i = 0; i < deps.length; i++) {
-            if (byId[deps[i]] && !seen[deps[i]]) {
-                seen[deps[i]] = true; out.push(deps[i]); walk(deps[i]);
-            }
-        }
-    })(id);
-    return out.map(function (a) { return byId[a]; });
-}
-
 function _cmpRenderDetail() {
     var host = document.getElementById('cmp-map-detail');
     if (!host || !_cmpMapData) return;
@@ -366,21 +350,20 @@ function _cmpRenderDetail() {
     if (!p) { host.innerHTML = ''; return; }
     var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
 
-    // Context cost:
-    //   Card = this path's own IPPC card size.
-    //   Full = its own contribution (full transcript when loaded, else its
-    //          IPPC card when archived/offloaded) + the sum of its ancestors'
-    //          card sizes (their cards are what get pinned into context).
+    // Per-path context size (independent numbers — NOT cumulative down the
+    // dependency chain):
+    //   Full = this path's raw transcript size (what it costs while it is the
+    //          active/loaded path). Green when currently in context.
+    //   Card = its IPPC card — the tiny compressed summary it shrinks to once
+    //          offloaded. The Full→Card gap is exactly the compression CMP buys.
     var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
-    var cardTok = p.card_tokens || 0;
-    var own = isLoaded ? (p.tokens || 0) : cardTok;
-    var ancestorCards = _cmpAncestorsOf(_cmpMapData, p.id)
-        .reduce(function (s, a) { return s + (a.card_tokens || 0); }, 0);
-    var full = own + ancestorCards;
+    var full = p.tokens || 0, cardTok = p.card_tokens || 0;
     var ctxHtml = '<div class="text-right text-xs leading-tight">' +
-        '<div class="' + (isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-600 dark:text-gray-200') +
-        ' font-semibold">Full: ' + _cmpFmtTokens(full) + '</div>' +
-        '<div class="text-gray-400 dark:text-gray-500">Card: ' + _cmpFmtTokens(cardTok) + '</div></div>';
+        '<div class="' + (isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300') +
+        ' font-semibold">Full: ' + _cmpFmtTokens(full) +
+        (isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>') + '</div>' +
+        '<div class="text-gray-400 dark:text-gray-500">Card: ' + _cmpFmtTokens(cardTok) +
+        (isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>') + '</div></div>';
 
     var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
         '<div class="flex items-center gap-2">' +

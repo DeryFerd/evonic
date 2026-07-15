@@ -100,13 +100,16 @@ _BOUNDARY_RE = re.compile(
 
 
 def classify_boundary(map_text: str, active_card: str, other_cards: str,
-                      user_text: str) -> dict:
+                      user_text: str, recent_dialogue: str = "") -> dict:
     """4-class session boundary decision for CMP.
 
     Returns {'decision': 'continue'|'return'|'dep_branch'|'indep_branch',
              'target': 'P<n>'|None}. Defaults to continue on ANY doubt,
     parse failure, or LLM error (precision-first: a false branch severs
     context; a missed branch only costs tokens).
+
+    recent_dialogue: the last few user↔agent turns — grounds terse messages
+    ('coba lagi', 'yang itu aja') so they aren't misrouted.
     """
     fallback = {"decision": "continue", "target": None}
     text = (user_text or "").strip()
@@ -115,9 +118,12 @@ def classify_boundary(map_text: str, active_card: str, other_cards: str,
     try:
         client = _get_classifier_client('cmp_model_id')
         _t0 = time.time()
+        _dialogue = (f"## Recent conversation (for context)\n{recent_dialogue}\n\n"
+                     if recent_dialogue else "")
         user_prompt = (f"## Path map\n{map_text}\n\n"
                        f"## Active path\n{active_card}\n\n"
                        f"## Other paths\n{other_cards}\n\n"
+                       f"{_dialogue}"
                        f"## New message\n{text[:4000]}")
         response = classifier_chat(
             client,

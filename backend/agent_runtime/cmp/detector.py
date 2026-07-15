@@ -2,7 +2,8 @@
 CMP boundary detector — fully LLM-led.
 
 Every user message is routed by task_classifier.classify_boundary (4-class,
-one small LLM call over the map + cards — never transcripts). Keyword-based
+one small LLM call over the map + cards + a short recent-dialogue window —
+never full transcripts). Keyword-based
 short-circuits proved unreliable twice in live use (generic word overlap
 swallowing a new task; approval particles like 'oke'/'ya' swallowing a
 return question), so there are none: situational knowledge that guards used
@@ -65,11 +66,14 @@ def _render_cards_for_llm(cmp: dict, ms=None, recent_tail: str = '') -> tuple:
     return map_text, active, others or '(none)'
 
 
-def detect(cmp: dict, ms, user_text: str, recent_tail: str = '') -> dict:
+def detect(cmp: dict, ms, user_text: str, recent_tail: str = '',
+           recent_dialogue: str = '') -> dict:
     """Classify a user turn. Returns {'decision', 'target', 'layer', 'reason'}.
 
-    recent_tail: excerpt of the agent's latest reply — gives the classifier
-    the just-delivered deliverable that raw (pre-switch) cards don't carry.
+    recent_tail: excerpt of the agent's latest reply — the just-delivered
+    deliverable that raw (pre-switch) cards don't carry.
+    recent_dialogue: the last few user↔agent turns, so terse messages
+    ('coba lagi', 'yang itu aja') are grounded in what just happened.
     Every decision — including `continue` — is logged with its reason, so
     'why didn't it branch?' is answerable from the log.
     """
@@ -101,7 +105,8 @@ def detect(cmp: dict, ms, user_text: str, recent_tail: str = '') -> dict:
 
     from backend.task_classifier import classify_boundary
     map_text, active_card, other_cards = _render_cards_for_llm(cmp, ms, recent_tail)
-    result = classify_boundary(map_text, active_card, other_cards, text)
+    result = classify_boundary(map_text, active_card, other_cards, text,
+                               recent_dialogue=recent_dialogue)
     cmp.setdefault('stats', {})['detector_llm_calls'] = \
         cmp['stats'].get('detector_llm_calls', 0) + 1
     decision, target = result.get('decision'), result.get('target')

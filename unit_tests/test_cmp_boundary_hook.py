@@ -31,6 +31,9 @@ class FakeChatlog:
     def get_last_entry(self, types=None):
         return {'type': 'user', 'ts': self.user_ts}
 
+    def tail(self, limit=24, to_ts=None):
+        return []
+
     def get_entries_between_ts(self, a, b):
         return []
 

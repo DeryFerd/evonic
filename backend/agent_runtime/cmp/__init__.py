@@ -62,7 +62,8 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
         return {'decision': 'init', 'target': ms.cmp['active_id'], 'layer': 'init'}
 
     decision = detector.detect(ms.cmp, ms, text,
-                               recent_tail=_last_final_excerpt(chatlog))
+                               recent_tail=_last_final_excerpt(chatlog),
+                               recent_dialogue=_recent_dialogue(chatlog))
     d, target = decision['decision'], decision.get('target')
     try:
         if d == 'return':
@@ -125,6 +126,29 @@ def _last_final_excerpt(chatlog, max_chars: int = 300) -> str:
         entry = chatlog.get_last_entry(types=frozenset({'final'}))
         content = (entry or {}).get('content') or ''
         return content[:max_chars]
+    except Exception:
+        return ''
+
+
+def _recent_dialogue(chatlog, max_msgs: int = 5, per_msg: int = 400,
+                     max_chars: int = 1600) -> str:
+    """The last few user↔agent turns before the current message — the
+    immediate conversational context the boundary detector needs to ground
+    terse messages ('coba lagi', 'yang itu aja', 'lanjut'). Excludes the
+    current user message (the one being classified, already the newest 'user'
+    entry) so the detector doesn't just echo it back."""
+    try:
+        entries = [e for e in chatlog.tail(limit=24)
+                   if e.get('type') in ('user', 'final', 'intermediate')
+                   and (e.get('content') or '').strip()
+                   and not (e.get('metadata') or {}).get('slash_command')]
+        if entries and entries[-1].get('type') == 'user':
+            entries = entries[:-1]  # drop the message being classified now
+        lines = []
+        for e in entries[-max_msgs:]:
+            role = 'User' if e.get('type') == 'user' else 'Agent'
+            lines.append(f"{role}: {(e.get('content') or '').strip()[:per_msg]}")
+        return '\n'.join(lines)[-max_chars:]
     except Exception:
         return ''
 

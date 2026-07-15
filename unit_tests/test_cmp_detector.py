@@ -66,6 +66,26 @@ def test_short_retry_message_continues_without_switching():
             tc.classify_boundary.assert_not_called()
 
 
+def test_recent_dialogue_reaches_the_boundary_prompt():
+    """The last few turns are passed to classify_boundary so terse messages
+    are grounded in what just happened."""
+    from unittest.mock import MagicMock
+    from backend.task_classifier import classify_boundary
+
+    client = MagicMock()
+    client.chat_completion.return_value = {
+        'success': True,
+        'response': {'choices': [{'message': {'content': 'CONTINUE'}}]}}
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        classify_boundary('map', 'active', 'others',
+                          'coba lagi dong yang barusan itu',
+                          recent_dialogue='User: tolong hapus invoice itu\nAgent: sedang menghapus...')
+    prompt = client.chat_completion.call_args[0][0][1]['content']
+    assert 'Recent conversation' in prompt
+    assert 'tolong hapus invoice itu' in prompt
+
+
 def test_short_message_with_explicit_path_id_still_reaches_llm():
     """The guard bypasses when a path id is named ('lanjut A1') so a
     deliberate short return still works."""
@@ -93,7 +113,7 @@ def test_plan_mode_context_reaches_llm():
     ms.mode = 'plan'
     captured = {}
 
-    def fake_boundary(map_text, active_card, other_cards, user_text):
+    def fake_boundary(map_text, active_card, other_cards, user_text, recent_dialogue=""):
         captured['active'] = active_card
         return {'decision': 'continue', 'target': None}
 
@@ -144,7 +164,7 @@ def test_l3_sees_recent_deliverable_tail():
     ms = _session()
     captured = {}
 
-    def fake_boundary(map_text, active_card, other_cards, user_text):
+    def fake_boundary(map_text, active_card, other_cards, user_text, recent_dialogue=""):
         captured['active'] = active_card
         return {'decision': 'dep_branch', 'target': 'A2'}
 
@@ -167,6 +187,9 @@ def test_hook_passes_last_final_to_detector():
                         'content': 'Invoice sudah selesai dibuat.'}
             return {'type': 'user', 'ts': 5000}
 
+        def tail(self, limit=24, to_ts=None):
+            return []
+
         def get_entries_between_ts(self, a, b):
             return []
 
@@ -187,7 +210,7 @@ def test_l3_sees_finished_task_state():
     ms.atg = {'status': 'done', 'dag': {'root_goal': 'g'}}
     captured = {}
 
-    def fake_boundary(map_text, active_card, other_cards, user_text):
+    def fake_boundary(map_text, active_card, other_cards, user_text, recent_dialogue=""):
         captured['active'] = active_card
         return {'decision': 'continue', 'target': None}
 

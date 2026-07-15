@@ -187,6 +187,9 @@ def test_branch_paths_get_named_at_creation():
         def get_last_entry(self, types=None):
             return {'type': 'user', 'ts': 5000, 'content': 'x'}
 
+        def tail(self, limit=24, to_ts=None):
+            return []
+
         def get_entries_between_ts(self, a, b):
             return []
 

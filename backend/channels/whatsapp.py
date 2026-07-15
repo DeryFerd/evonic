@@ -440,6 +440,7 @@ class WhatsAppChannel(BaseChannel):
     def handle_callback(self, payload: dict):
         """Process incoming message POSTed by the sidecar."""
         from backend.agent_runtime import agent_runtime
+        from backend.slash_commands import parse_command
         from models.db import db
         from backend.event_stream import event_stream
 
@@ -580,14 +581,18 @@ class WhatsAppChannel(BaseChannel):
             _logger.info("WhatsApp message dropped (no usable content): sender=%s", sender)
             return
 
+        # Keep group slash commands raw so the runtime can detect them before
+        # adding the sender context that normal group messages require.
+        group_command = is_group and parse_command(text)
+
         # Prepend group/sender context (groups) or reply context (DMs)
         final_text = text
-        if is_group:
+        if is_group and not group_command:
             final_text = _wrap_group_message(
                 text, group_name, push_name, sender,
                 quoted_text, quoted_is_bot,
                 quoted_sender_name, quoted_sender)
-        elif quoted_text:
+        elif not is_group and quoted_text:
             label = "Replying to bot" if quoted_is_bot else "Replying to"
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 

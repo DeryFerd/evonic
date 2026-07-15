@@ -44,7 +44,8 @@ from backend.tools.read_attachment import (
 )
 
 _ALLOWED_EXTS = (
-    {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.zip'}
+    {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.zip',
+     '.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.epub'}
     | _TEXTISH_EXTS
 )
 

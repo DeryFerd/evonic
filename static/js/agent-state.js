@@ -352,17 +352,17 @@ function _cmpRenderDetail() {
 
     // Per-path context size (independent numbers — NOT cumulative down the
     // dependency chain):
-    //   Full = this path's raw transcript size (what it costs while it is the
-    //          active/loaded path). Green when currently in context.
-    //   Card = its IPPC card — the tiny compressed summary it shrinks to once
-    //          offloaded. The Full→Card gap is exactly the compression CMP buys.
+    //   Full    = this path's raw transcript size (what it costs while it is
+    //             the active/loaded path). Green when currently in context.
+    //   Offload = its IPPC card — the tiny compressed summary it shrinks to
+    //             once offloaded. The Full→Offload gap is the compression CMP buys.
     var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
-    var full = p.tokens || 0, cardTok = p.card_tokens || 0;
+    var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
     var ctxHtml = '<div class="text-right text-xs leading-tight">' +
         '<div class="' + (isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300') +
         ' font-semibold">Full: ' + _cmpFmtTokens(full) +
         (isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>') + '</div>' +
-        '<div class="text-gray-400 dark:text-gray-500">Card: ' + _cmpFmtTokens(cardTok) +
+        '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) +
         (isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>') + '</div></div>';
 
     var html = '<div class="flex items-start justify-between gap-2 mb-1">' +

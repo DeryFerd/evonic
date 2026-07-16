@@ -877,8 +877,11 @@ def _on_final_answer(data: dict) -> None:
         result = notify_agent(**notify_kwargs)
         if result.get('success'):
             _logger.info(
-                "Auto-forward: '%s' reply forwarded to '%s' session '%s' (channel=%s).",
-                agent_b_id, sender_id, result.get('session_id'), report_to_channel_id or 'none',
+                "Auto-forward: '%s' reply forwarded to '%s' session '%s' "
+                "(requested_channel=%s, route=%s, fallback_reason=%s).",
+                agent_b_id, sender_id, result.get('session_id'),
+                report_to_channel_id or 'none', result.get('route', 'direct'),
+                result.get('fallback_reason') or 'none',
             )
         else:
             _logger.warning(

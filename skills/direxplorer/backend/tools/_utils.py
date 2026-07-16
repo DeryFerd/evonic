@@ -3,34 +3,51 @@ Shared utilities for FastContext tools — Grep, Glob, Read.
 
 Provides _auto_correct_path for hallucinated-path fallback resolution.
 """
+import json
 import os
-import glob as _glob
+import posixpath
 
 
-def _auto_correct_path(requested_path: str, workspace: str, path_is_dir: bool = False) -> str:
-    """If the requested path doesn't exist, try glob-resolving from workspace root.
+def _backend(agent: dict):
+    from backend.tools.lib.exec_backend import registry
+    return registry.get_backend((agent or {}).get('session_id') or 'default', agent or {})
 
-    The FastContext model often hallucinates paths (e.g. 'skills/' instead of
-    'evonic/skills/'). This fallback searches for a suffix match. Returns the
-    original path if nothing is found.
-    """
-    if os.path.exists(requested_path):
-        return requested_path
 
-    if not os.path.isdir(workspace):
-        return requested_path
+def _run_python_json(backend, code: str, timeout: int = 30):
+    result = backend.run_python(code, timeout, {})
+    if result.get('error'):
+        raise RuntimeError(result['error'])
+    if result.get('exit_code', 0) != 0:
+        raise RuntimeError(result.get('stderr') or 'backend path operation failed')
+    try:
+        return json.loads(result.get('stdout', '').strip())
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError('backend returned invalid path metadata') from exc
 
-    basename = os.path.basename(requested_path.rstrip(os.sep)) or requested_path.rstrip(os.sep)
 
-    pattern = os.path.join(workspace, '**', basename)
-    matches = _glob.glob(pattern, recursive=True)
+def _path_info(backend, path: str) -> dict:
+    code = f'''import json, os
+p = {path!r}
+print(json.dumps({{"path": os.path.realpath(p), "exists": os.path.exists(p), "is_dir": os.path.isdir(p), "is_file": os.path.isfile(p), "size": os.path.getsize(p) if os.path.isfile(p) else 0}}))'''
+    return _run_python_json(backend, code)
 
-    if path_is_dir:
-        matches = [m for m in matches if os.path.isdir(m)]
-    else:
-        matches = [m for m in matches if os.path.isfile(m)]
 
-    return sorted(matches)[0] if matches else requested_path
+def _auto_correct_path(backend, requested_path: str, workspace: str, path_is_dir: bool = False) -> str:
+    """Resolve a hallucinated path suffix within the execution backend."""
+    code = f'''import json, os
+requested, workspace, want_dir = {requested_path!r}, {workspace!r}, {path_is_dir!r}
+result = requested
+if not os.path.exists(requested) and os.path.isdir(workspace):
+    name = os.path.basename(requested.rstrip(os.sep))
+    matches = []
+    for root, dirs, files in os.walk(workspace):
+        candidates = dirs if want_dir else files
+        if name in candidates:
+            matches.append(os.path.join(root, name))
+    if matches:
+        result = sorted(matches)[0]
+print(json.dumps(result))'''
+    return _run_python_json(backend, code)
 
 
 def _is_kb_vault_path(path: str) -> bool:
@@ -49,24 +66,37 @@ def _is_kb_vault_path(path: str) -> bool:
 
 
 def _resolve_workspace(agent: dict, path: str) -> str:
-    """Resolve a file path against the agent's workspace.
-
-    Handles three cases:
-    1. /workspace sandbox prefix → maps to agent's host workspace
-       (e.g. /workspace/skills → /home/user/dev/evonic/skills)
-    2. Relative paths → joins with agent's workspace
-    3. Absolute paths → returns os.path.abspath (boundary check done separately)
-    """
-    if path.startswith('/workspace'):
-        workspace_root = (agent or {}).get('workspace', '')
-        rel = path[len('/workspace'):].lstrip('/')
-        resolved = os.path.join(os.path.abspath(workspace_root), rel)
-        return resolved
-
+    """Resolve paths lexically without consulting the host filesystem."""
     workspace = (agent or {}).get('workspace', '')
-    if workspace and not os.path.isabs(path):
-        return os.path.join(os.path.abspath(workspace), path)
-    return os.path.abspath(path)
+    if path == '/workspace' or path.startswith('/workspace/'):
+        path = posixpath.join(workspace, path[len('/workspace'):].lstrip('/'))
+    elif workspace and not posixpath.isabs(path):
+        path = posixpath.join(workspace, path)
+    return posixpath.abspath(path)
+
+
+def _prepare_path(agent: dict, path: str, *, want_dir: bool | None = None) -> tuple:
+    """Resolve and canonically confine a path inside the backend workspace."""
+    backend = _backend(agent)
+    resolved = backend.resolve_path(_resolve_workspace(agent, path))
+    workspace = backend.resolve_path(_resolve_workspace(agent, '.'))
+    lexical = posixpath.normpath(resolved)
+    workspace_lexical = posixpath.normpath(workspace)
+    if workspace and lexical != workspace_lexical and not lexical.startswith(workspace_lexical + '/'):
+        raise PermissionError("Access denied: path escapes workspace")
+    info = _path_info(backend, lexical)
+    workspace_info = _path_info(backend, workspace_lexical)
+    canonical, canonical_ws = info['path'], workspace_info['path']
+    if canonical != canonical_ws and not canonical.startswith(canonical_ws.rstrip('/') + '/'):
+        raise PermissionError("Access denied: path escapes workspace")
+    if not info['exists'] and workspace:
+        corrected = _auto_correct_path(backend, lexical, workspace_lexical, want_dir is True)
+        if corrected != lexical:
+            info = _path_info(backend, corrected)
+            canonical = info['path']
+            if canonical != canonical_ws and not canonical.startswith(canonical_ws.rstrip('/') + '/'):
+                raise PermissionError("Access denied: path escapes workspace")
+    return backend, canonical, info
 
 
 def _validate_workspace_boundary(resolved_path: str, workspace: str) -> str:

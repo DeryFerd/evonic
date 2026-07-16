@@ -281,10 +281,10 @@ function _openCmpMap() {
 
     var panel = document.createElement('div');
     panel.className = 'bg-white dark:bg-gray-800 shadow-xl' + (isMobile ? '' : ' rounded-lg');
-    // Mobile: fill the screen (width maxed out); desktop: centered 760px card.
+    // Mobile: fill the screen; desktop: fixed 700×550px card.
     panel.setAttribute('style', isMobile
         ? 'width:100%;max-width:100%;height:100%;overflow-y:auto;padding:14px;'
-        : 'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+        : 'width:700px;height:550px;overflow-y:auto;padding:20px;');
 
     panel.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +

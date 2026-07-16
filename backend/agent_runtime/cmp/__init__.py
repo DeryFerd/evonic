@@ -54,7 +54,9 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
         ms.cmp = store.new_cmp(ms, title=title or text[:60] or 'Session start',
                                goal=text[:300], now_ts=user_ts)
         if not title:  # raw message as title reads badly on the map — name it
-            _apply_naming(ms.cmp['paths'][ms.cmp['active_id']], text)
+            named = detector.detect(ms.cmp, ms, text,
+                                    initializing=True).get('new_path')
+            _apply_naming(ms.cmp['paths'][ms.cmp['active_id']], named)
         _emit(agent, 'cmp_path_created',
               {'path_id': ms.cmp['active_id'],
                'title': ms.cmp['paths'][ms.cmp['active_id']]['title'],
@@ -65,6 +67,11 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
                                recent_tail=_last_final_excerpt(chatlog),
                                recent_dialogue=_recent_dialogue(chatlog))
     d, target = decision['decision'], decision.get('target')
+    # The delta describes the just-completed turn on the (still) active path;
+    # apply it before any switch/branch suspends that path.
+    if decision.get('card_delta'):
+        store.apply_card_delta(store.active_path(ms.cmp),
+                               decision['card_delta'])
     try:
         if d == 'return':
             finalize_active_card(chatlog, ms.cmp, ms)
@@ -77,7 +84,7 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
                 ms.cmp, ms, title=text[:60], goal=text[:300],
                 depends_on=[target] if (d == 'dep_branch' and target) else [],
                 now_ts=user_ts)
-            _apply_naming(record, text)
+            _apply_naming(record, decision.get('new_path'))
             decision['target'] = record['id']
             _emit(agent, 'cmp_path_created',
                   {'path_id': record['id'], 'depends_on': record['depends_on'],
@@ -94,18 +101,20 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
     return decision
 
 
-def _apply_naming(record: dict, user_text: str) -> None:
-    """Replace the mechanical raw-message title/action with a proper name
-    (one small LLM call at path creation). Best-effort — never blocks."""
-    try:
-        from backend.agent_runtime.cmp.compactor import name_path
-        named = name_path(user_text)
-        if named.get('title'):
-            record['title'] = named['title']
-        if named.get('action'):
-            record['action'] = named['action']
-    except Exception:
-        pass
+def _apply_naming(record: dict, named) -> None:
+    """Set a new path's title/action ONCE, from the single-pass envelope's
+    in-context naming. Both fields are immutable afterwards (map node labels
+    and edges never change). Falls back to the mechanical raw-message
+    title/action already on the record when the envelope carried no name."""
+    if not isinstance(named, dict):
+        return
+    from backend.agent_runtime.cmp import store
+    title = str(named.get('title') or '').strip()
+    action = str(named.get('action') or '').strip()
+    if title:
+        record['title'] = title[:store.TITLE_MAX]
+    if action:
+        record['action'] = action[:store.ACTION_MAX]
 
 
 def _current_work_title(ms) -> str:
@@ -119,9 +128,10 @@ def _current_work_title(ms) -> str:
     return ''
 
 
-def _last_final_excerpt(chatlog, max_chars: int = 300) -> str:
+def _last_final_excerpt(chatlog, max_chars: int = 1000) -> str:
     """Excerpt of the agent's latest final reply — the just-delivered
-    deliverable, fed to the boundary classifier for context."""
+    deliverable, fed to the single-pass turn call both as routing context
+    and as the substance for the active path's card delta."""
     try:
         entry = chatlog.get_last_entry(types=frozenset({'final'}))
         content = (entry or {}).get('content') or ''

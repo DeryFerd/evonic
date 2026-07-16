@@ -181,3 +181,55 @@ def test_dependency_ancestors_bounded():
     assert store.dependency_ancestors(ms.cmp, 'C1') == ['B1', 'A1']
     assert store.dependency_ancestors(ms.cmp, 'C1', max_depth=1) == ['B1']
     assert store.dependency_ancestors(ms.cmp, 'A1') == []
+
+
+# ── apply_card_delta (single-pass turn op, deterministic layer) ──────────────
+
+def test_apply_card_delta_updates_only_card_content():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    p1['action'] = 'do first'
+    before = {k: p1[k] for k in ('id', 'title', 'action', 'depends_on',
+                                 'segments', 'status')}
+    store.apply_card_delta(p1, {
+        'outcome': 'draft reviewed by user',
+        'new_facts': ['user wants weekly cadence'],
+        'new_artifacts': ['/out/report.pdf'],
+        # hostile fields the delta op must ignore (node identity is immutable)
+        'title': 'RENAMED', 'action': 'renamed', 'id': 'Z9',
+        'depends_on': ['Z9'], 'status': 'archived',
+    })
+    assert p1['outcome'] == 'draft reviewed by user'
+    assert p1['key_facts'] == ['user wants weekly cadence']
+    assert p1['artifacts'] == ['/out/report.pdf']
+    for key, val in before.items():
+        assert p1[key] == val, key
+
+
+def test_apply_card_delta_appends_dedupes_and_caps():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    store.apply_card_delta(p1, {'new_facts': ['fact 1', 'fact 2']})
+    store.apply_card_delta(p1, {'new_facts': ['fact 2', 'fact 3']})  # dedupe
+    assert p1['key_facts'] == ['fact 1', 'fact 2', 'fact 3']
+    # overflow keeps the newest facts
+    store.apply_card_delta(p1, {'new_facts': [f'fact {i}' for i in range(4, 10)]})
+    assert len(p1['key_facts']) == store.KEY_FACTS_MAX
+    assert p1['key_facts'][-1] == 'fact 9' and 'fact 1' not in p1['key_facts']
+    # empty outcome never clobbers the existing one
+    p1['outcome'] = 'standing outcome'
+    store.apply_card_delta(p1, {'outcome': '', 'new_facts': None})
+    assert p1['outcome'] == 'standing outcome'
+
+
+def test_apply_card_delta_clamps_and_survives_garbage():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    store.apply_card_delta(p1, {'outcome': 'o' * 999,
+                                'new_facts': ['f' * 999, '', 42],
+                                'new_artifacts': 'not-a-list'})
+    assert len(p1['outcome']) == store.OUTCOME_MAX
+    assert p1['key_facts'] == ['f' * store.KEY_FACT_CHARS, '42']
+    assert p1['artifacts'] == []
+    store.apply_card_delta(p1, None)          # non-dict deltas are no-ops
+    store.apply_card_delta(p1, 'garbage')

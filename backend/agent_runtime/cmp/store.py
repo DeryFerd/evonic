@@ -52,6 +52,39 @@ def clamp_card_fields(card: dict) -> dict:
     return card
 
 
+# Card fields the delta op may touch. Everything else on a path record —
+# id, title, action, depends_on, segments, status, snapshots — is immutable
+# to the LLM (title/action/depends_on are set once at creation; the map's
+# node labels and edges never change afterwards).
+_DELTA_APPEND_FIELDS = (
+    ("new_facts", "key_facts", KEY_FACTS_MAX),
+    ("new_artifacts", "artifacts", ARTIFACTS_MAX),
+)
+
+
+def apply_card_delta(path: dict, delta: dict) -> None:
+    """Deterministic, append-only card update from a single-pass turn op
+    (evomem-writer style: the LLM emits a delta, this applies it under the
+    graph's immutability invariants). `outcome` replaces; facts/artifacts
+    append with exact dedupe, capped keep-newest. Never touches node
+    identity (id/title/action/depends_on) or lifecycle fields."""
+    if not isinstance(path, dict) or not isinstance(delta, dict):
+        return
+    outcome = str(delta.get("outcome") or "").strip()
+    if outcome:
+        path["outcome"] = outcome[:OUTCOME_MAX]
+    for delta_key, field, cap in _DELTA_APPEND_FIELDS:
+        new_items = delta.get(delta_key)
+        if not isinstance(new_items, list):
+            continue
+        items = [str(v)[:KEY_FACT_CHARS] for v in (path.get(field) or [])]
+        for item in new_items:
+            text = str(item).strip()[:KEY_FACT_CHARS]
+            if text and text not in items:
+                items.append(text)
+        path[field] = items[-cap:]
+
+
 def _id_sort_key(pid: str):
     m = _PATH_ID_RE.match(pid or '')
     return (m.group(1), int(m.group(2))) if m else (pid, 0)

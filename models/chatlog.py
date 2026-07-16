@@ -583,6 +583,31 @@ def _fix_interleaved_user_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str,
     return result
 
 
+def _compact_tool_output(content: str) -> str:
+    """Re-apply the live-turn tool-output safety passes when history is
+    rebuilt from the chatlog. The chatlog stores tool outputs RAW (the UI
+    detail view needs them), but the live call only ever sent a compressed/
+    truncated version — without this, a single oversized output re-enters
+    the NEXT turn's prompt at full size (live: one 281k-char Explore result
+    blew a 16k-token prompt up to 339k and tripped the provider's context
+    limit, forcing emergency compaction)."""
+    if not content:
+        return content or ''
+    from config import AGENT_MAX_TOOL_RESULT_CHARS
+    if len(content) <= AGENT_MAX_TOOL_RESULT_CHARS:
+        return content
+    try:
+        from backend.token_compressor.base64_filter import strip_base64_blobs
+        content = strip_base64_blobs(content)
+    except Exception:
+        pass
+    if len(content) > AGENT_MAX_TOOL_RESULT_CHARS:
+        remaining = len(content) - AGENT_MAX_TOOL_RESULT_CHARS
+        content = (content[:AGENT_MAX_TOOL_RESULT_CHARS] +
+                   f"\n...[truncated — {remaining} chars omitted]")
+    return content
+
+
 def _reconstruct_llm_messages(entries: List[dict],
                               trail_mode: bool = False) -> List[Dict[str, Any]]:
     """Convert a list of JSONL entries to the OpenAI messages array format.
@@ -732,7 +757,7 @@ def _reconstruct_llm_messages(entries: List[dict],
             messages.append({
                 'role': 'tool',
                 'tool_call_id': tc_id,
-                'content': content,
+                'content': _compact_tool_output(content),
             })
             i += 1
 

@@ -199,6 +199,10 @@ def parse_manual_spawn(script: str) -> Optional[dict]:
     if script.lstrip().startswith(BYPASS_MARKER):
         return None
 
+    # Join backslash-newline continuations so multi-line spawn commands are
+    # captured in full — the spawn regexes stop at a literal newline.
+    script = re.sub(r'\\\n\s*', ' ', script)
+
     # tmux new-session -d -s NAME 'cmd'
     m = _TMUX_SPAWN_RE.search(script)
     if m:
@@ -212,7 +216,7 @@ def parse_manual_spawn(script: str) -> Optional[dict]:
                 "log_file": "",
                 "pid_file": "",
                 "pgrep_pattern": "",
-                "command": ("tmux " + seg.strip())[:200],
+                "command": m.group(0).strip()[:1000],
             }
 
     # screen -dmS NAME cmd  (or -d -m -S NAME)
@@ -228,7 +232,7 @@ def parse_manual_spawn(script: str) -> Optional[dict]:
                 "log_file": "",
                 "pid_file": "",
                 "pgrep_pattern": "",
-                "command": ("screen " + seg.strip())[:200],
+                "command": m.group(0).strip()[:1000],
             }
 
     # nohup CMD [> log 2>&1] &  [echo $! > pidfile]
@@ -256,7 +260,7 @@ def parse_manual_spawn(script: str) -> Optional[dict]:
             "log_file": log_m.group(1) if log_m else "",
             "pid_file": pid_m.group(1) if pid_m else "",
             "pgrep_pattern": "" if pid_m else command[:80].strip('"\''),
-            "command": ("nohup " + command)[:200],
+            "command": ("nohup " + command)[:1000],
         }
 
     return None

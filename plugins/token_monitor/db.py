@@ -22,6 +22,7 @@ DB_PATH = os.path.join(PLUGIN_DB_DIR, 'token_monitor.db')
 _SUBAGENT_RE = re.compile(r'_sub_\d+$')
 _EXPLORER_RE = re.compile(r'_explorer_\d+$')
 _ORGANIZER_RE = re.compile(r'_organizer_\d+$')
+_TEST_RE = re.compile(r'^test_')
 
 
 def _now() -> str:
@@ -120,6 +121,7 @@ class UsageDB:
             aid = r.get('agent_id') or ''
             r['is_explorer'] = bool(_EXPLORER_RE.search(aid))
             r['is_organizer'] = bool(_ORGANIZER_RE.search(aid))
+            r['is_test'] = bool(_TEST_RE.match(aid))
         merged: Dict[str, Dict[str, Any]] = {}
         standalone: List[Dict[str, Any]] = []
         for r in rows:
@@ -131,6 +133,7 @@ class UsageDB:
                     'agent_name': r.get('agent_name'),
                     'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
                     'total_tokens': 0, 'is_explorer': True, 'is_organizer': False,
+                    'is_test': False,
                 })
                 for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                     acc[f] += r.get(f, 0)
@@ -141,6 +144,18 @@ class UsageDB:
                     'agent_name': r.get('agent_name'),
                     'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
                     'total_tokens': 0, 'is_explorer': False, 'is_organizer': True,
+                    'is_test': False,
+                })
+                for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    acc[f] += r.get(f, 0)
+            elif _TEST_RE.match(aid):
+                # Roll all test_* agents into a single "test_*" group
+                acc = merged.setdefault('test_*', {
+                    'agent_id': 'test_*',
+                    'agent_name': 'test agents',
+                    'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
+                    'total_tokens': 0, 'is_explorer': False, 'is_organizer': False,
+                    'is_test': True,
                 })
                 for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                     acc[f] += r.get(f, 0)
@@ -152,6 +167,7 @@ class UsageDB:
                     'agent_name': r.get('agent_name'),
                     'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
                     'total_tokens': 0, 'is_explorer': False, 'is_organizer': False,
+                    'is_test': False,
                 })
                 for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                     acc[f] += r.get(f, 0)

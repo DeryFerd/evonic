@@ -2,20 +2,20 @@
   "id": "list_artifacts",
   "name": "List Artifacts",
   "description": "List and search your artifact files. Supports filename filtering, content searching (text files only), type filtering, sorting, and result limiting.",
-  "system_prompt": "## Artifact Listing\nYou can list and search your artifact files with the **list_artifacts** tool:\n- `filter`: case-insensitive substring match on filename (e.g. `filter=\"report\"`)\n- `grep`: case-insensitive content search inside text/document files only — skipped for images, videos, sound, and binary data\n- `type`: filter by category — `document`, `text`, `image`, `sound`, `video`, `data`, or leave empty for all\n- `sort`: `newest` (default), `updated`, `alpha`, `alpha_desc`\n- `limit`: maximum results (default 50, max 200)\n\nUse this tool when you need to find artifacts you previously saved with `save_artifact`.",
+  "system_prompt": "## Artifact Listing\nYou can list and search your artifact files with the **list_artifacts** tool:\n- `filter`: case-insensitive substring match on filename (e.g. `filter=\"report\"`)\n- `grep`: case-insensitive content search inside text/document files only \u2014 skipped for images, videos, sound, and binary data\n- `type`: filter by category \u2014 `document`, `text`, `image`, `sound`, `video`, `data`, or leave empty for all\n- `sort`: `newest` (default), `updated`, `alpha`, `alpha_desc`\n- `limit`: maximum results (default 50, max 200)\n\nUse this tool when you need to find artifacts you previously saved with `save_artifact`.",
   "function": {
     "name": "list_artifacts",
-    "description": "List and search your artifact files. Supports filename filtering, content searching (text files only), type filtering, sorting, and result limiting.",
+    "description": "List and search your artifact files.",
     "parameters": {
       "type": "object",
       "properties": {
         "filter": {
           "type": "string",
-          "description": "Case-insensitive substring filter on filename. Example: 'report' matches report.md, report-2026.pdf, etc."
+          "description": "Case-insensitive substring filter on filename."
         },
         "grep": {
           "type": "string",
-          "description": "Case-insensitive content search. Only searches inside text and document files (txt, md, json, csv, log, source code, etc.). Skipped for images, videos, sound, and binary data."
+          "description": "Case-insensitive content search in text files only."
         },
         "type": {
           "type": "string",
@@ -23,7 +23,7 @@
         },
         "sort": {
           "type": "string",
-          "description": "Sort order. One of: newest (default, by modification time), updated (same as newest), alpha (alphabetical A-Z), alpha_desc (alphabetical Z-A)."
+          "description": "Sort order: newest, updated, alpha, alpha_desc."
         },
         "limit": {
           "type": "integer",

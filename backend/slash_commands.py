@@ -141,6 +141,8 @@ def _register_builtins():
             'plan_file': fresh.plan_file,
             'states': fresh.states,
             'auto_trivial': fresh.auto_trivial,
+            'atg': None,   # full-replace already wipes these; explicit for clarity
+            'cmp': None,
         }
         db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
         # Global: reset focus only
@@ -796,6 +798,15 @@ def _register_builtins():
         if session_content:
             sess_ms = AgentState.deserialize(session_content)
             lines.append(f"Mode: {sess_ms.mode}")
+            if sess_ms.cmp and sess_ms.cmp.get('paths'):
+                _paths = sess_ms.cmp['paths']
+                _active = _paths.get(sess_ms.cmp.get('active_id')) or {}
+                _dormant = sum(1 for p in _paths.values() if p.get('status') == 'dormant')
+                _archived = sum(1 for p in _paths.values() if p.get('status') == 'archived')
+                lines.append(
+                    f"Paths: {len(_paths)} (active: {_active.get('id')} "
+                    f"\"{_active.get('title', '')[:40]}\"; "
+                    f"{_dormant} dormant, {_archived} archived)")
             if sess_ms.plan_file:
                 # Try per-agent path first, then fallback to legacy centralized path
                 project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
@@ -966,6 +977,18 @@ def _register_builtins():
 
             prov_names = {p["id"]: p.get("name", p["id"]) for p in providers}
 
+            # Web renders responses as markdown, where "21. name" becomes an
+            # ordered-list item and gets renumbered sequentially — hiding the
+            # real shortcode. Escape the dot so the number renders verbatim.
+            # Messaging channels show plain text, so keep the plain dot there.
+            is_compact = False
+            if channel_id:
+                channel = db.get_channel(channel_id)
+                if channel:
+                    ch_type = channel.get("type", "")
+                    is_compact = ch_type in ("telegram", "whatsapp", "whatsapp_shared")
+            dot = "." if is_compact else "\\."
+
             def _sort_key(m):
                 sc = m.get("shortcode")
                 return sc if isinstance(sc, int) else 1_000_000
@@ -981,9 +1004,9 @@ def _register_builtins():
                     model_name = m.get("model_name", "")
                     is_current = " ✓" if m.get("id") == current_id else ""
                     if model_name:
-                        lines.append(f"{sc}. {name} ({model_name}){is_current}")
+                        lines.append(f"{sc}{dot} {name} ({model_name}){is_current}")
                     else:
-                        lines.append(f"{sc}. {name}{is_current}")
+                        lines.append(f"{sc}{dot} {name}{is_current}")
                 lines.append("")
 
             if current:
@@ -993,7 +1016,11 @@ def _register_builtins():
                 lines.append("**Current:** none")
             lines.append("")
             lines.append("Type /model <number> or /model <provider/model> to switch.")
-            return "\n".join(lines)
+            # Web: escaped-dot lines are plain paragraphs, so they need a
+            # blank line between them to render one model per line.
+            if is_compact:
+                return "\n".join(lines)
+            return "\n\n".join(l for l in lines if l)
 
         # Set model
         new_model_id = args.strip()

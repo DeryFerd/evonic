@@ -282,6 +282,14 @@ class RealtimeConnection:
 # SSE formatting helpers
 # ---------------------------------------------------------------------------
 
+def _json_default(obj):
+    """Custom JSON default handler: convert non-serializable types to strings."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    log.warning("_format_sse_event: non-serializable type %s in SSE data", type(obj).__name__)
+    return str(obj)
+
+
 def _format_sse_event(event_name: str, data: dict, seq_id: str = None,
                        global_seq: int = None) -> str:
     """Format a single SSE event with optional id and event fields."""
@@ -292,7 +300,7 @@ def _format_sse_event(event_name: str, data: dict, seq_id: str = None,
         lines.append(f"id: {global_seq}")
     if event_name:
         lines.append(f"event: {event_name}")
-    lines.append(f"data: {json.dumps(data, separators=(',', ':'))}")
+    lines.append(f"data: {json.dumps(data, separators=(',', ':'), default=_json_default)}")
     return "\n".join(lines) + "\n\n"
 
 

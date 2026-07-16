@@ -180,8 +180,28 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
         'plan_file': data.get('plan_file'),
         'states': data.get('states', {}),
         'auto_trivial': data.get('auto_trivial', False),
+        'atg': data.get('atg'),
+        'cmp': data.get('cmp'),
     })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
+
+
+def _persist_context_usage(session_id, agent_id, usage):
+    """Merge a 'context_usage' key into session_state.
+
+    Feeds the Session State panel's context monitor: usage comes from the
+    provider's reported token counts on the last successful LLM call.
+    Merge-write (like _persist_agent_state_split) so other keys survive.
+    """
+    raw = db.get_session_state(session_id, agent_id=agent_id)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data['context_usage'] = usage
+    db.upsert_session_state(session_id, json.dumps(data), agent_id=agent_id)
 from backend.tools import tool_registry
 from config import (AGENT_MAX_TOOL_ITERATIONS as MAX_TOOL_ITERATIONS,
                     AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS,
@@ -443,6 +463,14 @@ def run_tool_loop(agent: Dict[str, Any],
     # Create LLMClient with resolved model config
     llm = LLMClient(model_config=agent_model_config) if agent_model_config else llm_client
 
+    # ATG: give the compile_task_graph builtin access to the resolved LLM.
+    # Compiler calls acquire llm_lock per call (same discipline as the main call).
+    if agent_context.get('enable_atg'):
+        agent_context['_atg_runtime'] = {
+            'llm': llm, 'llm_lock': llm_lock,
+            'llm_log_path': llm_log_path, 'tools': tools,
+        }
+
     # Resolve thinking budget: only active when explicitly set per-model (thinking_budget > 0).
     # Models with thinking_budget=0 have no cap — intended for large models that benefit
     # from extended reasoning. Set thinking_budget per-model in Settings for small models.
@@ -569,6 +597,64 @@ def run_tool_loop(agent: Dict[str, Any],
     # to avoid redundant DB reads in the loop iterations and tool result scans.
     _agent_ig_config = _get_agent_config_ig(agent_id)
 
+    # ── ATG branch point ──────────────────────────────────────────────────
+    # When the agent has a compiled task graph awaiting execution, run it
+    # first: the executor front-loads the tool work (parallel waves, per-node
+    # state) and hands a summary to this loop, whose next LLM call composes
+    # the final answer. Any failure degrades to the plain loop below —
+    # this block never replaces the loop's exit paths.
+    _atg_ms = agent_context.get('agent_state')
+    if (agent_context.get('enable_atg') and _atg_ms is not None
+            and not getattr(_atg_ms, 'auto_trivial', False)
+            and _atg_ms.mode == 'execute'
+            and isinstance(getattr(_atg_ms, 'atg', None), dict)
+            and _atg_ms.atg.get('status') in ('compiled', 'executing')):
+        _atg_outcome = None
+        try:
+            from backend.agent_runtime import atg as _atg_pkg
+            _atg_outcome = _atg_pkg.run_dag_execution(
+                agent=agent, agent_context=agent_context, ms=_atg_ms,
+                stop_event=stop_event, builtin_exec=builtin_exec,
+                real_exec=real_exec, chatlog=chatlog, tool_trace=tool_trace,
+                timeline=timeline, session_id=session_id,
+                persist_cb=lambda: _persist_agent_state_split(
+                    _atg_ms, agent_id, session_id, db_agent_id))
+        except Exception:
+            _logger.exception("ATG execution crashed — falling back to plain loop")
+        if _atg_outcome is not None:
+            try:
+                _persist_agent_state_split(_atg_ms, agent_id, session_id, db_agent_id)
+            except Exception:
+                _logger.exception("ATG state persist failed")
+            if _atg_outcome.stopped:
+                stop_event.clear()
+                _logger.info("Stop signal received during ATG execution for session %s", session_id)
+                stop_msg = "Agent stopped by user request."
+                _atg_stop_dur = round(time.time() - _loop_start_time, 1)
+                db.add_chat_message(session_id, 'assistant', stop_msg, agent_id=db_agent_id,
+                                    metadata={"timeline": timeline, "stopped": True,
+                                              "thinking_duration": _atg_stop_dur})
+                chatlog.append({'type': 'final', 'session_id': session_id, 'content': stop_msg,
+                                'metadata': {'stopped': True, 'thinking_duration': _atg_stop_dur}})
+                chatlog.append({'type': 'turn_end', 'session_id': session_id,
+                                'thinking_duration': _atg_stop_dur})
+                event_stream.emit('final_answer', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'answer': stop_msg, 'tool_trace': tool_trace, 'timeline': timeline,
+                })
+                return stop_msg, tool_trace, timeline
+            if _atg_outcome.summary_for_llm:
+                # user role with [SYSTEM] prefix (same pattern as force-stop
+                # injection): strict chat templates (e.g. evomodel on llama.cpp)
+                # reject system messages that are not in leading position.
+                messages.append({"role": "user",
+                                 "content": "[SYSTEM] " + _atg_outcome.summary_for_llm})
+            # Stats land in the final assistant message metadata (timeline) so
+            # A/B evaluation and the UI can read per-run ATG figures.
+            timeline.append({"type": "atg_stats", "status": _atg_outcome.status,
+                             **_atg_outcome.stats})
+
     while _iteration < max_tool_iterations:
         _llm_call_count += 1
         # Hard cap on total LLM API calls (safety net for non-tool loops like
@@ -616,7 +702,12 @@ def run_tool_loop(agent: Dict[str, Any],
         # Inject / update mental state system message before each LLM call
         ms = agent_context.get('agent_state')
         if ms is not None:
-            state_msg = {"role": "system", "content": ms.render(agent_id=agent_id)}
+            state_msg = {"role": "system",
+                         "content": ms.render(agent_id=agent_id,
+                                              atg_enabled=bool(agent_context.get('enable_atg')),
+                                              cmp_enabled=bool(agent_context.get('enable_cmp')),
+                                              agent_name=agent_context.get('agent_name')
+                                                         or agent_context.get('name'))}
             state_idx = next(
                 (i for i, m in enumerate(messages)
                  if m.get('role') == 'system' and '## Agent State' in m.get('content', '')),
@@ -1159,6 +1250,35 @@ def run_tool_loop(agent: Dict[str, Any],
             except Exception:
                 _logger.exception("LLM-trace archive failed (session=%s)", session_id)
 
+        # Context monitor: remember the size of the last successful call so the
+        # Session State panel can show context usage vs the model's window.
+        # When the provider omits usage (e.g. the Codex Responses endpoint
+        # returns none), estimate prompt tokens locally from the exact
+        # messages+tools we sent — otherwise the meter freezes at the last
+        # reading forever (guarded on prompt_tokens > 0).
+        _cu_prompt = result.get('prompt_tokens') or 0
+        _cu_estimated = False
+        if _cu_prompt <= 0:
+            try:
+                from backend.llm_usage_events import estimate_context_tokens
+                _cu_prompt = estimate_context_tokens(messages, tools)
+                _cu_estimated = True
+            except Exception:
+                _cu_prompt = 0
+        if _cu_prompt > 0:
+            try:
+                _cu_completion = result.get('completion_tokens') or 0
+                _persist_context_usage(session_id, agent_id, {
+                    'prompt_tokens': _cu_prompt,
+                    'completion_tokens': _cu_completion,
+                    'total_tokens': result.get('total_tokens') or (_cu_prompt + _cu_completion),
+                    'model': (result.get('request_payload') or {}).get('model'),
+                    'estimated': _cu_estimated,
+                    'ts': int(time.time()),
+                })
+            except Exception:
+                _logger.exception("context-usage persist failed (session=%s)", session_id)
+
         choice = result['response'].get('choices', [{}])[0]
         msg = choice.get('message', {})
         raw_content = msg.get('content', '')
@@ -1214,9 +1334,12 @@ def run_tool_loop(agent: Dict[str, Any],
             # Fallback: when content is empty and the model put its entire response
             # in reasoning_content (e.g. Qwen models via llama.cpp), treat reasoning_text
             # as the actual response content.
+            # BUT: if reasoning_text contains XML tool calls (Qwen/Gemma4 format),
+            # don't steal it — the CoT parser below handles those (line 1387+).
             if not content and not embedded_final_in_reasoning and not tool_calls:
-                content = reasoning_text
-                reasoning_text = ''
+                if '<tool_call>' not in reasoning_text and '<|tool_call>' not in reasoning_text:
+                    content = reasoning_text
+                    reasoning_text = ''
             event_stream.emit('llm_thinking', {
                 'agent_id': agent_id, 'session_id': session_id,
                 'external_user_id': external_user_id, 'channel_id': channel_id,
@@ -2087,7 +2210,8 @@ def run_tool_loop(agent: Dict[str, Any],
             })
 
             # Persist agent state immediately for state-changing built-in tools
-            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state'):
+            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state',
+                           'compile_task_graph', 'switch_path', 'new_path'):
                 _ms = agent_context.get('agent_state')
                 if _ms is not None:
                     _persist_agent_state_split(_ms, agent_id, session_id, db_agent_id)

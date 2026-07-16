@@ -168,13 +168,13 @@
             </div>
         </div>
         <!-- WhatsApp disconnect warning banner (hidden by default) -->
-        <div id="wa-disconnect-banner" style="display:none;background:#f59e0b;color:#1c1917;border-bottom:2px solid #d97706;">
-            <div class="max-w-[1600px] mx-auto px-4 py-2 flex items-center justify-between text-sm">
-                <div class="flex items-center gap-2">
-                    <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+        <div id="wa-disconnect-banner" class="hidden bg-amber-50 border-b border-amber-200 text-gray-700">
+            <div class="max-w-[1600px] mx-auto px-4 py-2.5 flex items-center justify-between gap-3 text-sm">
+                <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 flex-shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
                     <span id="wa-disconnect-banner-text"></span>
                 </div>
-                <button onclick="document.getElementById('wa-disconnect-banner').style.display='none'" class="text-amber-900 hover:text-black font-bold text-lg leading-none" title="Dismiss">&times;</button>
+                <button type="button" onclick="document.getElementById('wa-disconnect-banner').classList.add('hidden')" class="flex-shrink-0 p-1 rounded text-gray-500 hover:text-gray-800 hover:bg-amber-100 transition-colors text-lg leading-none" title="Dismiss" aria-label="Dismiss WhatsApp channel alert">&times;</button>
             </div>
         </div>
         <!-- System alert banners (critical background errors) -->
@@ -267,14 +267,20 @@
             var banner = document.getElementById('wa-disconnect-banner');
             if (!banner) return;
             if (agents.length === 0) {
-                banner.style.display = 'none';
+                banner.classList.add('hidden');
             } else {
                 var items = agents.map(function (a) {
-                    return '<a href="/agents/' + esc(a.id || '') + '" class="underline font-semibold hover:text-black">' + esc(a.name) + '</a> (' + esc(STATUS_LABELS[a.status] || a.status) + ')';
+                    var agentId = String(a.id || '').replace(/^\/+|\/+$/g, '');
+                    var label = '<span class="font-semibold text-gray-800">' + esc(a.name) + '</span>';
+                    if (agentId) {
+                        var href = '/agents/' + encodeURIComponent(agentId);
+                        label = '<a href="' + href + '" class="font-semibold text-amber-700 hover:text-gray-900 underline transition-colors">' + esc(a.name) + '</a>';
+                    }
+                    return label + ' <span class="text-gray-500">(' + esc(STATUS_LABELS[a.status] || a.status) + ')</span>';
                 });
                 document.getElementById('wa-disconnect-banner-text').innerHTML =
-                    '<strong>WhatsApp channel alert:</strong> ' + items.join(', ');
-                banner.style.display = '';
+                    '<strong class="font-semibold text-gray-800">WhatsApp channel alert:</strong> ' + items.join(', ');
+                banner.classList.remove('hidden');
             }
         }
         function updateWABadge() {

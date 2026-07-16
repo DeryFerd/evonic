@@ -73,6 +73,31 @@ def estimate_tokens(text: str) -> int:
         return len(text) // 4
 
 
+def estimate_context_tokens(messages: Optional[List[Dict[str, Any]]],
+                            tools: Optional[List[Dict[str, Any]]] = None) -> int:
+    """Estimate the prompt-side token count of a request from the exact
+    messages and tool definitions sent. Used by the context monitor when the
+    provider returns no usage block (e.g. the Codex Responses endpoint).
+
+    Counts message text, tool_calls arguments, and the tool schema JSON —
+    the three things that actually dominate the context window.
+    """
+    import json as _json
+    total = estimate_tokens(_flatten_messages(messages))
+    for m in (messages or []):
+        if not isinstance(m, dict):
+            continue
+        for tc in (m.get("tool_calls") or []):
+            fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+            total += estimate_tokens(str(fn.get("arguments") or ""))
+    if tools:
+        try:
+            total += estimate_tokens(_json.dumps(tools))
+        except Exception:
+            pass
+    return total
+
+
 def _flatten_messages(messages: Optional[List[Dict[str, Any]]]) -> str:
     """Concatenate textual content from chat messages for estimation."""
     if not messages:

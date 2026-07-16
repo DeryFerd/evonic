@@ -46,6 +46,12 @@ class ToolRegistry:
         self._builtins['builtin:set_mode'] = _builtin_set_mode_factory
         self._builtins['builtin:update_tasks'] = _builtin_update_tasks_factory
         self._builtins['builtin:save_plan'] = _builtin_save_plan_factory
+        # ATG task-graph compiler — exposed only when agent_context['enable_atg']
+        # (see get_builtin_tools gate)
+        self._builtins['builtin:compile_task_graph'] = _builtin_compile_task_graph_factory
+        # CMP session-path navigation — exposed only when agent_context['enable_cmp']
+        self._builtins['builtin:switch_path'] = _builtin_switch_path_factory
+        self._builtins['builtin:new_path'] = _builtin_new_path_factory
         # State machine gate tool — always available, handlers registered by system/plugins
         self._builtins['builtin:state'] = _builtin_state_factory
         # Long-term memory tools. `recall` covers keyword search, brain-layer
@@ -53,9 +59,6 @@ class ToolRegistry:
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
         self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
-        # Knowledge collection tools (create/switch session-or-group folders).
-        self._builtins['builtin:create_collection'] = _builtin_create_collection_factory
-        self._builtins['builtin:switch_collection'] = _builtin_switch_collection_factory
         # Session recall tool
         self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
         # Tool to clear active fallback flag from agent_state (agent calls this)
@@ -268,6 +271,13 @@ class ToolRegistry:
         agent_id = agent_context.get('id', '')
         tools = []
         for builtin_id, factory in self._builtins.items():
+            # ATG/CMP tools are opt-in per agent — never expose the defs
+            # otherwise, so non-flagged agents keep a byte-identical tool list.
+            if builtin_id == 'builtin:compile_task_graph' and not agent_context.get('enable_atg'):
+                continue
+            if (builtin_id in ('builtin:switch_path', 'builtin:new_path')
+                    and not agent_context.get('enable_cmp')):
+                continue
             tool_def, _ = factory(agent_context)
             if should_suppress_builtin(agent_id, builtin_id, tool_def):
                 continue
@@ -456,10 +466,8 @@ def _builtin_use_skill_factory(agent_context: dict):
         "function": {
             "name": "use_skill",
             "description": (
-                "Lazy-load a skill's SYSTEM.md knowledge into the agent context. "
-                "Only works for lazy-loaded skills (eager skills' tools are already available). "
-                "Use this when you need to understand a skill's capabilities before using it. "
-                "Example: use_skill({id: 'kanban'})"
+                "Load a skill's SYSTEM.md knowledge into your context for lazy-loaded skills. "
+                "See Skills section for details."
             ),
             "parameters": {
                 "type": "object",
@@ -488,10 +496,8 @@ def _builtin_unload_skill_factory(agent_context: dict):
         "function": {
             "name": "unload_skill",
             "description": (
-                "Unload a previously lazy-loaded skill, removing its tools from the current context. "
-                "Only works for lazy-loaded skills — eager skills' tools are always available. "
-                "Use this after you are done with a skill to keep the context clean. "
-                "Example: unload_skill({id: 'plugin_creator'})"
+                "Unload a previously loaded lazy skill, removing its tools from context. "
+                "See Skill Cleanup Rule for details."
             ),
             "parameters": {
                 "type": "object",
@@ -520,10 +526,8 @@ def _builtin_set_mode_factory(agent_context: dict):
         "function": {
             "name": "set_mode",
             "description": (
-                "Transition the agent's working mode. "
-                "Use 'plan' during planning — write tools (write_file, str_replace, patch) are blocked. "
-                "Use 'execute' after the user approves the plan — write tools become available. "
-                "Always present your plan to the user and wait for approval before switching to 'execute'."
+                "Switch between plan mode (write tools blocked) and execute mode (write tools available). "
+                "See Agent State section for rules."
             ),
             "parameters": {
                 "type": "object",
@@ -559,11 +563,8 @@ def _builtin_update_tasks_factory(agent_context: dict):
         "function": {
             "name": "update_tasks",
             "description": (
-                "Manage the task list that tracks implementation progress. "
-                "Use 'set' to define the full plan as a task list. "
-                "Use 'add' to append a single task. "
-                "Use 'done' or 'in_progress' to update task status. "
-                "Use 'remove' to delete a task."
+                "Manage your implementation task list "
+                "(set, add, update status, remove)."
             ),
             "parameters": {
                 "type": "object",
@@ -573,9 +574,9 @@ def _builtin_update_tasks_factory(agent_context: dict):
                         "enum": ["set", "add", "done", "in_progress", "remove"],
                         "description": (
                             "'set': replace entire task list (provide 'tasks' array). "
-                            "'add': add one task (provide 'text'). "
-                            "'done'/'in_progress': update status (provide 'task_id'). "
-                            "'remove': delete a task (provide 'task_id')."
+                            "'add': add one task. "
+                            "'done'/'in_progress': update status. "
+                            "'remove': delete a task."
                         )
                     },
                     "task_id": {
@@ -634,11 +635,9 @@ def _builtin_save_plan_factory(agent_context: dict):
         "function": {
             "name": "save_plan",
             "description": (
-                "Save a markdown plan file to your personal plan/ directory (accessible via /_self/plan/) and link it to your agent state. "
-                "The plan content will be re-injected into your context on every turn, "
-                "so you never lose your objective even after conversation summarization. "
-                "You MUST call this before set_mode('execute'). "
-                "To update the plan mid-execution, call save_plan again with the same filename."
+                "Save a markdown plan to your plan/ directory and link it to your agent state. "
+                "Call before set_mode('execute') or to update mid-execution. "
+                "The plan is re-injected into your context on every turn."
             ),
             "parameters": {
                 "type": "object",
@@ -661,6 +660,20 @@ def _builtin_save_plan_factory(agent_context: dict):
         ms = agent_context.get('agent_state')
         if ms is None:
             return {"error": "Agent state is not enabled for this agent."}
+
+        # ATG enforcement: flagged agents on complex tasks must compile a task
+        # graph first — small models ignore the prompt instruction alone.
+        # save_plan unlocks once a compile was attempted (any atg status,
+        # including 'failed') or for trivial-classified tasks.
+        if (agent_context.get('enable_atg')
+                and not getattr(ms, 'auto_trivial', False)
+                and not getattr(ms, 'atg', None)):
+            return {"error": (
+                "This agent plans with Atomic Task Graph. Call "
+                "compile_task_graph(goal, context) with the task goal instead "
+                "of save_plan — the compiled graph becomes your plan file. "
+                "save_plan is only available if graph compilation fails."
+            )}
 
         filename = arguments.get('filename', '').strip()
         content = arguments.get('content', '')
@@ -690,6 +703,304 @@ def _builtin_save_plan_factory(agent_context: dict):
     return tool_def, executor
 
 
+def _builtin_compile_task_graph_factory(agent_context: dict):
+    """Factory for the built-in 'compile_task_graph' tool (ATG).
+
+    Compiles a complex task into a DAG of atomic tool-use nodes via recursive
+    LLM decomposition (arXiv 2607.01942), stores it in agent_state.atg, and
+    writes a markdown rendering as the linked plan file — so the existing
+    save_plan/set_mode approval flow works unchanged. Exposed only when
+    agent_context['enable_atg'] (gated in get_builtin_tools).
+    """
+    import os
+    import re as _re
+
+    agent_id = agent_context.get('id', '')
+    _base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    plan_dir = os.path.join(_base_dir, 'agents', agent_id, 'plan')
+
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "compile_task_graph",
+            "description": (
+                "Compile a complex multi-step task into an executable task graph "
+                "(DAG of atomic tool-use steps with explicit dependencies). "
+                "Prefer this over a free-form save_plan for complex tasks: after "
+                "exploring, call compile_task_graph with the task goal. The graph "
+                "is saved as your plan file — present it to the user and wait for "
+                "approval before set_mode('execute'). Independent steps will run "
+                "in parallel and failures are repaired locally during execution."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "goal": {
+                        "type": "string",
+                        "description": "The full task goal to compile, in one or two sentences."
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Optional findings from your exploration that the compiler "
+                            "should know (relevant file paths, constraints, decisions)."
+                        )
+                    }
+                },
+                "required": ["goal"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        if not agent_context.get('enable_atg'):
+            return {"error": "ATG is not enabled for this agent."}
+        ms = agent_context.get('agent_state')
+        if ms is None:
+            return {"error": "Agent state is not enabled for this agent."}
+        runtime = agent_context.get('_atg_runtime')
+        if not runtime:
+            return {"error": "ATG runtime is not available in this context."}
+
+        goal = (arguments.get('goal') or '').strip()
+        if not goal:
+            return {"error": "'goal' must be a non-empty string."}
+
+        from backend.agent_runtime.atg.compiler import (
+            CompilationError, compile_task_graph, render_markdown)
+        try:
+            dag, history = compile_task_graph(
+                goal,
+                runtime.get('tools') or [],
+                runtime['llm'],
+                runtime['llm_lock'],
+                log_file=runtime.get('llm_log_path'),
+                context_excerpt=(arguments.get('context') or '')[:4000],
+            )
+        except CompilationError as e:
+            # Mark the attempt so save_plan's ATG redirect unlocks as fallback.
+            # root_goal kept for the re-arm continuation check.
+            ms.atg = {"status": "failed", "error": str(e)[:500], "root_goal": goal}
+            return {"error": f"Task graph compilation failed: {e}. "
+                             "You can retry with a clearer goal, or fall back to save_plan."}
+
+        waves = dag.waves()
+        ms.atg = {
+            "status": "compiled",
+            "dag": dag.to_dict(),
+            "history": history.to_dict(),
+            "repair_attempts": 0,
+            "stats": {"nodes_total": len(dag.nodes), "waves": len(waves)},
+        }
+
+        try:
+            from backend.event_stream import event_stream
+            event_stream.emit('atg_compiled', {
+                'agent_id': agent_id,
+                'session_id': agent_context.get('session_id'),
+                'nodes': len(dag.nodes), 'waves': len(waves),
+                'refinements': max(0, len(history.entries) - 1),
+            })
+        except Exception:
+            pass
+
+        slug = _re.sub(r'[^a-z0-9]+', '-', goal.lower()).strip('-')[:40] or 'task'
+        filename = f"atg-{slug}.md"
+        os.makedirs(plan_dir, exist_ok=True)
+        try:
+            with open(os.path.join(plan_dir, filename), 'w', encoding='utf-8') as f:
+                f.write(render_markdown(dag, history))
+        except Exception as e:
+            return {"error": f"Failed to write plan file: {e}"}
+        ms.set_plan_file(f"plan/{filename}")
+
+        return {
+            "result": (
+                f"Task graph compiled: {len(dag.nodes)} nodes in {len(waves)} waves. "
+                "Saved as your plan file — present the plan to the user and wait "
+                "for approval before set_mode('execute')."
+            ),
+            "plan_file": f"plan/{filename}",
+            "nodes": len(dag.nodes),
+            "waves": len(waves),
+        }
+
+    return tool_def, executor
+
+
+def _cmp_emit(agent_context: dict, event: str, payload: dict) -> None:
+    """Best-effort CMP event emission with session context."""
+    try:
+        from backend.event_stream import event_stream
+        event_stream.emit(event, {
+            'agent_id': agent_context.get('id', ''),
+            'session_id': agent_context.get('session_id'),
+            **payload,
+        })
+    except Exception:
+        pass
+
+
+def _cmp_gate(agent_context: dict):
+    """Common gate for CMP tools. Returns (ms, None) or (None, error_dict)."""
+    if not agent_context.get('enable_cmp'):
+        return None, {"error": "CMP is not enabled for this agent."}
+    ms = agent_context.get('agent_state')
+    if ms is None:
+        return None, {"error": "Agent state is not enabled for this agent."}
+    return ms, None
+
+
+def _cmp_finalize_outgoing(agent_context: dict, ms) -> None:
+    """Best-effort card finalization for the active path before it is
+    suspended (the paper's card-first ordering). Never blocks the switch."""
+    try:
+        from models.chatlog import chatlog_manager
+        from backend.agent_runtime.cmp.compactor import finalize_active_card
+        chatlog = chatlog_manager.get(
+            agent_context.get('_db_agent_id', agent_context.get('id', '')),
+            agent_context.get('session_id'))
+        finalize_active_card(chatlog, ms.cmp, ms)
+    except Exception:
+        pass
+
+
+def _builtin_switch_path_factory(agent_context: dict):
+    """Factory for the built-in 'switch_path' tool (CMP navigation).
+
+    Validated request: the harness checks the target against the session
+    graph; unknown ids return an error listing valid ids (grounding the node
+    inventory) instead of executing. Exposed only when enable_cmp.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "switch_path",
+            "description": (
+                "Resume another task path from the session map. Use when the "
+                "user returns to an earlier task (e.g. 'back to the website'). "
+                "Restores that path's plan/task-graph state and marks the "
+                "current path dormant."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path_id": {
+                        "type": "string",
+                        "description": "Target path id from the session map, e.g. 'P1'."
+                    }
+                },
+                "required": ["path_id"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        ms, err = _cmp_gate(agent_context)
+        if err:
+            return err
+        if not ms.cmp or not ms.cmp.get("paths"):
+            return {"error": "No session paths exist yet. Use new_path(title) to start one."}
+        from backend.agent_runtime.cmp import store as cmp_store
+        target_id = (arguments.get('path_id') or '').strip()
+        old_id = ms.cmp.get("active_id")
+        _cmp_finalize_outgoing(agent_context, ms)  # card-first ordering
+        try:
+            target = cmp_store.switch_to(ms.cmp, ms, target_id)
+        except ValueError as e:
+            return {"error": str(e)}
+        _cmp_emit(agent_context, 'cmp_path_switched',
+                  {'from': old_id, 'to': target_id, 'initiator': 'agent'})
+        return {
+            "result": f"Switched to {target_id} — {target.get('title')}. "
+                      "Its plan/task state has been restored.",
+            "path": {k: target.get(k) for k in
+                     ("id", "title", "goal", "outcome", "key_facts", "artifacts")},
+        }
+
+    return tool_def, executor
+
+
+def _builtin_new_path_factory(agent_context: dict):
+    """Factory for the built-in 'new_path' tool (CMP navigation).
+
+    Starts a separate task path (fresh plan cycle). depends_on records that
+    the new task consumes results of existing paths, pinning their cards.
+    """
+    tool_def = {
+        "type": "function",
+        "function": {
+            "name": "new_path",
+            "description": (
+                "Start a NEW task as its own session path when the user "
+                "switches to different work (not a follow-up of the current "
+                "task). Use depends_on when the new task builds on results "
+                "of existing paths (e.g. an invoice for a project built in P1)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the new task path (<= 60 chars)."
+                    },
+                    "goal": {
+                        "type": "string",
+                        "description": "One-sentence goal of the new task."
+                    },
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Path ids whose results this task uses, e.g. ['P1']."
+                    }
+                },
+                "required": ["title"]
+            }
+        }
+    }
+
+    def executor(arguments: dict) -> dict:
+        ms, err = _cmp_gate(agent_context)
+        if err:
+            return err
+        title = (arguments.get('title') or '').strip()
+        if not title:
+            return {"error": "'title' must be a non-empty string."}
+        from backend.agent_runtime.cmp import store as cmp_store
+        if ms.cmp is None or not ms.cmp.get("paths"):
+            # Adopt the ongoing work as P1 before branching off it.
+            prev_title = None
+            if isinstance(ms.atg, dict):
+                prev_title = ((ms.atg.get('dag') or {}).get('root_goal')
+                              or ms.atg.get('root_goal'))
+            prev_title = (prev_title or ms.plan_file or "Earlier conversation")
+            ms.cmp = cmp_store.new_cmp(ms, title=str(prev_title)[:60])
+            _cmp_emit(agent_context, 'cmp_path_created',
+                      {'path_id': 'P1', 'title': str(prev_title)[:60],
+                       'initiator': 'auto-init'})
+        _cmp_finalize_outgoing(agent_context, ms)  # card-first ordering
+        try:
+            record = cmp_store.create_path(
+                ms.cmp, ms, title,
+                goal=(arguments.get('goal') or '').strip(),
+                depends_on=arguments.get('depends_on') or [])
+        except ValueError as e:
+            return {"error": str(e)}
+        _cmp_emit(agent_context, 'cmp_path_created',
+                  {'path_id': record['id'], 'title': record['title'],
+                   'depends_on': record['depends_on'], 'initiator': 'agent'})
+        return {
+            "result": (
+                f"Started {record['id']} — {record['title']}. The previous "
+                "path is dormant (resumable via switch_path). You are now in "
+                "plan mode for this new task."
+            ),
+            "path_id": record['id'],
+        }
+
+    return tool_def, executor
+
+
 def _builtin_remember_factory(agent_context: dict):
     """Factory for the built-in 'remember' tool — stores a fact in long-term memory."""
     tool_def = {
@@ -697,14 +1008,8 @@ def _builtin_remember_factory(agent_context: dict):
         "function": {
             "name": "remember",
             "description": (
-                "Pin an important fact for the current session. It is noted instantly "
-                "(no delay) and stays available to you for the rest of this conversation; "
-                "the summarizer then persists it to long-term memory and the knowledge "
-                "graph automatically in the background. Use it when the user shares "
-                "something worth retaining (name, preferences, decisions, context, or "
-                "persistent instructions). You do NOT need to remember() routine details "
-                "— the summarizer captures the conversation on its own. "
-                "Example: remember(content='User prefers responses in English', category='preference')"
+                "Store a fact in long-term memory. "
+                "The summarizer persists it and builds the knowledge graph automatically."
             ),
             "parameters": {
                 "type": "object",
@@ -736,91 +1041,6 @@ def _builtin_remember_factory(agent_context: dict):
     return tool_def, executor
 
 
-def _builtin_create_collection_factory(agent_context: dict):
-    """Factory for the built-in 'create_collection' tool — create + activate a
-    knowledge collection folder (session or group)."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "create_collection",
-            "description": (
-                "Create a named collection folder to organize the knowledge for "
-                "something the user asked you to work on, and make it the ACTIVE "
-                "collection so durable knowledge you save next is filed inside it. "
-                "A collection is a session or a group. Use when the user asks for a "
-                "new session/topic space, e.g. 'buatkan sesi riset XYZ' or "
-                "'kelompokkan ini jadi grup Y'. kind='session' for a working "
-                "session, 'group' for a durable topical group. Docs in any "
-                "collection can still link to docs in other collections (links "
-                "resolve by title across the whole knowledge base). "
-                "Example: create_collection(name='Riset XYZ', kind='session')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Display name of the collection; a folder slug is derived from it."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "enum": ["session", "group"],
-                        "description": "session = a working session; group = a durable topical group. Default: session."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "One-line description of what this collection holds."
-                    }
-                },
-                "required": ["name"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import create_collection_tool
-        return create_collection_tool(
-            agent_context.get('id', ''), agent_context.get('session_id', ''),
-            args.get('name', ''), args.get('kind', 'session'),
-            args.get('description', ''))
-
-    return tool_def, executor
-
-
-def _builtin_switch_collection_factory(agent_context: dict):
-    """Factory for the built-in 'switch_collection' tool — change the active
-    collection (or 'root')."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "switch_collection",
-            "description": (
-                "Switch the ACTIVE knowledge collection so durable knowledge you save "
-                "next lands in it. Pass an existing collection name, or 'root' to save "
-                "at the top level. Example: switch_collection(name='Riset XYZ')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of an existing collection, or 'root' for the top level."
-                    }
-                },
-                "required": ["name"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import switch_collection_tool
-        return switch_collection_tool(
-            agent_context.get('id', ''), agent_context.get('session_id', ''),
-            args.get('name', ''))
-
-    return tool_def, executor
-
-
 def _builtin_recall_factory(agent_context: dict):
     """Factory for the built-in 'recall' tool — searches long-term memory.
 
@@ -840,19 +1060,8 @@ def _builtin_recall_factory(agent_context: dict):
         "function": {
             "name": "recall",
             "description": (
-                "Search your long-term memory for facts from past conversations. "
-                "Modes: mode='fts' (default) for a fast keyword lookup; "
-                "mode='think' to reason over EVERYTHING you know about a topic and "
-                "surface what's missing (synthesis with citations + knowledge gaps); "
-                "mode='graph' to traverse the entity knowledge graph from an entity "
-                "(here 'query' is the entity name; use edge_type/hops to steer); "
-                "mode='links' to view a KB document's link neighborhood — outgoing/"
-                "incoming references, broken links, and same-tag docs (here 'query' "
-                "is the KB filename, e.g. 'evonic.md'). "
-                "Examples: recall(query='user phone number'); "
-                "recall(query='what do I know about Acme Corp?', mode='think'); "
-                "recall(query='Andi Wijaya', mode='graph'); "
-                "recall(query='evonic.md', mode='links')"
+                "Search long-term memory. "
+                "See system prompt Memory Retrieval Protocol for mode details."
             ),
             "parameters": {
                 "type": "object",
@@ -911,11 +1120,7 @@ def _builtin_forget_memory_factory(agent_context: dict):
         "function": {
             "name": "forget_memory",
             "description": (
-                "Delete a specific memory from your long-term memory by its ID. "
-                "The memory is soft-deleted (marked as expired) so it will no longer "
-                "appear in recall results. Use this when a memory is no longer relevant "
-                "or was stored incorrectly. "
-                "Example: forget_memory(memory_id=42)"
+                "Soft-delete a long-term memory by ID so it no longer appears in recall results."
             ),
             "parameters": {
                 "type": "object",
@@ -963,10 +1168,8 @@ def _builtin_state_factory(agent_context: dict):
             "name": "state",
             "description": (
                 "Query or transition your workflow state. "
-                "Call with no arguments to see all current states and registered namespaces. "
-                "Call with a label (and optional data) to request a state transition — "
-                "the handler will validate the transition and return instructions on what to do next. "
-                "Labels use 'namespace:action' format, e.g. 'kanban:pick', 'kanban:finish'."
+                "Call with no args for a summary; with label to request a state transition. "
+                "See Agent State section for details."
             ),
             "parameters": {
                 "type": "object",
@@ -1041,10 +1244,8 @@ def _builtin_recall_sessions_factory(agent_context: dict):
         "function": {
             "name": "recall_sessions",
             "description": (
-                "Recall session summaries from previous conversations with this agent. "
-                "Use without query to get all recent sessions. "
-                "Use query to search for specific topics by keyword. "
-                "Example: recall_sessions() or recall_sessions(query='login bug')"
+                "Recall session summaries from previous conversations. "
+                "Leave query empty for recent sessions; use a keyword to search."
             ),
             "parameters": {
                 "type": "object",

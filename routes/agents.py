@@ -1836,6 +1836,34 @@ def api_chat_agent_state(agent_id):
             'active_model': _resolve_active_model(),
             'loaded_skills': loaded_skills,
         }
+        # CMP session-path map (for the Session State panel's map modal)
+        if state.cmp and state.cmp.get('paths'):
+            try:
+                from backend.agent_runtime.cmp.render import render_map
+                from backend.agent_runtime.cmp.compactor import (
+                    card_token_estimate, path_token_estimate)
+                from models.chatlog import chatlog_manager
+                agent_row = db.get_agent(agent_id)
+                agent_name = (agent_row or {}).get('name') or agent_id.replace('_', ' ').title()
+                _cmp_chatlog = chatlog_manager.get(agent_id, session_id)
+                _path_cards = []
+                for _, p in sorted(state.cmp['paths'].items()):
+                    card = {k: p.get(k) for k in
+                            ('id', 'title', 'status', 'action', 'goal', 'outcome',
+                             'key_facts', 'artifacts', 'depends_on', 'last_active')}
+                    card['tokens'] = path_token_estimate(_cmp_chatlog, p)
+                    card['card_tokens'] = card_token_estimate(p)
+                    _path_cards.append(card)
+                payload['cmp'] = {
+                    'active_id': state.cmp.get('active_id'),
+                    'agent_id': agent_id,
+                    'agent_name': agent_name,
+                    'has_avatar': bool((agent_row or {}).get('avatar_path')),
+                    'mermaid': render_map(state.cmp, agent_name),
+                    'paths': _path_cards,
+                }
+            except Exception:
+                pass
     elif _is_explorer:
         # Minimal state, but still surface the explorer's model badge.
         payload = {
@@ -1865,6 +1893,42 @@ def api_chat_agent_state(agent_id):
         except Exception:
             pass
         payload['background_processes'] = background_processes
+
+    # Context monitor: tokens consumed by the last LLM call vs the model's
+    # context window (model.context_window, falling back to the global
+    # llm_context_length setting; unknown window → max/percent are null).
+    # After session clear, context_usage is gone from session state — fall back
+    # to the compiled context token count (system prompt + tool definitions).
+    if session_id:
+        _cu = merged.get('context_usage') if isinstance(merged, dict) else None
+        _used = None
+        if _cu and (_cu.get('prompt_tokens') or 0) > 0:
+            _used = _cu.get('total_tokens') or (
+                (_cu.get('prompt_tokens') or 0) + (_cu.get('completion_tokens') or 0))
+        if _used is None:
+            # Fallback: compute compiled context token count
+            try:
+                from backend.agent_runtime import agent_runtime
+                _ctx = agent_runtime.get_compiled_context(agent_id, user_id=request.args.get('user_id'))
+                _used = _ctx.get('tokens', {}).get('total', 0)
+            except Exception:
+                pass
+        if _used and _used > 0:
+            ctx_max = 0
+            _am = payload.get('active_model') or {}
+            if _am.get('id'):
+                _am_row = db.get_model_by_id(_am['id'])
+                ctx_max = int((_am_row or {}).get('context_window') or 0)
+            if ctx_max <= 0:
+                try:
+                    ctx_max = int(db.get_setting('llm_context_length', 0) or 0)
+                except (TypeError, ValueError):
+                    ctx_max = 0
+            payload['context_usage'] = {
+                'used': _used,
+                'max': ctx_max if ctx_max > 0 else None,
+                'percent': min(100, round(_used * 100 / ctx_max)) if ctx_max > 0 else None,
+            }
 
     # ?include=summary piggybacks the session summary on this response so the
     # UI gets state + summary in one round trip instead of two requests.

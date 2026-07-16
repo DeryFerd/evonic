@@ -385,6 +385,8 @@ class SchemaMixin:
                 ("attachment_max_size_mb", "INTEGER DEFAULT 20"),
                 ("audio_enabled", "BOOLEAN DEFAULT 0"),
                 ("video_enabled", "BOOLEAN DEFAULT 0"),
+                ("enable_atg", "BOOLEAN DEFAULT 0"),
+                ("enable_cmp", "BOOLEAN DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
@@ -809,7 +811,7 @@ class SchemaMixin:
 
             # Migration: add model_max_concurrent column to llm_models if missing
             try:
-                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 1")
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 3")
             except sqlite3.OperationalError:
                 pass
 
@@ -837,6 +839,13 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_shortcode ON llm_models(shortcode)")
+
+            # Migration: add context_window column to llm_models if missing
+            # (0 = unknown; max_tokens is the OUTPUT budget, this is the full window)
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN context_window INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
 
 
             # One-shot migration: rewrite model ids to 'provider/model_name'

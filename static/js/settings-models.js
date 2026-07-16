@@ -407,6 +407,7 @@ window.settingsModels = {
         document.getElementById("model-api-key").value = model.api_key || "";
         document.getElementById("model-name-param").value = model.model_name || "";
         document.getElementById("model-max-tokens").value = model.max_tokens || 32768;
+        document.getElementById("model-context-window").value = model.context_window || 0;
         document.getElementById("model-timeout").value = model.timeout || 60;
         document.getElementById("model-max-concurrent").value =
             model.model_max_concurrent != null ? model.model_max_concurrent : 1;
@@ -453,6 +454,8 @@ window.settingsModels = {
             model_name: document.getElementById("model-name-param").value,
             max_tokens:
                 parseInt(document.getElementById("model-max-tokens").value) || 32768,
+            context_window:
+                parseInt(document.getElementById("model-context-window").value) || 0,
             timeout: parseInt(document.getElementById("model-timeout").value) || 60,
             model_max_concurrent:
                 parseInt(document.getElementById("model-max-concurrent").value) || 0,

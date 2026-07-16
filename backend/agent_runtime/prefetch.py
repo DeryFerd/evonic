@@ -29,6 +29,7 @@ class _PrefetchEntry:
     tools: List[Dict[str, Any]]
     system_prompt: str
     agent_context: Dict[str, Any]
+    summary_watermark: Any = None
     timestamp: float = field(default_factory=time.time)
     # Last user-message content in the cached messages list, used as a
     # lightweight staleness check (if a new user message arrived, the last
@@ -153,6 +154,8 @@ class TurnPrefetcher:
                 'audio_enabled': agent.get('audio_enabled', 0),
                 'messaging_acl': agent.get('messaging_acl'),
                 'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
+                'enable_atg': bool(agent.get('enable_atg')) and bool(agent.get('enable_agent_state')),
+                'enable_cmp': bool(agent.get('enable_cmp')) and bool(agent.get('enable_agent_state')),
             }
 
             # Re-load messages from JSONL (most expensive I/O, ~10-200ms)
@@ -168,9 +171,27 @@ class TurnPrefetcher:
                     "content": f"## Prior conversation summary\n{summary_record['summary']}"
                 })
 
-            _jsonl_entries = chatlog.get_entries_for_llm(
-                after_ts=summary_record.get('last_message_ts') if summary_record else None,
-            )
+            # CMP offload: scope history to the active path's segments via the
+            # SAME shared builder the runtime uses (prefetch assumes the next
+            # turn continues the active path; the runtime discards the hit on
+            # a switch/branch decision).
+            _jsonl_entries = None
+            if agent.get('enable_cmp') and agent.get('enable_agent_state'):
+                try:
+                    import json as _json
+                    from backend.agent_runtime.cmp import assembler as _cmp_asm
+                    _sess_raw = db.get_session_state(session_id, agent_id=db_agent_id)
+                    _cmp_state = (_json.loads(_sess_raw) or {}).get('cmp') if _sess_raw else None
+                    if _cmp_asm.should_filter(_cmp_state):
+                        _jsonl_entries = _cmp_asm.build_history(
+                            chatlog, summary_record, _cmp_state)
+                except Exception:
+                    _logger.exception("CMP prefetch history filter failed — full history")
+                    _jsonl_entries = None
+            if _jsonl_entries is None:
+                _jsonl_entries = chatlog.get_entries_for_llm(
+                    after_ts=summary_record.get('last_message_ts') if summary_record else None,
+                )
             _use_jsonl = bool(_jsonl_entries) or chatlog.get_last_entry() is not None
 
             if _use_jsonl:
@@ -274,6 +295,8 @@ class TurnPrefetcher:
                 tools=fresh_tools,
                 system_prompt=fresh_system_prompt,
                 agent_context=fresh_agent_context,
+                summary_watermark=(summary_record.get('last_message_ts')
+                                   if summary_record else None),
                 last_user_content=last_user,
             )
 
@@ -285,13 +308,15 @@ class TurnPrefetcher:
         except Exception:
             _logger.debug("Prefetch failed for session %s", session_id, exc_info=True)
 
-    def try_get(self, session_id: str) -> Optional[_PrefetchEntry]:
-        """Try to retrieve prefetched context. Returns None if stale or missing."""
+    def try_get(self, session_id: str, *,
+                summary_watermark: Any = None) -> Optional[_PrefetchEntry]:
+        """Return context only when its age and summary watermark are current."""
         with self._lock:
             entry = self._cache.get(session_id)
             if entry is None:
                 return None
-            if time.time() - entry.timestamp > _PREFETCH_TTL_SECONDS:
+            if (time.time() - entry.timestamp > _PREFETCH_TTL_SECONDS
+                    or entry.summary_watermark != summary_watermark):
                 del self._cache[session_id]
                 return None
             return entry

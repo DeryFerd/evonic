@@ -11,6 +11,11 @@ from typing import Dict, Optional
 
 _logger = logging.getLogger(__name__)
 
+# A gate wait longer than this is logged as a probable deadlock (normal
+# contention on a busy model clears far faster; a true parent↔child cycle
+# never clears).
+_WAIT_WARN_SECONDS = 30.0
+
 
 # Thread-local handle to the model-gate held by the current turn on this thread.
 # Lets a blocking sub-agent tool (sync Explore) temporarily release it, avoiding a
@@ -29,13 +34,23 @@ def paused_model_gate():
     """
     gate = getattr(_tls, 'model_gate', None)
     if gate is None:
+        # A blocking sub-agent tool with NO held model-gate to release. If a
+        # same-model child is waiting for this turn's permit, THIS is the
+        # parent↔child deadlock (the pause is a no-op). Surface it loudly.
+        _logger.warning(
+            "paused_model_gate: no model-gate held on this thread — if a "
+            "same-model sub-agent is waiting for a permit, it will deadlock. "
+            "(the parent tool must run on the turn thread that acquired the gate)")
         yield
         return
+    _logger.info("paused_model_gate: releasing model-gate %s (%s) while blocking",
+                 gate._name, gate.capacity_details)
     gate.release()
     try:
         yield
     finally:
         gate.acquire()
+        _logger.info("paused_model_gate: re-acquired model-gate %s", gate._name)
 
 
 class ConcurrencyGate:
@@ -49,14 +64,22 @@ class ConcurrencyGate:
         self._name = name
 
     def acquire(self) -> None:
-        #_logger.info("[LOCK] acquire(name=%s) - WAITING (active=%d/%d)",
-        #              self._name, self._active, self._max)
         with self._condition:
-            while self._max > 0 and self._active >= self._max:
-                self._condition.wait()
+            if self._max > 0 and self._active >= self._max:
+                # Watchdog: a wait longer than this almost always means a
+                # parent↔child (same-gate) deadlock rather than normal
+                # contention — log it so the wait chain is visible.
+                _waited = 0.0
+                while self._max > 0 and self._active >= self._max:
+                    got = self._condition.wait(timeout=_WAIT_WARN_SECONDS)
+                    if not got:
+                        _waited += _WAIT_WARN_SECONDS
+                        _logger.warning(
+                            "ConcurrencyGate '%s' still WAITING after %.0fs "
+                            "(active=%d/%d) — possible deadlock (a holder blocked "
+                            "on something that needs this gate?)",
+                            self._name, _waited, self._active, self._max)
             self._active += 1
-            #_logger.info("[LOCK] acquire(name=%s) - ACQUIRED (active=%d/%d)",
-            #             self._name, self._active, self._max)
 
     def release(self) -> None:
         #_logger.info("[LOCK] release(name=%s) - RELEASING (active=%d/%d)",

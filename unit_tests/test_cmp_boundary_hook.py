@@ -214,17 +214,25 @@ def test_path_op_failure_degrades_to_continue():
 
 
 def test_lifecycle_archives_then_prunes_on_turn_boundaries():
-    """Wall-clock decay rides the turn boundary: preserved > 1 day →
-    archived; archived > 3 more days → pruned (record removed)."""
-    ms = _session_with_two_paths()          # A1 preserved at ts=2000
-    t_arch = 2001 + store.PRESERVED_TTL_MS
+    """Count-based preserved cap: when > MAX_PRESERVED, oldest archived
+    on turn boundary; archived > 3 days → pruned."""
+    ms = _session_with_two_paths()         # A1 preserved @2000, A2 active @2000
+    # Build up 4 preserved to push A1 over the cap:
+    store.create_path(ms.cmp, ms, 'third', now_ts=2500)   # A2→preserved, A3 active
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=2900)  # A3→preserved, A4 active
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=3000)   # A4→preserved, A5 active
+    # preserved: A1(2000), A2(2500), A3(2900), A4(3000) = 4 > 3
+
     with _detect('continue'):
-        on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=t_arch),
+        on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=3100),
                          'lanjutkan kerjaan server config ini ya')
     assert ms.cmp['paths']['A1']['status'] == 'archived'
+
+    # Wait 3+ days for prune
+    t_prune = 3100 + store.ARCHIVED_TTL_MS + 1
     with _detect('continue'):
         on_turn_boundary(AGENT, ms,
-                         FakeChatlog(user_ts=t_arch + store.ARCHIVED_TTL_MS + 1),
+                         FakeChatlog(user_ts=t_prune),
                          'lanjutkan lagi kerjaan server config ini ya')
     assert 'A1' not in ms.cmp['paths']
 

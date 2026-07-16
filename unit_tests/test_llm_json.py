@@ -68,11 +68,11 @@ def test_truncated_after_nested_object_and_comma():
     from backend.agent_runtime.llm_json import complete_truncated_json
     # the live CMP failure: budget ran out right after new_path
     text = ('{\n  "route": "indep_branch",\n  "target": null,\n'
-            '  "new_path": {\n    "title": "Info MBG",\n'
+            '  "new_path": {\n    "title": "Info Acara X",\n'
             '    "action": "find info"\n  },')
     assert complete_truncated_json(text) == {
         'route': 'indep_branch', 'target': None,
-        'new_path': {'title': 'Info MBG', 'action': 'find info'}}
+        'new_path': {'title': 'Info Acara X', 'action': 'find info'}}
 
 
 def test_truncated_mid_string_and_mid_value():

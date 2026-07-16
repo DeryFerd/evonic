@@ -317,12 +317,12 @@ def test_truncated_envelope_is_repaired():
     precisely so truncation repair recovers them."""
     ms = _session()
     truncated = ('{\n  "route": "indep_branch",\n  "target": null,\n'
-                 '  "new_path": {\n    "title": "Info MBG",\n'
+                 '  "new_path": {\n    "title": "Info Acara X",\n'
                  '    "action": "find info"\n  },')
     with _patch_llm(truncated):
         result = detect(ms.cmp, ms, LONG_NEW_TASK)
     assert result['decision'] == 'indep_branch'
-    assert result['new_path'] == {'title': 'Info MBG', 'action': 'find info'}
+    assert result['new_path'] == {'title': 'Info Acara X', 'action': 'find info'}
 
 
 def test_truncation_beyond_repair_retries_with_doubled_budget():

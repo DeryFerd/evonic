@@ -31,7 +31,7 @@ def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
 
 def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
     """Per-turn CMP orchestration: first-path init, boundary detection,
-    path lifecycle (switch/branch), hysteresis. Called from the runtime at
+    path ops (switch/branch), lifecycle decay. Called from the runtime at
     the re-arm slot; subsumes maybe_rearm_atg for cmp agents (a new branch
     IS the re-arm — fresh plan cycle on its own path).
 
@@ -95,8 +95,11 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
             "CMP path operation failed — continuing on the active path")
         decision = {'decision': 'continue', 'target': None, 'layer': 'error'}
 
-    for archived_id in store.tick_hysteresis(ms.cmp):
+    lifecycle = store.tick_lifecycle(ms.cmp, now_ts=user_ts)
+    for archived_id in lifecycle['archived']:
         _emit(agent, 'cmp_path_archived', {'path_id': archived_id})
+    for pruned_id in lifecycle['pruned']:
+        _emit(agent, 'cmp_path_pruned', {'path_id': pruned_id})
     _emit(agent, 'cmp_boundary_decision', decision)
     return decision
 

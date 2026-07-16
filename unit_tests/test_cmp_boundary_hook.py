@@ -100,13 +100,13 @@ def _session_with_two_paths():
     return ms
 
 
-def test_continue_only_ticks_hysteresis():
+def test_continue_keeps_fresh_paths_preserved():
     ms = _session_with_two_paths()
     with _detect('continue'):
         result = on_turn_boundary(AGENT, ms, FakeChatlog(), 'lanjut saja')
     assert result['decision'] == 'continue'
     assert ms.cmp['active_id'] == 'A2'
-    assert ms.cmp['paths']['A1']['dormant_turns'] == 1
+    assert ms.cmp['paths']['A1']['status'] == 'preserved'  # no time passed
 
 
 def test_return_switches_and_finalizes_card():
@@ -194,12 +194,20 @@ def test_path_op_failure_degrades_to_continue():
     assert ms.cmp['active_id'] == 'A2'  # untouched
 
 
-def test_hysteresis_archives_at_k():
-    ms = _session_with_two_paths()
+def test_lifecycle_archives_then_prunes_on_turn_boundaries():
+    """Wall-clock decay rides the turn boundary: preserved > 1 day →
+    archived; archived > 3 more days → pruned (record removed)."""
+    ms = _session_with_two_paths()          # A1 preserved at ts=2000
+    t_arch = 2001 + store.PRESERVED_TTL_MS
     with _detect('continue'):
-        for _ in range(store.CMP_DORMANT_TURNS_K):
-            on_turn_boundary(AGENT, ms, FakeChatlog(), 'continue this work please')
+        on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=t_arch),
+                         'lanjutkan kerjaan server config ini ya')
     assert ms.cmp['paths']['A1']['status'] == 'archived'
+    with _detect('continue'):
+        on_turn_boundary(AGENT, ms,
+                         FakeChatlog(user_ts=t_arch + store.ARCHIVED_TTL_MS + 1),
+                         'lanjutkan lagi kerjaan server config ini ya')
+    assert 'A1' not in ms.cmp['paths']
 
 
 # ── Coexistence with ATG-only re-arm (runtime routing) ───────────────────────

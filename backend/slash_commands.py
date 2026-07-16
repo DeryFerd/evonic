@@ -801,12 +801,13 @@ def _register_builtins():
             if sess_ms.cmp and sess_ms.cmp.get('paths'):
                 _paths = sess_ms.cmp['paths']
                 _active = _paths.get(sess_ms.cmp.get('active_id')) or {}
-                _dormant = sum(1 for p in _paths.values() if p.get('status') == 'dormant')
+                _preserved = sum(1 for p in _paths.values()
+                                 if p.get('status') in ('preserved', 'dormant'))
                 _archived = sum(1 for p in _paths.values() if p.get('status') == 'archived')
                 lines.append(
                     f"Paths: {len(_paths)} (active: {_active.get('id')} "
                     f"\"{_active.get('title', '')[:40]}\"; "
-                    f"{_dormant} dormant, {_archived} archived)")
+                    f"{_preserved} preserved, {_archived} archived)")
             if sess_ms.plan_file:
                 # Try per-agent path first, then fallback to legacy centralized path
                 project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))

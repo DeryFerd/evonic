@@ -880,7 +880,7 @@ def _builtin_switch_path_factory(agent_context: dict):
                 "Resume another task path from the session map. Use when the "
                 "user returns to an earlier task (e.g. 'back to the website'). "
                 "Restores that path's plan/task-graph state and marks the "
-                "current path dormant."
+                "current path preserved."
             ),
             "parameters": {
                 "type": "object",
@@ -992,7 +992,7 @@ def _builtin_new_path_factory(agent_context: dict):
         return {
             "result": (
                 f"Started {record['id']} — {record['title']}. The previous "
-                "path is dormant (resumable via switch_path). You are now in "
+                "path is preserved (resumable via switch_path). You are now in "
                 "plan mode for this new task."
             ),
             "path_id": record['id'],

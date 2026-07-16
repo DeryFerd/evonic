@@ -243,10 +243,23 @@ var _cmpMapData = null;
 var _cmpSelectedPath = null;
 
 var _CMP_STATUS_STYLE = {
-    active:   { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
-    dormant:  { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'dormant' },
-    archived: { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
+    active:    { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
+    preserved: { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'preserved' },
+    archived:  { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
 };
+
+/** Normalized lifecycle status ('dormant' is the legacy name of 'preserved'). */
+function _cmpStatus(p) {
+    var s = (p && p.status) || 'preserved';
+    return s === 'dormant' ? 'preserved' : s;
+}
+
+/** Rough countdown to the next lifecycle transition ("18h", "2d"). */
+function _cmpFmtEta(ms) {
+    if (ms <= 0) return 'next turn';
+    var h = Math.round(ms / 3600000);
+    return h < 1 ? '<1h' : (h < 48 ? h + 'h' : Math.round(h / 24) + 'd');
+}
 
 function _openCmpMap() {
     if (!_cmpMapData || !_cmpMapData.paths || !_cmpMapData.paths.length) return;
@@ -342,7 +355,22 @@ function _cmpRenderDetail() {
         if (_cmpMapData.paths[i].id === _cmpSelectedPath) { p = _cmpMapData.paths[i]; break; }
     }
     if (!p) { host.innerHTML = ''; return; }
-    var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
+    var status = p.id === _cmpMapData.active_id ? 'active' : _cmpStatus(p);
+    var st = _CMP_STATUS_STYLE[status] || _CMP_STATUS_STYLE.archived;
+
+    // Lifecycle line: what this node costs in context right now, and when
+    // it decays to the next state (preserved -1d-> archived -3d-> pruned).
+    var DAY = 86400000, since = p.state_since || p.last_active || 0;
+    var lifeNote;
+    if (status === 'active') {
+        lifeNote = 'full card + transcript in context';
+    } else if (status === 'preserved') {
+        lifeNote = 'summary card in context' +
+            (since ? ' · archives in ' + _cmpFmtEta(since + DAY - Date.now()) : '');
+    } else {
+        lifeNote = 'title only in context — returning restores it' +
+            (since ? ' · prunes in ' + _cmpFmtEta(since + 3 * DAY - Date.now()) : '');
+    }
 
     // Per-path context size (independent numbers — NOT cumulative down the
     // dependency chain):
@@ -354,7 +382,11 @@ function _cmpRenderDetail() {
     var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
     var fullCls = isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300';
     var fullNote = isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
-    var offNote = isLoaded ? '' : ' <span class="text-[10px] opacity-70">in context now</span>';
+    // Archived nodes contribute their title only — the card is NOT in
+    // context until a return (or a descendant) restores them to preserved.
+    var offNote = isLoaded ? '' : (status === 'archived'
+        ? ' <span class="text-[10px] opacity-70">(on restore)</span>'
+        : ' <span class="text-[10px] opacity-70">in context now</span>');
     var isMobile = window.innerWidth <= 640;
 
     // Desktop: token figures sit top-right of the header. Mobile: they move to
@@ -368,8 +400,9 @@ function _cmpRenderDetail() {
         '<div class="flex items-center gap-2">' +
         '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
         '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
-        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>' +
-        ctxHeader + '</div>';
+        (status === 'active' ? 'ACTIVE' : esc(st.label)) + '</span></div>' +
+        ctxHeader + '</div>' +
+        '<div class="text-[10px] text-gray-400 dark:text-gray-500 mb-1">' + lifeNote + '</div>';
     if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
     if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
     if (p.key_facts && p.key_facts.length) {
@@ -395,7 +428,7 @@ function _cmpRenderDetail() {
  * Offline SVG rendering of the session graph as a RADIAL tree (mind-map):
  * the Agent hub at the center, paths fanning out in rings by dependency
  * depth, smooth curved connectors carrying the action label. Node fill
- * encodes CMP status (active/dormant/archived); the active node glows.
+ * encodes CMP status (active/preserved/archived); the active node glows.
  * Click a node to inspect its card. No mermaid.js dependency.
  */
 // Deterministic avatar background color — MUST mirror agent-sidebar.js so the
@@ -531,9 +564,13 @@ function _buildCmpSvg(cmp) {
     var nodes = '';
     for (var m = 0; m < paths.length; m++) {
         var p = paths[m], nn = node[p.id];
-        var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
+        var status = p.id === cmp.active_id ? 'active' : _cmpStatus(p);
+        var st = _CMP_STATUS_STYLE[status] || _CMP_STATUS_STYLE.archived;
         var isActive = p.id === cmp.active_id, isSel = p.id === _cmpSelectedPath;
         var isLoaded = !!loaded[p.id];
+        // Archived = title-only in context: dashed outline, dimmed — visually
+        // "just a label" until a return (or an active descendant) restores it.
+        var isArchived = status === 'archived' && !isLoaded;
         // Opaque fills so the connector lines never show through the node.
         // Green fill = memory loaded into context (active = bright, ancestors
         // = darker green); neutral slate otherwise. Stroke keeps status color,
@@ -544,10 +581,12 @@ function _buildCmpSvg(cmp) {
         var stroke = isActive ? '#22c55e' : (isLoaded ? '#3f9e6a' : st.stroke);
         var nx = nn.x + offX - NODE_W / 2, ny = nn.y + offY - NODE_H / 2;
         var title = (p.title || '').length > 15 ? (p.title || '').slice(0, 14) + '…' : (p.title || '');
-        nodes += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
+        nodes += '<g style="cursor:pointer"' + (isArchived ? ' opacity="0.55"' : '') +
+            ' onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
         nodes += '<rect x="' + nx.toFixed(1) + '" y="' + ny.toFixed(1) + '" width="' + NODE_W +
             '" height="' + NODE_H + '" rx="9" fill="' + fill + '" stroke="' + stroke +
             '" stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
+            (isArchived ? ' stroke-dasharray="4 3"' : '') +
             (isActive || isSel ? ' filter="drop-shadow(0 0 4px ' + stroke + ')"' : '') + '/>';
         nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
             '" font-size="11" font-weight="600" fill="' + (isDark ? 'currentColor' : '#1e293b') + '">' + esc(p.id) +

@@ -85,11 +85,22 @@ def test_dependency_ancestors_stay_compact():
     assert '- A2 blog' in section
 
 
-def test_archived_paths_still_render_snippet():
+def test_archived_paths_render_title_only():
+    """Archived = the next rung down in context cost: the snippet (outcome/
+    goal summary) is offloaded too, leaving only the title line."""
     ms = _session()
     ms.cmp['paths']['A1']['status'] = 'archived'
     section = render_cmp_section(ms.cmp)
+    assert 'Archived paths (title only' in section
     assert '- A1 Perusahaan A [archived]' in section
+    assert 'laporan mingguan selesai' not in section   # outcome offloaded
+
+
+def test_legacy_dormant_status_renders_as_preserved_snippet():
+    ms = _session()
+    ms.cmp['paths']['A1']['status'] = 'dormant'        # pre-lifecycle data
+    section = render_cmp_section(ms.cmp)
+    assert '- A1 Perusahaan A [preserved] — laporan mingguan selesai' in section
 
 
 def test_root_label_is_dynamic_but_id_stays_stable():

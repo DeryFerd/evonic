@@ -78,5 +78,5 @@ def test_full_session_lifecycle():
     assert 'invoice plan drafted' not in text     # P2 offloaded
 
     # hysteresis bookkeeping ticked throughout
-    assert ms.cmp['paths'][p2]['status'] == 'dormant'
+    assert ms.cmp['paths'][p2]['status'] == 'preserved'
     assert ms.cmp['stats']['switches'] >= 1

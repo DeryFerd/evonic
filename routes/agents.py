@@ -1850,7 +1850,8 @@ def api_chat_agent_state(agent_id):
                 for _, p in sorted(state.cmp['paths'].items()):
                     card = {k: p.get(k) for k in
                             ('id', 'title', 'status', 'action', 'goal', 'outcome',
-                             'key_facts', 'artifacts', 'depends_on', 'last_active')}
+                             'key_facts', 'artifacts', 'depends_on', 'last_active',
+                             'state_since')}
                     card['tokens'] = path_token_estimate(_cmp_chatlog, p)
                     card['card_tokens'] = card_token_estimate(p)
                     _path_cards.append(card)

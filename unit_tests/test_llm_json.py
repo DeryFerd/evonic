@@ -60,3 +60,35 @@ def test_thought_experiment_regression():
     verdicts = _thought_experiment(ctx, dag, [(node, 'write_file',
                                                {'file_path': 'x', 'content': 'y'})], {})
     assert verdicts == {'n1': {'verdict': 'proceed', 'reason': 'ok'}}
+
+
+# ── complete_truncated_json ──────────────────────────────────────────────────
+
+def test_truncated_after_nested_object_and_comma():
+    from backend.agent_runtime.llm_json import complete_truncated_json
+    # the live CMP failure: budget ran out right after new_path
+    text = ('{\n  "route": "indep_branch",\n  "target": null,\n'
+            '  "new_path": {\n    "title": "Info MBG",\n'
+            '    "action": "find info"\n  },')
+    assert complete_truncated_json(text) == {
+        'route': 'indep_branch', 'target': None,
+        'new_path': {'title': 'Info MBG', 'action': 'find info'}}
+
+
+def test_truncated_mid_string_and_mid_value():
+    from backend.agent_runtime.llm_json import complete_truncated_json
+    assert complete_truncated_json('{"route": "continue", "card": {"outcome": "halfway don') \
+        == {'route': 'continue', 'card': {'outcome': 'halfway don'}}
+    assert complete_truncated_json('{"route": "return", "target":') \
+        == {'route': 'return', 'target': None}
+    assert complete_truncated_json('{"route": "continue", "card": {"new_facts": ["a", "b"') \
+        == {'route': 'continue', 'card': {'new_facts': ['a', 'b']}}
+
+
+def test_truncated_repair_gives_up_safely():
+    from backend.agent_runtime.llm_json import complete_truncated_json
+    assert complete_truncated_json('{"rou') is None          # dangling bare key
+    assert complete_truncated_json('{"a": 1}') is None       # complete object
+    assert complete_truncated_json('no braces at all') is None
+    assert complete_truncated_json('') is None
+    assert complete_truncated_json(None) is None

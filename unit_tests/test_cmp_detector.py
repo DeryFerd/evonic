@@ -290,6 +290,72 @@ def test_malformed_envelope_shapes_are_dropped():
     assert result['card_delta'] is None and result['new_path'] is None
 
 
+def test_archived_paths_are_title_only_in_prompt():
+    """Prompt cost follows the lifecycle tiers: an archived path contributes
+    its title to the map text but no card (outcome/facts stay offloaded)."""
+    ms = _session()
+    p1 = ms.cmp['paths']['A1']
+    p1['status'] = 'archived'
+    p1['outcome'] = 'secret archived outcome detail'
+    client = _client({'route': 'continue'})
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        detect(ms.cmp, ms, LONG_NEW_TASK)
+    prompt = _sent_prompt(client)
+    assert 'client A website' in prompt                          # title stays
+    assert '(archived)' in prompt
+    assert 'secret archived outcome detail' not in prompt        # no snippet
+    assert 'deploy failed: missing DATABASE_URL' not in prompt   # no card
+
+
+# ── Truncated envelopes (finish_reason=length) ───────────────────────────────
+
+def test_truncated_envelope_is_repaired():
+    """Live regression: deepseek-v4-flash burned the budget on implicit CoT
+    and cut the envelope after new_path — the branch decision was lost to
+    the continue fallback. Route/target/new_path come first in the envelope
+    precisely so truncation repair recovers them."""
+    ms = _session()
+    truncated = ('{\n  "route": "indep_branch",\n  "target": null,\n'
+                 '  "new_path": {\n    "title": "Info MBG",\n'
+                 '    "action": "find info"\n  },')
+    with _patch_llm(truncated):
+        result = detect(ms.cmp, ms, LONG_NEW_TASK)
+    assert result['decision'] == 'indep_branch'
+    assert result['new_path'] == {'title': 'Info MBG', 'action': 'find info'}
+
+
+def test_truncation_beyond_repair_retries_with_doubled_budget():
+    ms = _session()
+    client = MagicMock()
+    client.chat_completion.side_effect = [
+        {'success': True,
+         'response': {'choices': [{'message': {'content': '{"rou'},
+                                   'finish_reason': 'length'}]}},
+        {'success': True,
+         'response': {'choices': [{'message': {'content':
+                                   json.dumps({'route': 'return',
+                                               'target': 'A1'})}}]}},
+    ]
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        result = detect(ms.cmp, ms, LONG_NEW_TASK)
+    assert (result['decision'], result['target']) == ('return', 'A1')
+    assert client.chat_completion.call_count == 2
+    assert client.chat_completion.call_args_list[0][1]['max_tokens'] == 1024
+    assert client.chat_completion.call_args_list[1][1]['max_tokens'] == 2048
+
+
+def test_unparseable_without_length_never_retries():
+    ms = _session()
+    client = _client('gibberish with no json')  # finish_reason absent
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        result = detect(ms.cmp, ms, LONG_NEW_TASK)
+    assert result['decision'] == 'continue'
+    client.chat_completion.assert_called_once()
+
+
 # ── Init naming pass ─────────────────────────────────────────────────────────
 
 def test_init_pass_names_and_never_routes():

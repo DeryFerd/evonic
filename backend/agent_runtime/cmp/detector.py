@@ -144,7 +144,8 @@ def _call_turn_llm(cmp: dict, ms, text: str, recent_tail: str,
     # the route; when even repair fails, one retry at a doubled budget.
     for budget in (1024, 2048):
         response = classifier_chat(client, messages, max_tokens=budget,
-                                   log_label="CMP turn")
+                                   log_label="CMP turn",
+                                   source="cmp", archive_category="turn")
         _dur = _time.time() - _t0
         if not response.get('success'):
             _logger.warning("CMP turn LLM call failed [%s] (model=%s, %.1fs) — "

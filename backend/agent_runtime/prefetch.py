@@ -189,7 +189,7 @@ class TurnPrefetcher:
                     _logger.exception("CMP prefetch history filter failed — full history")
                     _jsonl_entries = None
             if _jsonl_entries is None:
-                _jsonl_entries = chatlog.get_entries_for_llm(
+                _jsonl_entries = chatlog.get_entries_for_llm_trail(
                     after_ts=summary_record.get('last_message_ts') if summary_record else None,
                 )
             _use_jsonl = bool(_jsonl_entries) or chatlog.get_last_entry() is not None

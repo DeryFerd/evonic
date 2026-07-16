@@ -5,7 +5,8 @@ system prompt, and tools, confined to the target path, and reports its findings
 back to the caller's session via agent messaging.
 """
 
-import os
+import json
+import posixpath
 import logging
 import threading
 
@@ -49,7 +50,7 @@ def execute(agent: dict, args: dict) -> dict:
     from backend.agent_runtime import explorer
     from backend.agent_runtime.notifier import notify_agent
     from backend.agent_report_to import resolve_report_to_for_subagent_spawn
-    from backend.tools._workspace import resolve_workspace_path
+    from backend.tools.lib.exec_backend import registry
 
     parent_id = agent.get('id', '')
     if not parent_id:
@@ -67,8 +68,27 @@ def execute(agent: dict, args: dict) -> dict:
     # relative paths map to the caller's workspace; absolute host paths pass
     # through unchanged (exploring outside the workspace is the whole point).
     caller_ws = agent.get('workspace') or ''
-    path = os.path.abspath(resolve_workspace_path(agent, raw_path, caller_ws))
-    if not os.path.isdir(path):
+    if raw_path == '/workspace' or raw_path.startswith('/workspace/'):
+        path = posixpath.join(caller_ws, raw_path[len('/workspace'):].lstrip('/'))
+    elif caller_ws and not posixpath.isabs(raw_path):
+        path = posixpath.join(caller_ws, raw_path)
+    else:
+        path = raw_path
+    path = posixpath.abspath(path)
+    backend = registry.get_backend(agent.get('session_id') or 'default', agent)
+    path = backend.resolve_path(path)
+    check = backend.run_python(
+        f'import json, os; p={path!r}; print(json.dumps({{"path": os.path.realpath(p), "is_dir": os.path.isdir(p)}}))',
+        30, {},
+    )
+    if check.get('error') or check.get('exit_code', 0) != 0:
+        return {'error': f"cannot validate path in execution workplace: {check.get('error') or check.get('stderr', 'unknown error')}"}
+    try:
+        path_info = json.loads(check.get('stdout', '').strip())
+    except json.JSONDecodeError:
+        return {'error': 'cannot validate path in execution workplace: invalid backend response'}
+    path = path_info.get('path', path)
+    if not path_info.get('is_dir'):
         suffix = f' (resolved to: {path})' if path != raw_path else ''
         return {'error': f'path is not an existing directory: {raw_path}{suffix}'}
 

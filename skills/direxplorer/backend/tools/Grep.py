@@ -5,13 +5,8 @@ Returns matching lines grouped by file with line numbers.
 """
 import os
 import json
-import subprocess
-from ._utils import (
-    _auto_correct_path,
-    _validate_workspace_boundary,
-    _resolve_workspace,
-    _is_kb_vault_path,
-)
+import shlex
+from ._utils import _prepare_path, _is_kb_vault_path
 
 _MAX_MATCHES = 500
 # Cap total output size (~50KB) to prevent context overflow when the
@@ -30,25 +25,15 @@ def execute(agent: dict, args: dict) -> dict:
     search_path = args.get('path', '.')
     include = args.get('include', '')
 
-    search_path = _resolve_workspace(agent, search_path)
-
-    # Path auto-correction: if the resolved path doesn't exist, try glob-resolve
-    if not os.path.exists(search_path):
-        workspace = (agent or {}).get('workspace', '')
-        if workspace:
-            corrected = _auto_correct_path(search_path, workspace, path_is_dir=True)
-            if os.path.exists(corrected):
-                search_path = corrected
-
-    # Enforce workspace boundary (blocks path traversal, absolute paths, symlinks)
-    workspace = (agent or {}).get('workspace', '')
-    if workspace:
-        search_path = _validate_workspace_boundary(search_path, workspace)
-
-    if not os.path.exists(search_path):
+    try:
+        backend, search_path, info = _prepare_path(agent, search_path)
+    except PermissionError as exc:
+        return {'error': str(exc)}
+    except RuntimeError as exc:
+        return {'error': f'cannot inspect path: {exc}'}
+    if not info['exists']:
         return {'error': f'path not found: {search_path}'}
 
-    # Build ripgrep command
     cmd = ['rg', '--json', '--no-heading', '--max-count', str(_MAX_MATCHES)]
 
     # An agent's KB vault lives under the gitignored agents/ tree; ripgrep honors
@@ -63,21 +48,21 @@ def execute(agent: dict, args: dict) -> dict:
     cmd.append(pattern)
     cmd.append(search_path)
 
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30
-        )
-    except FileNotFoundError:
+    result = backend.run_bash(' '.join(shlex.quote(part) for part in cmd), 30, {})
+    if result.get('error'):
+        message = result['error']
+        if 'timed out' in message.lower():
+            return {'error': 'search timed out after 30 seconds'}
+        return {'error': message}
+    if result.get('exit_code') == 127:
         return {'error': 'ripgrep (rg) is not installed'}
-    except subprocess.TimeoutExpired:
-        return {'error': 'search timed out after 30 seconds'}
 
     # Parse ripgrep JSON output
     matches_by_file: dict = {}
     total_matches = 0
     truncated = False
 
-    for line in result.stdout.strip().split('\n'):
+    for line in result.get('stdout', '').strip().split('\n'):
         if not line:
             continue
         try:
@@ -109,7 +94,7 @@ def execute(agent: dict, args: dict) -> dict:
     # Convert to sorted output
     matches = []
     for file_abs in sorted(matches_by_file.keys()):
-        if os.path.isdir(search_path):
+        if info['is_dir']:
             rel = os.path.relpath(file_abs, search_path)
         else:
             rel = file_abs

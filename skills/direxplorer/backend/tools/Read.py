@@ -5,7 +5,7 @@ Supports pagination via the `offset` parameter for large files.
 Mirrors the core read_file tool behavior but with FastContext naming convention.
 """
 import os
-from ._utils import _auto_correct_path, _validate_workspace_boundary, _resolve_workspace
+from ._utils import _prepare_path
 
 _MAX_FILE_SIZE = 400 * 1024
 _CHUNK_CHARS = 8000
@@ -16,39 +16,28 @@ def execute(agent: dict, args: dict) -> dict:
     if not file_path:
         return {'error': 'file_path is required'}
 
-    file_path = _resolve_workspace(agent, file_path)
+    try:
+        backend, file_path, info = _prepare_path(agent, file_path, want_dir=False)
+    except PermissionError as exc:
+        return {'error': str(exc)}
+    except RuntimeError as exc:
+        return {'error': f'cannot inspect file: {exc}'}
 
-    # Path auto-correction: if the resolved path doesn't exist, try glob-resolve
-    if not os.path.exists(file_path):
-        workspace = (agent or {}).get('workspace', '')
-        if workspace:
-            corrected = _auto_correct_path(file_path, workspace, path_is_dir=False)
-            if os.path.exists(corrected):
-                file_path = corrected
-
-    # Enforce workspace boundary (blocks path traversal, absolute paths, symlinks)
-    workspace = (agent or {}).get('workspace', '')
-    if workspace:
-        file_path = _validate_workspace_boundary(file_path, workspace)
-
-    if not os.path.exists(file_path):
+    if not info['exists']:
         return {'error': f'file not found: {file_path}'}
-    if os.path.isdir(file_path):
+    if info['is_dir']:
         return {'error': f'path is a directory, not a file: {file_path}'}
 
-    file_size = os.path.getsize(file_path)
+    file_size = info['size']
     if file_size > _MAX_FILE_SIZE:
         return {'error': f'file size ({file_size / 1024:.1f}KB) exceeds 400KB limit'}
 
     offset = int(args.get('offset', 1))
-
-    try:
-        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
-    except PermissionError:
-        return {'error': 'permission denied'}
-    except Exception as e:
-        return {'error': f'cannot read file: {e}'}
+    result = backend.read_file(file_path)
+    if result.get('error'):
+        return {'error': f"cannot read file: {result['error']}"}
+    content = result.get('content', '')
+    lines = content.splitlines(keepends=True)
 
     if not lines:
         return {'content': '(empty file)', 'total_lines': 0}

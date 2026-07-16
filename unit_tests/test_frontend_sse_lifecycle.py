@@ -39,3 +39,18 @@ def test_global_sse_streams_close_on_page_navigation():
     assert "new RealtimeClient({" not in agents_page
     assert "new EventSource(`/api/agents/status/stream`)" not in agents_page
     assert "new EventSource('/api/agents/status/stream')" not in agents_page
+
+
+def test_state_changed_sse_reaches_agent_state_listener():
+    """The 'state_changed' SSE event must be listened for by the transport
+    (source module AND the generated bundle — rebuild scripts/build_chat_ui.py
+    if the bundle assert fails) and bridged to the document-level
+    'evonic:agent-state-changed' event that the agent detail / sessions pages
+    already handle with a debounced state re-fetch."""
+    transport = read_repo_file("static/js/chat-ui/transport.js")
+    bundle = read_repo_file("static/js/chat-ui.js")
+    for src in (transport, bundle):
+        assert "'state_changed'" in src
+        assert "new CustomEvent('evonic:agent-state-changed'" in src
+    agent_detail = read_repo_file("templates/agent_detail.html")
+    assert "document.addEventListener('evonic:agent-state-changed'" in agent_detail

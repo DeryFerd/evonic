@@ -538,6 +538,10 @@ def _producer_chat(ring: BoundedRing, breaker: CircuitBreaker,
             'agent_id': d.get('agent_id', ''),
         }),
         'turn_split': ('turn_split', lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {
+            'agent_id': d.get('agent_id', ''),
+            'session_id': d.get('session_id', ''),
+        }),
     }
 
     def make_handler(evt_name, sse_name, transform):

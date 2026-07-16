@@ -47,6 +47,7 @@ CHAT_FORWARDED_EVENTS = frozenset({
     'message_injection_applied',
     'session_clear',
     'turn_split',
+    'evonic:agent-state-changed',
 })
 
 

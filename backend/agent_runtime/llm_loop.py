@@ -202,6 +202,11 @@ def _persist_context_usage(session_id, agent_id, usage):
         data = {}
     data['context_usage'] = usage
     db.upsert_session_state(session_id, json.dumps(data), agent_id=agent_id)
+    # Notify the browser so the Session State panel's context bar updates live
+    # (forwarded to SSE as 'state_changed' — see routes/realtime.py _producer_chat).
+    from backend.event_stream import event_stream
+    event_stream.emit('evonic:agent-state-changed',
+                      {'agent_id': agent_id, 'session_id': session_id})
 from backend.tools import tool_registry
 from config import (AGENT_MAX_TOOL_ITERATIONS as MAX_TOOL_ITERATIONS,
                     AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS,

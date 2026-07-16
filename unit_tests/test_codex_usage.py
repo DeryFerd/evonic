@@ -88,3 +88,20 @@ def test_context_usage_estimated_when_provider_reports_zero():
     big = estimate_context_tokens(
         [{'role': 'user', 'content': 'x' * 8000}], None)
     assert big > small
+
+
+def test_persist_context_usage_emits_state_changed():
+    """The context bar updates live: persisting context_usage must emit
+    'evonic:agent-state-changed' (forwarded to the browser as the
+    'state_changed' SSE event) — before this, only a manual Refresh
+    re-fetched /chat/state."""
+    from backend.agent_runtime import llm_loop
+    with patch.object(llm_loop, 'db') as mock_db, \
+         patch('backend.event_stream.event_stream.emit') as mock_emit:
+        mock_db.get_session_state.return_value = '{}'
+        llm_loop._persist_context_usage('sess-1', 'agent-1',
+                                        {'prompt_tokens': 10})
+        mock_db.upsert_session_state.assert_called_once()
+        mock_emit.assert_called_once_with(
+            'evonic:agent-state-changed',
+            {'agent_id': 'agent-1', 'session_id': 'sess-1'})

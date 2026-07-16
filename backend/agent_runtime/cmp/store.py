@@ -15,10 +15,11 @@ import time
 CMP_VERSION = 1
 MAX_PATHS = 20
 
-# Wall-clock lifecycle (evaluated at turn boundaries): each state strictly
-# reduces a path's context cost — active (full card), preserved (snippet),
-# archived (map-node title only), pruned (record removed).
-PRESERVED_TTL_MS = 24 * 3600 * 1000       # preserved > 1 day  → archived
+# Count-based preserved cap + wall-clock archived decay (evaluated at turn
+# boundaries): each state strictly reduces a path's context cost — active
+# (full card), preserved (snippet, max MAX_PRESERVED), archived (map-node
+# title only), pruned (record removed).
+MAX_PRESERVED = 2                          # per-cap, oldest preserved archived
 ARCHIVED_TTL_MS = 3 * 24 * 3600 * 1000    # archived  > 3 days → pruned
 RESTORE_MAX_HOPS = 3                       # lineage auto-restore depth
 
@@ -101,7 +102,8 @@ def path_status(path: dict) -> str:
 
 def _set_status(path: dict, status: str, now_ts: int) -> None:
     """All status writes go through here so `state_since` (the lifecycle
-    clock the TTLs measure against) can never drift from the status."""
+    clock used for count-based ordering and the archive TTL) can never
+    drift from the status."""
     path["status"] = status
     path["state_since"] = now_ts
 
@@ -328,10 +330,11 @@ def restore_lineage(cmp: dict, active_id: str, now_ts: int) -> list:
 
 
 def tick_lifecycle(cmp: dict, now_ts: int = None) -> dict:
-    """Wall-clock lifecycle decay, evaluated at turn boundaries.
+    """Lifecycle decay evaluated at turn boundaries.
 
-    preserved > PRESERVED_TTL_MS → archived (title-only in context) — unless
-    the path is in the active path's restore lineage (≤ RESTORE_MAX_HOPS),
+    preserved count cap (MAX_PRESERVED): when more than MAX_PRESERVED paths
+    are in the preserved state, the oldest ones (by state_since) are archived
+    — unless the path is in the active path's restore lineage (≤ RESTORE_MAX_HOPS),
     which never decays out from under the current work.
     archived > ARCHIVED_TTL_MS → pruned (record removed) — unless a living
     path still depends_on it (pruning a referenced parent would re-root the
@@ -344,14 +347,23 @@ def tick_lifecycle(cmp: dict, now_ts: int = None) -> dict:
                                          max_depth=RESTORE_MAX_HOPS,
                                          max_count=len(cmp["paths"])))
     archived, pruned = [], []
+
+    # --- preserved count cap: archive oldest over MAX_PRESERVED ----------
+    preserved_unprotected = [
+        (pid, p) for pid, p in cmp["paths"].items()
+        if path_status(p) == "preserved" and pid not in protected
+    ]
+    preserved_unprotected.sort(key=lambda t: _state_since(t[1]))
+
+    overflow = len(preserved_unprotected) - MAX_PRESERVED
+    for pid, path in preserved_unprotected[:overflow]:
+        _set_status(path, "archived", now_ts)
+        path["atg"] = None  # heavy snapshot never survives archiving
+        archived.append(pid)
+
+    # --- archived TTL → prune --------------------------------------------
     for pid, path in cmp["paths"].items():
-        status = path_status(path)
-        if (status == "preserved" and pid not in protected
-                and now_ts - _state_since(path) > PRESERVED_TTL_MS):
-            _set_status(path, "archived", now_ts)
-            path["atg"] = None  # heavy snapshot never survives archiving
-            archived.append(pid)
-        elif (status == "archived"
+        if (path_status(path) == "archived"
                 and now_ts - _state_since(path) > ARCHIVED_TTL_MS
                 and not _is_depended_on(cmp, pid)):
             pruned.append(pid)

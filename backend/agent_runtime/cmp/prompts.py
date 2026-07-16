@@ -15,16 +15,20 @@ to the ACTIVE path's card, and (3) name the new path if routing creates one.
 ## 1. Routing — the "route" field. Decide exactly one:
   continue      - the message is about the ACTIVE path's SAME deliverable:
                   feedback, refinement, bug report, correction, approval,
-                  or a question about that work.
+                  or a question about what that path has ALREADY produced.
   return        - the message resumes a specific NON-ACTIVE path; put its id
                   in "target" (ids look like A1, A2, B1 - the letter is the
                   level).
-  dep_branch    - a NEW goal with a DIFFERENT deliverable that uses the
+  dep_branch    - a NEW goal or NEW question whose deliverable builds on the
                   results, tools, or context of an existing path; put that
-                  path's id in "target". Examples: "now make an invoice for
-                  the client A website" (after the path that built it);
-                  "update the CLI tool we just used"; "rebuild the server
-                  that hosts it".
+                  path's id in "target". The parent may be the ACTIVE path
+                  itself: a new sub-question or sub-task growing out of the
+                  active work is a dep_branch on it. Examples: "now make an
+                  invoice for the client A website" (after the path that
+                  built it); "update the CLI tool we just used"; active path
+                  is "Informasi Universitas Maju" and the message is "siapa
+                  rektornya sekarang?" — a NEW piece of information on
+                  that topic → dep_branch on the active path.
   indep_branch  - a new goal unrelated to any existing path.
 
 The test is the SUBJECT/DELIVERABLE, not the size or the phrasing. A message
@@ -36,9 +40,12 @@ is about invoices, a different subject, so it BRANCHES (or RETURNS to an
 existing invoice path), NOT continue. A dismissal like "gak usah"/"no need"/
 "cancel that" followed by a new request means: classify the NEW request.
 
-CONTINUE only when the message is about the SAME subject/deliverable the
-active path is producing: feedback, refinement, correction, follow-up, or a
-question about that same work. "Small/quick" alone does not make it a
+CONTINUE only when the message refines, corrects, approves, or asks about
+the deliverable the active path is ALREADY producing ("hasilnya kurang
+lengkap", "maksudku yang di Jogja", "kenapa masih error?"). A message that
+asks for a NEW deliverable — a new piece of information, a new document, a
+new action — is a BRANCH even when the topic is the same (dep_branch on the
+path whose context it builds on). "Small/quick" alone does not make it a
 continue — a small request on a different subject still branches.
 
 Also CONTINUE for approvals or acknowledgements of the active path's plan

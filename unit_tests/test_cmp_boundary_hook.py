@@ -159,6 +159,25 @@ def test_dep_branch_creates_dependent_plan_mode_path():
     assert ms.mode == 'plan' and ms.atg is None and ms.plan_file is None
 
 
+def test_dep_branch_on_the_active_path_creates_its_child():
+    """A new sub-question growing out of the active work branches as its
+    DESCENDANT (live regression: asking for the rector's name while an
+    'info about university X' path was active got routed continue; the
+    rubric now sends it dep_branch on the active path — this pins the
+    mechanics of that route)."""
+    ms = _session_with_two_paths()          # active = A2
+    with _detect('dep_branch', 'A2',
+                 new_path={'title': 'Rektor Universitas Maju',
+                           'action': 'find info'}):
+        result = on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=9000),
+                                  'siapa sih rektornya sekarang?')
+    new_id = result['target']
+    assert ms.cmp['paths'][new_id]['depends_on'] == ['A2']
+    assert ms.cmp['active_id'] == new_id
+    assert ms.cmp['paths']['A2']['status'] == 'preserved'
+    assert ms.cmp['paths'][new_id]['title'] == 'Rektor Universitas Maju'
+
+
 def test_indep_branch_creates_independent_path():
     ms = _session_with_two_paths()
     with _detect('indep_branch'):

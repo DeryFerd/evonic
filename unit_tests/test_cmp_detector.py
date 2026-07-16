@@ -4,7 +4,7 @@ card-delta and new-path naming in one envelope)."""
 import json
 from unittest.mock import MagicMock, patch
 
-from backend.agent_runtime.cmp import store
+from backend.agent_runtime.cmp import prompts, store
 from backend.agent_runtime.cmp.detector import detect
 from backend.agent_state import AgentState
 
@@ -81,6 +81,33 @@ def test_short_retry_message_continues_without_switching():
                 result['layer']) == ('continue', None, 'guard')
         assert result['card_delta'] is None and result['new_path'] is None
         client.chat_completion.assert_not_called()
+
+
+def test_guard_boundary_is_two_words():
+    """The signal-strength rail sits at ≤2 words: pure retry/ack particles
+    stay guarded, LLM never consulted."""
+    ms = _session()
+    for msg in ('coba lagi', 'ulangi ya', 'ok'):
+        client = _client({'route': 'return', 'target': 'A1'})
+        with patch('backend.task_classifier._get_classifier_client',
+                   return_value=client):
+            result = detect(ms.cmp, ms, msg)
+        assert (result['decision'], result['layer']) == ('continue', 'guard')
+        client.chat_completion.assert_not_called()
+
+
+def test_three_word_subject_message_reaches_llm():
+    """Live gap: the old ≤3-word guard force-routed 'balik ke laporan' to
+    continue without the LLM ever seeing it (and skipped the card delta).
+    Three-word messages carry a subject in Indonesian → they go to the LLM."""
+    ms = _session()
+    client = _client({'route': 'return', 'target': 'A1'})
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        result = detect(ms.cmp, ms, 'balik ke laporan')
+    assert result['layer'] == 'LLM'
+    assert (result['decision'], result['target']) == ('return', 'A1')
+    client.chat_completion.assert_called_once()
 
 
 def test_recent_dialogue_reaches_the_turn_prompt():
@@ -306,6 +333,50 @@ def test_archived_paths_are_title_only_in_prompt():
     assert '(archived)' in prompt
     assert 'secret archived outcome detail' not in prompt        # no snippet
     assert 'deploy failed: missing DATABASE_URL' not in prompt   # no card
+
+
+def test_map_shows_depends_on_parentage():
+    """Map lines carry 'builds on <parent>' so the LLM can pick correct
+    return/dep_branch targets and resolve 'back to the parent'. Root paths
+    render without the annotation."""
+    ms = _session()
+    store.create_path(ms.cmp, ms, 'perbaiki chart', goal='fix chart',
+                      depends_on=['A1'], now_ts=3000)
+    client = _client({'route': 'continue'})
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        detect(ms.cmp, ms, LONG_NEW_TASK)
+    prompt = _sent_prompt(client)
+    assert 'builds on A1' in prompt
+    assert '- A2: server config (preserved)' in prompt   # root: no annotation
+
+
+def test_archived_path_keeps_parentage_but_no_card():
+    """An archived path stays title-only (no card snippet) but keeps its
+    parentage annotation — parent disambiguation matters most once the
+    parent has aged out."""
+    ms = _session()
+    store.create_path(ms.cmp, ms, 'perbaiki chart', goal='fix chart',
+                      depends_on=['A1'], now_ts=3000)
+    store.switch_to(ms.cmp, ms, 'A2', now_ts=4000)
+    b1 = ms.cmp['paths']['B1']
+    b1['status'] = 'archived'
+    b1['outcome'] = 'secret archived outcome detail'
+    client = _client({'route': 'continue'})
+    with patch('backend.task_classifier._get_classifier_client',
+               return_value=client):
+        detect(ms.cmp, ms, LONG_NEW_TASK)
+    prompt = _sent_prompt(client)
+    assert '(archived, builds on A1)' in prompt
+    assert 'secret archived outcome detail' not in prompt
+
+
+def test_turn_system_contains_routing_procedure_anchors():
+    """The ordered decision procedure and few-shot block are load-bearing —
+    guard against future prompt edits silently dropping them."""
+    for anchor in ('IN ORDER', 'builds on', 'FINISHED', 'gak usah',
+                   '### Examples', 'siapa rektornya'):
+        assert anchor in prompts.TURN_SYSTEM, anchor
 
 
 # ── Truncated envelopes (finish_reason=length) ───────────────────────────────

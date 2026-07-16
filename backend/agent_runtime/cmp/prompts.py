@@ -3,7 +3,9 @@
 One LLM call per turn returns a structured op envelope (route + card delta +
 new-path naming); a deterministic store applies it under immutability
 invariants (see store.apply_card_delta). The routing rules are the
-battle-tested 4-class rubric formerly in task_classifier._BOUNDARY_SYSTEM.
+4-class rubric formerly in task_classifier._BOUNDARY_SYSTEM, restructured
+into an ordered decision procedure with few-shot examples drawn from
+documented live regressions.
 """
 
 TURN_SYSTEM = """\
@@ -12,46 +14,64 @@ session contains several task paths (below). In ONE pass you must:
 (1) route the user's new message, (2) record what the latest exchange added
 to the ACTIVE path's card, and (3) name the new path if routing creates one.
 
-## 1. Routing — the "route" field. Decide exactly one:
-  continue      - the message is about the ACTIVE path's SAME deliverable:
-                  feedback, refinement, bug report, correction, approval,
-                  or a question about what that path has ALREADY produced.
-  return        - the message resumes a specific NON-ACTIVE path; put its id
-                  in "target" (ids look like A1, A2, B1 - the letter is the
-                  level).
-  dep_branch    - a NEW goal or NEW question whose deliverable builds on the
-                  results, tools, or context of an existing path; put that
-                  path's id in "target". The parent may be the ACTIVE path
-                  itself: a new sub-question or sub-task growing out of the
-                  active work is a dep_branch on it. Examples: "now make an
-                  invoice for the client A website" (after the path that
-                  built it); "update the CLI tool we just used"; active path
-                  is "Informasi Universitas Maju" and the message is "siapa
-                  rektornya sekarang?" — a NEW piece of information on
-                  that topic → dep_branch on the active path.
-  indep_branch  - a new goal unrelated to any existing path.
+## 1. Routing — the "route" field
+Routes:
+  continue      - same deliverable of the ACTIVE path: refine, correct,
+                  approve, retry, or ask about what it ALREADY produced.
+  return        - resume a NON-ACTIVE path; "target" = its id (ids look
+                  like A1, B2 — the letter is the level). The map's
+                  "builds on X" shows which path each one grew out of.
+  dep_branch    - a NEW goal or NEW question whose deliverable builds on
+                  the results, tools, or context of an existing path;
+                  "target" = that path's id. The parent may be the ACTIVE
+                  path itself.
+  indep_branch  - a new goal unrelated to every path on the map.
 
-The test is the SUBJECT/DELIVERABLE, not the size or the phrasing. A message
-about a DIFFERENT subject than the active path (different entity, document,
-project, or kind of work) is a BRANCH or RETURN — never CONTINUE — even if it
-is short or sounds casual. Example: active path is about the user's SCHEDULE
-and the message is "gak usah, tolong checkkan invoice atas nama Intan" — that
-is about invoices, a different subject, so it BRANCHES (or RETURNS to an
-existing invoice path), NOT continue. A dismissal like "gak usah"/"no need"/
-"cancel that" followed by a new request means: classify the NEW request.
+Decide by applying these steps IN ORDER — take the FIRST that matches:
+S1. The message names a path id ("lanjutkan A2") → return to that id
+    (continue if it names the ACTIVE id).
+S2. Pure approval / acknowledgement / retry adding NO new subject ("ok",
+    "ya setuju", "coba lagi", "lanjutkan") → continue. A dismissal
+    ("gak usah", "no need", "cancel that") followed by a request is NOT
+    this: ignore the dismissal and classify the request with the steps
+    below.
+S3. Feedback, correction, bug report, or a question about the deliverable
+    the ACTIVE path is producing or JUST produced → continue.
+S4. The message goes back to the SUBJECT an earlier path owns — even
+    without naming an id ("balik ke laporan", "yg issue kanban tadi udah
+    solved kah?") → return to that path. When the ACTIVE path's work is
+    FINISHED and the message moves back to broader or earlier work,
+    return to the path it builds on (its parent/ancestor).
+S5. The message asks for a NEW deliverable — a new piece of information,
+    a new document, a new action — that uses an existing path's results
+    or topic → dep_branch on that path (a sub-question on the active
+    topic is a dep_branch on the ACTIVE path).
+S6. Otherwise → indep_branch.
 
-CONTINUE only when the message refines, corrects, approves, or asks about
-the deliverable the active path is ALREADY producing ("hasilnya kurang
-lengkap", "maksudku yang di Jogja", "kenapa masih error?"). A message that
-asks for a NEW deliverable — a new piece of information, a new document, a
-new action — is a BRANCH even when the topic is the same (dep_branch on the
-path whose context it builds on). "Small/quick" alone does not make it a
-continue — a small request on a different subject still branches.
+The test is the SUBJECT/DELIVERABLE, never size or phrasing: a short or
+casual message about a DIFFERENT subject still returns or branches, and a
+"small/quick" request is still a branch when it asks for something new.
+When the active card says the work is FINISHED, a new message is more
+often a return or branch than a continue. When you genuinely cannot tell
+whether the subject is the same → continue.
 
-Also CONTINUE for approvals or acknowledgements of the active path's plan
-("ok", "lanjutkan", "ya, setuju"). Explicitly mentioning a path id (e.g.
-"lanjutkan A2") is a RETURN to that path. When you cannot tell whether the
-subject is the same, answer continue.
+### Examples (maps shown compressed)
+- ACTIVE A1 "laporan penjualan"; msg "coba lagi" → continue (S2: retry)
+- ACTIVE A1; msg "hasilnya kurang lengkap, tambahkan bulan Juni"
+  → continue (S3: refines the same deliverable)
+- ACTIVE A1 "jadwal minggu ini", preserved A2 "invoice Intan"; msg
+  "gak usah, tolong checkkan invoice atas nama Intan" → return A2
+  (S2 exception + S4: dismissal dropped, the request is A2's subject)
+- ACTIVE A1 "Informasi Universitas Maju"; msg "siapa rektornya sekarang?"
+  → dep_branch A1 (S5: a NEW piece of information on that topic)
+- preserved A1 "laporan keuangan", ACTIVE B1 "perbaiki chart" (builds on
+  A1, work FINISHED); msg "oke sip, sekarang lanjut laporannya"
+  → return A1 (S4: sub-task done, back to the parent's subject)
+- ACTIVE A1 (plan AWAITING USER APPROVAL), preserved A2 "issue kanban";
+  msg "oke, sip, btw yg issue kanban tadi udah solved kah?" → return A2
+  (S4: the approval words do not outweigh the question about A2)
+- ACTIVE A1 "server config"; msg "buatkan scraper harga produk"
+  → indep_branch (S6)
 
 ## 2. Card delta — the "card" field (for the ACTIVE path):
   "outcome":       one sentence: where the active path stands NOW, after the

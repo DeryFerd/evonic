@@ -19,6 +19,7 @@ Security:
 import json
 import os
 import re
+import shlex
 import threading
 import time
 import uuid
@@ -881,9 +882,9 @@ def _run_script(agent_id: str, agent: dict, action: dict, user_params: dict,
     try:
         content = action.get("content", "")
 
-        # Substitute {{param}} placeholders
+        # Substitute {{param}} placeholders (sanitized to prevent command injection)
         for key, value in user_params.items():
-            content = content.replace(f"{{{{{key}}}}}", str(value))
+            content = content.replace(f"{{{{{key}}}}}", shlex.quote(str(value)))
 
         max_timeout = _get_max_timeout()
 
@@ -981,7 +982,7 @@ def _send_prompt_to_agent(agent_id: str, action: dict, session_id: str = None,
     """Deliver a prompt action to the agent and trigger a turn (async)."""
     content = action.get("content", "")
     for key, value in (params or {}).items():
-        content = content.replace(f"{{{{{key}}}}}", str(value))
+        content = content.replace(f"{{{{{key}}}}}", shlex.quote(str(value)))
     if not content:
         return
 

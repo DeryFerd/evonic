@@ -73,6 +73,20 @@ function escape(text) {
     return div.innerHTML;
 }
 
+function normalizeTimestamp(timestamp) {
+    if (timestamp == null || timestamp === '') return null;
+    let value = timestamp;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        if (/^\d+(?:\.\d+)?$/.test(trimmed)) value = Number(trimmed);
+        else value = trimmed;
+    }
+    if (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < 1e12) value *= 1000;
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
 // -- KaTeX math rendering ----------------------------------------------------------
 
 // Renders LaTeX math delimiters ($...$ and $$...$$) in HTML content.
@@ -1173,18 +1187,31 @@ export function buildMessageBubble(role, content, opts = {}, cfg = {}) {
 
     const $inner = $('<div class="max-w-[80%] min-w-0">').append($bubble);
 
-    if (showTimestamps && opts.timestamp) {
-        let tsStr = '';
-        try {
-            tsStr = formatTimestamp
-                ? formatTimestamp(opts.timestamp)
-                : new Date(opts.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-        } catch(e) {}
-        if (tsStr) {
+    if (showTimestamps && (isUser || role === 'assistant') && opts.timestamp != null) {
+        const date = normalizeTimestamp(opts.timestamp);
+        let label = '';
+        if (date) {
+            try {
+                label = formatTimestamp
+                    ? formatTimestamp(date)
+                    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (e) {}
+        }
+        if (date && label) {
             const tsAlign = isUser
                 ? (userAlign === 'left' ? 'text-left' : 'text-right')
                 : (assistantAlign === 'left' ? 'text-left' : 'text-right');
-            $inner.append($('<div class="text-[10px] text-gray-300 mt-0.5 px-1">').addClass(tsAlign).text(tsStr));
+            const accessibleLabel = date.toLocaleString([], {
+                dateStyle: 'long',
+                timeStyle: 'short',
+            });
+            const $time = $('<time class="block text-[10px] leading-4 text-gray-500 dark:text-gray-400 mt-0.5 px-1 tabular-nums">')
+                .addClass(tsAlign)
+                .attr('datetime', date.toISOString())
+                .attr('aria-label', accessibleLabel)
+                .attr('title', accessibleLabel)
+                .text(label);
+            $inner.append($time);
         }
     }
 

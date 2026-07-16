@@ -143,6 +143,14 @@ class TestCreateModel:
              "model_name": "Gemma4-12B"}
         )
         assert new_id == "llama.cpp/Gemma4-12B"
+        assert db.get_model_by_id(new_id)["model_max_concurrent"] == 3
+
+    def test_explicit_model_max_concurrent_is_preserved(self):
+        new_id = db.create_model(
+            {"name": "G", "type": "local", "provider": "llama.cpp",
+             "model_name": "Gemma4-27B", "model_max_concurrent": 7}
+        )
+        assert db.get_model_by_id(new_id)["model_max_concurrent"] == 7
 
     def test_duplicate_auto_id_gets_suffix(self):
         first = db.create_model(

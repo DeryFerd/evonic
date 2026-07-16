@@ -7,6 +7,31 @@
 <style>
 footer { display: none; }
 main { align-items: flex-start !important; }
+/* ! turns the composer itself into a bright red terminal-shell state. */
+#chat-input.chat-bash-input {
+    background: #ffe4e6;
+    border-color: #fb7185;
+    box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.22);
+    caret-color: #e11d48;
+    color: #9f1239;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+#chat-input.chat-bash-input::placeholder { color: #e11d48; opacity: 0.72; }
+#chat-bash-hint {
+    background: #fb7185;
+    border-radius: 4px 4px 0 0;
+    color: #fff1f2;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 11px;
+    left: 2px;
+    line-height: 1;
+    padding: 4px 7px;
+    position: absolute;
+    top: -17px;
+}
+html.dark #chat-input.chat-bash-input { background: #4c1020; border-color: #fb7185; box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.26); caret-color: #fda4af; color: #fff1f2; }
+html.dark #chat-input.chat-bash-input::placeholder { color: #fda4af; }
+html.dark #chat-bash-hint { background: #e11d48; color: #fff1f2; }
 /* Dark mode: chat area */
 html.dark #agent-state-card { background: #1f2937; border-color: #374151; }
 html.dark #state-busy-dot { background: #451a03 !important; color: #fcd34d !important; }
@@ -515,6 +540,24 @@ html.dark .agent-tab.active {
                             <div>
                                 <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Agent State</span>
                                 <p class="text-xs text-gray-400 mt-0.5">Enable plan/execute mode tracking. Write tools are blocked until the agent presents a plan and user approves.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-atg-enabled', checked=agent.enable_atg) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Atomic Task Graph (experimental)</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Compile complex tasks into a dependency graph with parallel execution and localized error repair. Requires Agent State; only applies to tasks classified as complex.</p>
+                            </div>
+                        </label>
+                    </div>
+                    <div>
+                        <label class="flex items-center gap-3 cursor-pointer select-none">
+                            {{ toggle_widget(id='agent-cmp-enabled', checked=agent.enable_cmp) }}
+                            <div>
+                                <span class="text-gray-600 dark:text-gray-300 text-sm font-medium">Context Memory Path (experimental)</span>
+                                <p class="text-xs text-gray-400 mt-0.5">Track multiple tasks in a session as navigable paths with per-task context. Requires Agent State.</p>
                             </div>
                         </label>
                     </div>
@@ -1040,11 +1083,15 @@ html.dark .agent-tab.active {
                             <svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                         </button>
                         {% endif %}
+                        <div class="relative flex-1 min-w-0">
                         <textarea id="chat-input" placeholder="Type a message..." rows="1"
-                            class="flex-1 p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="w-full p-2.5 border border-gray-300 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 resize-none overflow-hidden disabled:opacity-50 disabled:cursor-not-allowed"
                             style="max-height: 150px;"
                             onkeydown="chatInputKeydown(event)"
-                            oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
+                            oninput="chatInputChanged(this)"></textarea>
+                            <div id="chat-bash-hint" class="hidden" aria-live="polite">! Bash mode: shell command</div>
+                            <div id="chat-command-menu" class="hidden absolute left-0 right-0 z-50 max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800" style="bottom: calc(100% + 0.5rem);" role="listbox" aria-label="Available slash commands"></div>
+                        </div>
                         <button onclick="handleChatBtn()" id="chat-send-btn" title="Send" class="bg-indigo-500 hover:bg-indigo-600 text-white p-2.5 rounded-md text-sm transition-colors flex items-center justify-center"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
                     </div>
                 </div>
@@ -1084,10 +1131,6 @@ html.dark .agent-tab.active {
                             <h3 class="font-semibold text-gray-800 dark:text-gray-100">Agent State</h3>
                             <span id="state-busy-dot" class="hidden items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
                         </div>
-                        <button onclick="refreshAgentState()" class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1" title="Refresh">
-                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l-.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
-                            Refresh
-                        </button>
                     </div>
                     <div id="agent-state-content" class="overflow-y-auto px-4 pb-3 flex-shrink-0" style="max-height:260px;">
                         <p class="text-sm text-gray-400 italic">No state yet.</p>
@@ -1596,7 +1639,7 @@ html.dark .agent-tab.active {
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=58" defer></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=59" defer></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4" defer></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
@@ -1690,7 +1733,7 @@ let chatLoaded = false;
     });
 
     // Restore on load
-    $(function() { restoreDraft(); });
+    $(function() { restoreDraft(); updateChatComposer(document.getElementById('chat-input')); loadChatCommands(); });
 
     // Safety net: save on page unload
     $(window).on('beforeunload', saveDraft);
@@ -2237,6 +2280,8 @@ async function saveAdvanced() {
             message_buffer_seconds: parseFloat(document.getElementById('agent-buffer-seconds').value) || 0,
             send_intermediate_responses: document.getElementById('agent-send-intermediate').checked ? 1 : 0,
             enable_agent_state: document.getElementById('agent-state-enabled').checked ? 1 : 0,
+            enable_atg: document.getElementById('agent-atg-enabled').checked ? 1 : 0,
+            enable_cmp: document.getElementById('agent-cmp-enabled').checked ? 1 : 0,
             disable_parallel_tool_execution: document.getElementById('agent-parallel-exec').checked ? 1 : 0,
             disable_turn_prefetch: document.getElementById('agent-prefetch').checked ? 1 : 0,
             agent_messaging_enabled: document.getElementById('agent-messaging-enabled').checked ? 1 : 0,
@@ -4840,7 +4885,126 @@ function stopIdlePoll() {
 // Desktop = viewport >= 1024px: Enter without Shift submits, Shift+Enter inserts newline.
 // The check runs per-keypress so it reacts immediately to resize / rotation.
 const CHAT_DESKTOP_BREAKPOINT = 1024;
+let chatCommands = [];
+let chatCommandIndex = -1;
+let BASH_EXEC_ENABLED = {{ 'true' if agent.bash_exec_enabled else 'false' }};
+
+function chatInputChanged(input) {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 150) + 'px';
+    input.style.overflowY = input.scrollHeight > 150 ? 'auto' : 'hidden';
+    updateChatComposer(input);
+}
+
+function loadChatCommands() {
+    const requestedAgentId = AGENT_ID;
+    return fetch(`/api/agents/${encodeURIComponent(requestedAgentId)}/commands`)
+        .then(res => res.ok ? res.json() : {commands: []})
+        .then(data => {
+            if (requestedAgentId === AGENT_ID) {
+                chatCommands = Array.isArray(data.commands) ? data.commands : [];
+                updateChatComposer(document.getElementById('chat-input'));
+            }
+        })
+        .catch(() => { if (requestedAgentId === AGENT_ID) chatCommands = []; });
+}
+
+function closeChatCommandMenu() {
+    const menu = document.getElementById('chat-command-menu');
+    if (menu) {
+        menu.classList.add('hidden');
+        menu.replaceChildren();
+    }
+    chatCommandIndex = -1;
+}
+
+function updateChatComposer(input) {
+    if (!input) return;
+    const value = input.value;
+    const trimmed = value.trimStart();
+    const bashMode = BASH_EXEC_ENABLED && trimmed.startsWith('!');
+    input.classList.toggle('chat-bash-input', bashMode);
+    const bashHint = document.getElementById('chat-bash-hint');
+    if (bashHint) bashHint.classList.toggle('hidden', !bashMode);
+    input.classList.toggle('font-mono', bashMode);
+
+    const match = trimmed.match(/^\/([\w-]*)$/);
+    if (!match) {
+        closeChatCommandMenu();
+        return;
+    }
+    const query = match[1].toLowerCase();
+    const choices = chatCommands.filter(command => command.name.toLowerCase().includes(query));
+    renderChatCommandMenu(choices);
+}
+
+function renderChatCommandMenu(choices) {
+    const menu = document.getElementById('chat-command-menu');
+    if (!menu || !choices.length) {
+        closeChatCommandMenu();
+        return;
+    }
+    if (chatCommandIndex < 0 || chatCommandIndex >= choices.length) chatCommandIndex = 0;
+    menu.replaceChildren();
+    choices.forEach((command, index) => {
+        const option = document.createElement('button');
+        option.type = 'button';
+        option.role = 'option';
+        option.className = 'flex w-full items-center gap-3 px-3 py-2 text-left text-sm hover:bg-indigo-50 dark:hover:bg-gray-700';
+        option.classList.toggle('bg-indigo-50', index === chatCommandIndex);
+        option.classList.toggle('dark:bg-gray-700', index === chatCommandIndex);
+        option.setAttribute('aria-selected', String(index === chatCommandIndex));
+        const name = document.createElement('span');
+        name.className = 'font-mono font-medium text-indigo-600 dark:text-indigo-300';
+        name.textContent = '/' + command.name;
+        const description = document.createElement('span');
+        description.className = 'min-w-0 truncate text-xs text-gray-500 dark:text-gray-400';
+        description.textContent = command.description || '';
+        option.append(name, description);
+        option.addEventListener('mousedown', event => event.preventDefault());
+        option.addEventListener('click', () => selectChatCommand(command));
+        menu.appendChild(option);
+    });
+    menu.classList.remove('hidden');
+}
+
+function getVisibleChatCommands() {
+    const input = document.getElementById('chat-input');
+    const match = input && input.value.trimStart().match(/^\/([\w-]*)$/);
+    if (!match) return [];
+    return chatCommands.filter(command => command.name.toLowerCase().includes(match[1].toLowerCase()));
+}
+
+function selectChatCommand(command) {
+    const input = document.getElementById('chat-input');
+    if (!input || !command) return;
+    input.value = `/${command.name} `;
+    closeChatCommandMenu();
+    chatInputChanged(input);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+}
+
 function chatInputKeydown(event) {
+    const choices = getVisibleChatCommands();
+    if (choices.length) {
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            chatCommandIndex = (chatCommandIndex + (event.key === 'ArrowDown' ? 1 : -1) + choices.length) % choices.length;
+            renderChatCommandMenu(choices);
+            return;
+        }
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            selectChatCommand(choices[chatCommandIndex < 0 ? 0 : chatCommandIndex]);
+            return;
+        }
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            closeChatCommandMenu();
+            return;
+        }
+    }
     if (event.key !== 'Enter') return;
     if (event.shiftKey) {
         // Shift+Enter inserts a newline natively; offer the editor-mode tip for long messages.
@@ -5092,6 +5256,7 @@ async function sendChat() {
     input.value = '';
     input.style.height = 'auto';
     input.style.overflowY = 'hidden';
+    updateChatComposer(input);
     // Re-apply height reset after async input event (queued by value='') fires.
     // The oninput handler may set height from a stale scrollHeight before the
     // browser has reflowed the now-empty textarea.
@@ -5789,6 +5954,24 @@ function _stopBgLogPolling() {
 }
 
 
+// Render the "Context" usage block for the Session State panel: how much of
+// the model's context window the last LLM call consumed. cu = {used, max,
+// percent} from /chat/state; max/percent are null when the window is unknown.
+function buildContextUsageHtml(cu) {
+    if (!cu || !cu.used) return '';
+    const fmt = n => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+    let label, barHtml = '';
+    if (cu.max) {
+        const pct = Math.min(100, cu.percent || 0);
+        const color = pct > 85 ? 'bg-red-500' : (pct >= 60 ? 'bg-amber-500' : 'bg-indigo-500');
+        label = `${fmt(cu.used)} / ${fmt(cu.max)} (${pct}%)`;
+        barHtml = `<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-600 rounded-full mt-1 overflow-hidden"><div class="h-1.5 ${color} rounded-full transition-all" style="width:${pct}%"></div></div>`;
+    } else {
+        label = `~${fmt(cu.used)} tokens`;
+    }
+    return `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-700"><div class="flex justify-between items-center"><span class="text-gray-500 dark:text-gray-400 font-medium text-xs uppercase tracking-wide">Context</span><span class="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">${label}</span></div>${barHtml}</div>`;
+}
+
 let _refreshSessionStateTimer = null;
 const _refreshSessionStateImpl = async function() {
     try {
@@ -5809,6 +5992,7 @@ const _refreshSessionStateImpl = async function() {
 
         // Build mode badge + plan file + tasks header from agent state
         let headerHtml = '';
+        headerHtml += buildContextUsageHtml(stateData.context_usage);
         if (stateData.mode) {
             const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
             headerHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
@@ -6965,6 +7149,8 @@ window.softSwitchAgent = async function (newId, opts = {}) {
 
     // --- Swap identity + reset per-agent state ---
     AGENT_ID = newId;
+    BASH_EXEC_ENABLED = !!data.bash_exec_enabled;
+    chatCommands = [];
     _chatSessionId = null;
     chatLoaded = false;
     lastChatTs = 0;
@@ -7029,6 +7215,8 @@ window.softSwitchAgent = async function (newId, opts = {}) {
     const input = document.getElementById('chat-input');
     if (input) { input.value = ''; input.style.height = 'auto'; }
     if (window._restoreChatDraft) window._restoreChatDraft();
+    updateChatComposer(input);
+    loadChatCommands();
     if (typeof dismissBubble === 'function') dismissBubble(newId);
 
     // From popstate the browser already moved in history — pushing again would

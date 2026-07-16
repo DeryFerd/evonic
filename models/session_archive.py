@@ -25,6 +25,7 @@ import logging
 import os
 import sqlite3
 import threading
+import time
 from typing import List, Optional
 
 import config
@@ -65,8 +66,24 @@ CREATE TABLE IF NOT EXISTS archive_llm_calls (
     FOREIGN KEY (archive_id) REFERENCES archive_sessions(id)
 );
 
+CREATE TABLE IF NOT EXISTS cmp (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    agent_id TEXT,
+    category TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    input TEXT NOT NULL,
+    output TEXT NOT NULL,
+    model TEXT,
+    decision TEXT,
+    target TEXT,
+    ts INTEGER
+);
+
 CREATE INDEX IF NOT EXISTS idx_archive_sessions_session ON archive_sessions(session_id);
 CREATE INDEX IF NOT EXISTS idx_archive_llm_calls_archive ON archive_llm_calls(archive_id);
+CREATE INDEX IF NOT EXISTS idx_cmp_session ON cmp(session_id);
+CREATE INDEX IF NOT EXISTS idx_cmp_category ON cmp(category);
 """
 
 
@@ -268,3 +285,59 @@ class SessionArchiver:
             )
         finally:
             conn.close()
+
+    @classmethod
+    def write_cmp_example(cls, *,
+                          session_id: str,
+                          agent_id: Optional[str],
+                          category: str,
+                          system_prompt: str,
+                          input: str,
+                          output: str,
+                          model: Optional[str] = None,
+                          decision: Optional[str] = None,
+                          target: Optional[str] = None) -> None:
+        """Write a single CMP training example to the cmp table.
+
+        Called inline from classifier_chat when SESSION_ARCHIVE is enabled.
+        Minimal work — no background thread needed for a single INSERT.
+        Parses boundary decision/target from output if not provided.
+        """
+        if not config.SESSION_ARCHIVE:
+            return
+        cls._ensure_schema()
+        conn = None
+        try:
+            if category == "boundary" and (decision is None or target is None):
+                # Parse decision/target from boundary output
+                output_clean = (output or "").strip().upper()
+                if output_clean.startswith("RETURN:"):
+                    decision = "return"
+                    target = output_clean.replace("RETURN:", "").strip()
+                elif output_clean.startswith("DEP_BRANCH:"):
+                    decision = "dep_branch"
+                    target = output_clean.replace("DEP_BRANCH:", "").strip()
+                elif output_clean == "INDEP_BRANCH":
+                    decision = "indep_branch"
+                elif output_clean == "CONTINUE":
+                    decision = "continue"
+                elif "NEW_TASK" in output_clean:
+                    decision = "new_task"
+                elif "CONTINUATION" in output_clean:
+                    decision = "continuation"
+
+            conn = _get_connection()
+            conn.execute(
+                """INSERT INTO cmp
+                   (session_id, agent_id, category, system_prompt, input, output,
+                    model, decision, target, ts)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (session_id, agent_id, category, system_prompt, input, output,
+                 model, decision, target, int(time.time())),
+            )
+            conn.commit()
+        except Exception:
+            _logger.debug("SessionArchive: write_cmp_example failed", exc_info=True)
+        finally:
+            if conn:
+                conn.close()

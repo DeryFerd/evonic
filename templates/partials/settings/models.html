@@ -349,6 +349,25 @@
             <div class="mb-4">
                 <label
                     class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-context-window"
+                    >Context Window (tokens)</label
+                >
+                <input
+                    type="number"
+                    id="model-context-window"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="0"
+                    min="0"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Total context length of the model. 0 = unknown (falls back
+                    to the global context length setting).
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
                     for="model-timeout"
                     >Timeout (seconds)</label
                 >

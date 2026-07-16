@@ -4,7 +4,7 @@
   "description": "Apply a unified diff patch to a file, enabling precise surgical edits.",
   "function": {
     "name": "patch",
-    "description": "Apply a unified diff (unidiff) patch to a file. The patch must contain one or more @@ hunk headers followed by context lines (space-prefixed), removal lines (- prefix), and addition lines (+ prefix). Optional --- / +++ file headers and git diff headers are accepted and ignored. IMPORTANT: Always read_file immediately before constructing a patch — never use line numbers or content from memory or a previous read, as prior patches shift line numbers. After each patch, re-read the file before applying the next one. Include 2-3 context lines copied verbatim from the file (correct indentation matters for + and - lines, but context lines are indent-tolerant).",
+    "description": "Apply a unified diff patch to a file.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -26,7 +26,7 @@
   },
   "mock_response": "patch_text = args.get('patch', '')\nfile_path = args.get('file_path', 'unknown')\nif not patch_text:\n    result = {'error': \"Missing required argument: 'patch'\"}\nelse:\n    hunk_count = patch_text.count('@@') // 2\n    if hunk_count == 0:\n        result = {'error': 'No valid hunks found in patch. Make sure it contains @@ hunk headers.'}\n    else:\n        result = {'result': 'success', 'file_path': file_path, 'hunks_applied': hunk_count}",
   "mock_response_type": "python",
-  "system_prompt": "## patch — Usage Rules\n\n**ALWAYS read the file immediately before constructing a patch.** Never rely on line numbers or content from memory or a previous read — each patch you apply shifts line numbers in the file.\n\n### Workflow\n1. `read_file` the target file\n2. Construct the patch from the *current* file content\n3. Apply with `patch`\n4. If you need to patch the same file again, go back to step 1\n\n",
+  "system_prompt": "## patch \u2014 Usage Rules\n\n**ALWAYS read the file immediately before constructing a patch.** Never rely on line numbers or content from memory or a previous read \u2014 each patch you apply shifts line numbers in the file.\n\n### Workflow\n1. `read_file` the target file\n2. Construct the patch from the *current* file content\n3. Apply with `patch`\n4. If you need to patch the same file again, go back to step 1\n\n",
   "created_at": "2026-04-12T00:00:00.000000",
   "updated_at": "2026-04-17T00:00:00.000000"
 }

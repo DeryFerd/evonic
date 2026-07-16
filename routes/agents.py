@@ -267,6 +267,19 @@ def api_get_agent(agent_id):
     return jsonify(_sanitize_agent(agent))
 
 
+@agents_bp.route('/api/agents/<agent_id>/commands', methods=['GET'])
+def api_list_agent_commands(agent_id):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    from backend.slash_commands import list_available_commands
+
+    commands = [
+        {'name': name, 'description': description}
+        for name, description in list_available_commands(agent_id)
+    ]
+    return jsonify({'commands': commands})
+
+
 @agents_bp.route('/api/agents', methods=['POST'])
 def api_create_agent():
     if not db.has_super_agent():
@@ -1836,6 +1849,37 @@ def api_chat_agent_state(agent_id):
             'active_model': _resolve_active_model(),
             'loaded_skills': loaded_skills,
         }
+        # CMP session-path map (for the Session State panel's map modal)
+        if state.cmp and state.cmp.get('paths'):
+            try:
+                from backend.agent_runtime.cmp.render import render_map
+                from backend.agent_runtime.cmp.compactor import (
+                    card_token_estimate, path_llm_token_estimate,
+                    path_token_estimate)
+                from models.chatlog import chatlog_manager
+                agent_row = db.get_agent(agent_id)
+                agent_name = (agent_row or {}).get('name') or agent_id.replace('_', ' ').title()
+                _cmp_chatlog = chatlog_manager.get(agent_id, session_id)
+                _path_cards = []
+                for _, p in sorted(state.cmp['paths'].items()):
+                    card = {k: p.get(k) for k in
+                            ('id', 'title', 'status', 'action', 'goal', 'outcome',
+                             'key_facts', 'artifacts', 'depends_on', 'last_active',
+                             'state_since')}
+                    card['tokens'] = path_token_estimate(_cmp_chatlog, p)
+                    card['llm_tokens'] = path_llm_token_estimate(_cmp_chatlog, p)
+                    card['card_tokens'] = card_token_estimate(p)
+                    _path_cards.append(card)
+                payload['cmp'] = {
+                    'active_id': state.cmp.get('active_id'),
+                    'agent_id': agent_id,
+                    'agent_name': agent_name,
+                    'has_avatar': bool((agent_row or {}).get('avatar_path')),
+                    'mermaid': render_map(state.cmp, agent_name),
+                    'paths': _path_cards,
+                }
+            except Exception:
+                pass
     elif _is_explorer:
         # Minimal state, but still surface the explorer's model badge.
         payload = {
@@ -1865,6 +1909,42 @@ def api_chat_agent_state(agent_id):
         except Exception:
             pass
         payload['background_processes'] = background_processes
+
+    # Context monitor: tokens consumed by the last LLM call vs the model's
+    # context window (model.context_window, falling back to the global
+    # llm_context_length setting; unknown window → max/percent are null).
+    # After session clear, context_usage is gone from session state — fall back
+    # to the compiled context token count (system prompt + tool definitions).
+    if session_id:
+        _cu = merged.get('context_usage') if isinstance(merged, dict) else None
+        _used = None
+        if _cu and (_cu.get('prompt_tokens') or 0) > 0:
+            _used = _cu.get('total_tokens') or (
+                (_cu.get('prompt_tokens') or 0) + (_cu.get('completion_tokens') or 0))
+        if _used is None:
+            # Fallback: compute compiled context token count
+            try:
+                from backend.agent_runtime import agent_runtime
+                _ctx = agent_runtime.get_compiled_context(agent_id, user_id=request.args.get('user_id'))
+                _used = _ctx.get('tokens', {}).get('total', 0)
+            except Exception:
+                pass
+        if _used and _used > 0:
+            ctx_max = 0
+            _am = payload.get('active_model') or {}
+            if _am.get('id'):
+                _am_row = db.get_model_by_id(_am['id'])
+                ctx_max = int((_am_row or {}).get('context_window') or 0)
+            if ctx_max <= 0:
+                try:
+                    ctx_max = int(db.get_setting('llm_context_length', 0) or 0)
+                except (TypeError, ValueError):
+                    ctx_max = 0
+            payload['context_usage'] = {
+                'used': _used,
+                'max': ctx_max if ctx_max > 0 else None,
+                'percent': min(100, round(_used * 100 / ctx_max)) if ctx_max > 0 else None,
+            }
 
     # ?include=summary piggybacks the session summary on this response so the
     # UI gets state + summary in one round trip instead of two requests.
@@ -2161,6 +2241,10 @@ def api_chat_stream(agent_id):
             'result': d.get('tool_result', {}),
             'error': d.get('has_error', False),
         }),
+        'state:changed':      ('state:changed',    lambda d: {
+            key: d[key] for key in ('mode', 'plan_file', 'tasks', 'loaded_skills')
+            if key in d
+        }),
         'llm_response_chunk': ('response_chunk',  lambda d: {
             'content': d.get('content', ''),
             'is_final': d.get('is_final', False),
@@ -2205,6 +2289,10 @@ def api_chat_stream(agent_id):
             'agent_id': d.get('agent_id', ''),
         }),
         'turn_split': ('turn_split', lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {
+            'agent_id': d.get('agent_id', ''),
+            'session_id': d.get('session_id', ''),
+        }),
     }
 
     handlers = {
@@ -2432,6 +2520,7 @@ def api_chat_events(agent_id):
         'llm_thinking':      ('thinking',        lambda d: {'content': d.get('thinking', '')}),
         'tool_call_started': ('tool_call_started', lambda d: {'tool': d.get('tool_name', ''), 'args': d.get('tool_args', {}), 'param_types': d.get('param_types', {})}),
         'tool_executed':     ('tool_executed',    lambda d: {'tool': d.get('tool_name', ''), 'args': d.get('tool_args', {}), 'result': d.get('tool_result', {}), 'error': d.get('has_error', False)}),
+        'state:changed':     ('state:changed',    lambda d: {key: d[key] for key in ('mode', 'plan_file', 'tasks', 'loaded_skills') if key in d}),
         'llm_response_chunk':('response_chunk',  lambda d: {'content': d.get('content', ''), 'is_final': d.get('is_final', False), 'send_as_message': d.get('send_as_message', False)}),
         'turn_complete':     ('done',             lambda d: {
             'thinking_duration': d.get('thinking_duration'),
@@ -2445,6 +2534,7 @@ def api_chat_events(agent_id):
         'message_injection_applied': ('message_injection_applied', lambda d: {'content': d.get('content', ''), 'count': d.get('count', 1)}),
         'session_clear':     ('session_clear',     lambda d: {'session_id': d.get('session_id', ''), 'agent_id': d.get('agent_id', '')}),
         'turn_split':        ('turn_split',        lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {'agent_id': d.get('agent_id', ''), 'session_id': d.get('session_id', '')}),
     }
 
     if up_to_seq is None:

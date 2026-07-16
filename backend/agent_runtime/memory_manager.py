@@ -2113,19 +2113,20 @@ def _extract_from_fact_async(agent_id: str, session_id: str, content: str) -> No
     threading.Thread(target=_run, daemon=True).start()
 
 
-def search_memories(agent_id: str, query: str, limit: int = 5) -> dict:
+def search_memories(agent_id: str, query: str, limit: int = 6) -> dict:
     """Search memories by keyword. Used by the `recall` built-in tool.
 
     Primary + fallback: tries evomem first if configured, falls back to FTS5.
     """
     try:
+        limit = min(max(int(limit), 0), 6)
         # === Primary: evomem ===
         engine = get_engine()
         if engine == "evomem":
             evomem_result = evomem_search(agent_id, query, limit,
                                               mode=_RECALL_SEARCH_MODE)
             if evomem_result and isinstance(evomem_result.get("hits"), list):
-                hits = evomem_result["hits"]
+                hits = evomem_result["hits"][:limit]
                 if hits:
                     return {
                         "engine": "evomem",
@@ -2153,6 +2154,7 @@ def search_memories(agent_id: str, query: str, limit: int = 5) -> dict:
 
         if not memories:
             return {"result": "No memories found.", "memories": [], "count": 0}
+        memories = memories[:limit]
         return {
             "memories": [
                 {"id": m['id'], "content": m['content'],
@@ -2181,7 +2183,7 @@ def synthesize_memory(agent_id: str, query: str) -> dict:
                      "source_file": (f"/_self/kb/{f.get('slug')}.md"
                                      if f.get("slug") else None),
                      "evidence": f.get("evidence", "?")}
-                    for f in result["facts"][:5]
+                    for f in result["facts"][:6]
                 ]
                 gaps = [g.get("message", "") for g in result.get("gaps", [])
                         if isinstance(g, dict) and g.get("message")]
@@ -2225,7 +2227,7 @@ def graph_lookup(agent_id: str, entity: str, edge_type: str = None,
         edges = [
             {"from": e.get("src_slug"), "edge": e.get("edge_type"),
              "to": e.get("dst_slug"), "hop": e.get("hop")}
-            for e in result["edges"]
+            for e in result["edges"][:6]
         ]
         vlog("graph[%s]: %d edges from %r", agent_id, len(edges), start)
         return {"start": result.get("start", start),

@@ -1,10 +1,10 @@
 {
   "id": "str_replace",
   "name": "String Replace",
-  "description": "Replace an exact string in a file — no line numbers needed, more reliable than patch for simple edits.",
+  "description": "Replace an exact string in a file \u2014 no line numbers needed, more reliable than patch for simple edits.",
   "function": {
     "name": "str_replace",
-    "description": "Replace an exact string occurrence in a file. Unlike patch, this tool does not require line numbers — it finds the literal text and replaces it. This makes it safe to use even after other edits have shifted line numbers. Use this for simple targeted edits; use patch only when inserting/deleting blocks of many lines at once.\n\nIMPORTANT: Always read_file immediately before calling this tool so that old_str matches the current file content exactly. Include enough surrounding context in old_str to make the match unambiguous.",
+    "description": "Replace exact string in a file. Unlike patch, no line numbers needed.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -14,7 +14,7 @@
         },
         "old_str": {
           "type": "string",
-          "description": "The exact string to find and replace. Must match the file content verbatim, including indentation and whitespace. Include 1-2 lines of surrounding context to avoid ambiguous matches."
+          "description": "Exact text to find and replace. Include surrounding context for unambiguous match."
         },
         "new_str": {
           "type": "string",
@@ -35,7 +35,7 @@
   },
   "mock_response": "old_str = args.get('old_str', '')\nnew_str = args.get('new_str')\ncount_val = args.get('count', 1)\nif not old_str:\n    result = {'error': \"'old_str' must not be empty\"}\nelif new_str is None:\n    result = {'error': \"Missing required argument: 'new_str'\"}\nelse:\n    result = {'result': 'success', 'replacements': count_val}",
   "mock_response_type": "python",
-  "system_prompt": "## str_replace — Usage Rules\n\n**Prefer str_replace over patch for simple edits.** It is more reliable because it does not depend on line numbers.\n\n### When to use str_replace vs patch\n- `str_replace`: replacing a function body, changing a value, fixing a line — anything where you can identify the text uniquely\n- `patch`: inserting a new block of code with no unique surrounding text, or making many changes across a file in one shot\n\n### Workflow\n1. `read_file` the target file to get the current content\n2. Copy the exact text you want to replace into `old_str` (including 1-2 lines of context)\n3. Write the replacement in `new_str`\n4. If the error says 'not found', re-read the file — the content may have changed\n5. If the error says 'found N times', make `old_str` more specific\n\n### Common mistakes to avoid\n- Do **not** guess `old_str` from memory — always copy it from the file\n- Do **not** use partial matches; include enough context to be unambiguous",
+  "system_prompt": "## str_replace \u2014 Usage Rules\n\n**Prefer str_replace over patch for simple edits.** It is more reliable because it does not depend on line numbers.\n\n### When to use str_replace vs patch\n- `str_replace`: replacing a function body, changing a value, fixing a line \u2014 anything where you can identify the text uniquely\n- `patch`: inserting a new block of code with no unique surrounding text, or making many changes across a file in one shot\n\n### Workflow\n1. `read_file` the target file to get the current content\n2. Copy the exact text you want to replace into `old_str` (including 1-2 lines of context)\n3. Write the replacement in `new_str`\n4. If the error says 'not found', re-read the file \u2014 the content may have changed\n5. If the error says 'found N times', make `old_str` more specific\n\n### Common mistakes to avoid\n- Do **not** guess `old_str` from memory \u2014 always copy it from the file\n- Do **not** use partial matches; include enough context to be unambiguous",
   "created_at": "2026-04-20T00:00:00.000000",
   "updated_at": "2026-04-20T00:00:00.000000"
 }

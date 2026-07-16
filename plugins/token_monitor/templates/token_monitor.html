@@ -191,16 +191,17 @@
 
   const EXPLORER_COLOR = '#ec4899';
   const ORGANIZER_COLOR = '#f59e0b';
+  const TEST_COLOR = '#10b981';
   function loadByAgent() {
     getJSON(`${API}/by-agent?range=${range}&rollup=${rollup ? 1 : 0}`).then(d => {
       const rows = d.agents || [];
-      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : '#4f46e5');
+      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : r.is_test ? TEST_COLOR : '#4f46e5');
       renderBar('tm-agent-chart', rows.map(r => r.agent_id || '(none)'), rows.map(r => r.total_tokens), colors);
       const body = document.getElementById('tm-agent-body');
       if (!rows.length) { body.innerHTML = '<tr><td colspan="5">No data</td></tr>'; return; }
       body.innerHTML = rows.map(r => {
         const name = r.agent_id || '(none)';
-        const color = r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : null;
+        const color = r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : r.is_test ? TEST_COLOR : null;
         const agentCell = color
           ? `<span style="color:${color};font-weight:600;">${name}</span>`
           : name;

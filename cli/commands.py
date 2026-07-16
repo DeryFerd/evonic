@@ -2594,9 +2594,6 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         "SECRET_KEY",
         "DEBUG",
         "ADMIN_PASSWORD_HASH",
-        "SANDBOX_NETWORK",
-        "LOG_FULL_THINKING",
-        "LOG_FULL_RESPONSE",
     ]
     for var in important_vars:
         val = os.getenv(var)
@@ -3522,6 +3519,75 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Engine/organizer compatibility check failed: {e}"))
 
+    # ── 11d. System Settings Consistency Check ──
+    _section("11d. System Settings Consistency Check")
+
+    import config as _cfg
+
+    _EXPECTED_SETTINGS = {
+        "theme": "system",
+        "vision_model_id": "",
+        "kb_organizer_model_id": "",
+        "task_classifier_enabled": "0",
+        "agent_timeout_retries": str(getattr(_cfg, "AGENT_TIMEOUT_RETRIES", 2)),
+        "llm_max_retries": "5",
+        "max_concurrent_llm_per_agent": "1",
+        "max_concurrent_llm_per_model": "0",
+        "max_concurrent_llm_global": "1",
+        "agent_queue_workers": str(getattr(_cfg, "AGENT_QUEUE_WORKERS", 5)),
+        "max_tool_iterations": str(getattr(_cfg, "AGENT_MAX_TOOL_ITERATIONS", 100)),
+        "agent_sidebar_limit": str(getattr(_cfg, "AGENT_SIDEBAR_LIMIT", 10)),
+        "public_history": "0",
+        "long_running_guard_enabled": (
+            "1" if getattr(_cfg, "LONG_RUNNING_GUARD_ENABLED", True) else "0"
+        ),
+        "message_wrapper_enabled": "1",
+        "events_dispatch_enabled": "1",
+    }
+
+    try:
+        from models.db import db as _ctl_db
+        missing = []
+        present = 0
+        for key, default_val in _EXPECTED_SETTINGS.items():
+            val = _ctl_db.get_setting(key)
+            if val is None:
+                missing.append((key, default_val))
+            else:
+                present += 1
+
+        if missing:
+            keys_str = ", ".join(k for k, _ in missing)
+            results.append(_warn(
+                f"{len(missing)} system setting(s) not initialized: {keys_str}"
+            ))
+            if fix:
+                fixed_count = 0
+                for key, default_val in missing:
+                    try:
+                        _ctl_db.set_setting(key, default_val)
+                        fixed_count += 1
+                    except Exception:
+                        pass
+                if fixed_count:
+                    fixes_applied.append(
+                        f"Seeded {fixed_count} missing system setting(s) with defaults"
+                    )
+                    results.append(_ok(
+                        f"Seeded {fixed_count} missing system setting(s)"
+                    ))
+            else:
+                _info(
+                    "  Run `evonic doctor --fix` to seed missing settings with "
+                    "defaults."
+                )
+        else:
+            results.append(_ok(
+                f"All {present} system settings present and accounted for"
+            ))
+    except Exception as e:
+        results.append(_fail(f"System settings check failed: {e}"))
+
     # ── 12. PromptPurify ML Safety Check ──
     _section("12. PromptPurify ML Safety Check")
 
@@ -4304,8 +4370,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
             if os.path.isfile(match):
                 dst = os.path.join(staging_dir, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(match, dst)
-                collected.append((rel, match, dst))
+                try:
+                    shutil.copy2(match, dst)
+                    collected.append((rel, match, dst))
+                except (OSError, FileNotFoundError) as e:
+                    if not quiet:
+                        print(f"  Warning: Skipping {rel}: {e}")
     elif is_glob and os.path.isdir(abs_pattern):
         # Directory: walk recursively
         for dirpath, dirnames, filenames in os.walk(abs_pattern):
@@ -4320,8 +4390,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
                     continue
                 dst = os.path.join(staging_dir, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                collected.append((rel, src, dst))
+                try:
+                    shutil.copy2(src, dst)
+                    collected.append((rel, src, dst))
+                except (OSError, FileNotFoundError) as e:
+                    if not quiet:
+                        print(f"  Warning: Skipping {rel}: {e}")
     elif os.path.isfile(abs_pattern):
         # Single file
         rel = rel_pattern
@@ -4330,8 +4404,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
         dst = os.path.join(staging_dir, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         # DB files get special treatment via _snapshot_db
-        shutil.copy2(abs_pattern, dst)
-        collected.append((rel, abs_pattern, dst))
+        try:
+            shutil.copy2(abs_pattern, dst)
+            collected.append((rel, abs_pattern, dst))
+        except (OSError, FileNotFoundError) as e:
+            if not quiet:
+                print(f"  Warning: Skipping {rel}: {e}")
 
     return collected
 

@@ -14,11 +14,12 @@ window.settingsGeneral = {
         this._updateThemeButtons(localStorage.getItem("evonic-theme") || "system");
 
         try {
-            const [general, models, defaultModel, classifier] = await Promise.all([
+            const [general, models, defaultModel, classifier, cmpModel] = await Promise.all([
                 apiGet("/api/settings/general"),
                 ModelsCache.get(),
                 apiGet("/api/settings/default-model").catch(() => null),
                 apiGet("/api/settings/task-classifier").catch(() => null),
+                apiGet("/api/settings/cmp-model").catch(() => null),
             ]);
             if (!general || general.error) {
                 throw new Error((general && general.error) || "Failed to load settings");
@@ -29,6 +30,7 @@ window.settingsGeneral = {
                 visionModelId: general.vision_model_id || "",
                 kbOrganizerModelId: general.kb_organizer_model_id || "",
                 classifierModelId: classifier ? classifier.model_id || "" : "",
+                cmpModelId: cmpModel ? cmpModel.model_id || "" : "",
             });
             const clsToggle = document.getElementById("task-classifier-toggle");
             if (clsToggle && classifier) clsToggle.checked = !!classifier.enabled;
@@ -86,6 +88,7 @@ window.settingsGeneral = {
             visionModelId: val("vision-model-select"),
             kbOrganizerModelId: val("kb-organizer-model-select"),
             classifierModelId: val("task-classifier-model-select"),
+            cmpModelId: val("cmp-model-select"),
         };
     },
 
@@ -140,6 +143,12 @@ window.settingsGeneral = {
             current.classifierModelId,
             "Use default model",
         );
+        fill(
+            "cmp-model-select",
+            models,
+            current.cmpModelId,
+            "Use Task Classifier model",
+        );
     },
 
     _registerSpecialSaves() {
@@ -157,6 +166,17 @@ window.settingsGeneral = {
         };
         AutoSave.registerHandler("task_classifier_enabled", saveClassifier);
         AutoSave.registerHandler("task_classifier_model_id", saveClassifier);
+
+        // CMP path-detection model
+        AutoSave.registerHandler("cmp_model_id", async () => {
+            const select = document.getElementById("cmp-model-select");
+            const res = await apiPut("/api/settings/cmp-model", {
+                model_id: select ? select.value : "",
+            });
+            if (!res || !res.success) {
+                throw new Error((res && res.error) || "Save failed");
+            }
+        });
 
         // Public history: guarded by an explicit confirm modal when enabling
         AutoSave.registerGuard("public_history", (enabling) => {

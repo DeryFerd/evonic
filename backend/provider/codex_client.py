@@ -17,6 +17,21 @@ from backend.provider.oauth_codex import CODEX_BASE_URL, extract_account_id
 _log = logging.getLogger(__name__)
 
 
+def _map_usage(usage) -> Dict[str, Any]:
+    """Map Responses API usage (input_tokens/output_tokens) to the
+    OpenAI-chat-style keys (prompt_tokens/completion_tokens) that the rest
+    of the pipeline (context monitor, traces, dashboards) reads."""
+    if not isinstance(usage, dict) or not usage:
+        return {}
+    prompt = usage.get("input_tokens", 0) or 0
+    completion = usage.get("output_tokens", 0) or 0
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": usage.get("total_tokens", 0) or (prompt + completion),
+    }
+
+
 class CodexClient:
     """Client for the OpenAI Codex Responses API (SSE transport)."""
 
@@ -44,6 +59,7 @@ class CodexClient:
         max_tokens: int = 4096,
         temperature: Optional[float] = None,
         tools: Optional[List[Dict]] = None,
+        reasoning: bool = False,
         stream: bool = True,
         timeout: int = 120,
     ) -> Dict[str, Any]:
@@ -54,6 +70,8 @@ class CodexClient:
             "stream": stream,
             "store": False,
         }
+        if reasoning:
+            payload["reasoning"] = {"summary": "auto"}
         if tools:
             payload["tools"] = self._convert_tools(tools)
 
@@ -65,9 +83,12 @@ class CodexClient:
             else:
                 return self._blocking_response(url, payload, timeout)
         except httpx.TimeoutException:
+            # Use 'request_timeout' (not 'timeout_error') so llm_loop retries on
+            # the same model before falling back — reasoning turns are slow and a
+            # single stall shouldn't demote us to a weaker fallback model.
             return {
                 "success": False,
-                "error_type": "timeout_error",
+                "error_type": "request_timeout",
                 "error": "Codex request timed out",
             }
         except httpx.ConnectError as e:
@@ -109,6 +130,7 @@ class CodexClient:
                 tool_calls = []
                 response_id = ""
                 model_used = ""
+                usage: Dict[str, Any] = {}
 
                 for line in resp.iter_lines():
                     if not line or not line.startswith("data: "):
@@ -129,16 +151,16 @@ class CodexClient:
                         response_id = r.get("id", "")
                         model_used = r.get("model", "")
 
-                    elif event_type == "response.content_part.delta":
-                        delta = event.get("delta", {})
-                        delta_type = delta.get("type", "")
-                        if delta_type == "text_delta":
-                            content_parts.append(delta.get("text", ""))
-                        elif delta_type == "thinking_delta":
-                            thinking_parts.append(delta.get("thinking", ""))
-
                     elif event_type == "response.output_text.delta":
                         content_parts.append(event.get("delta", ""))
+
+                    elif event_type == "response.reasoning_summary_text.delta":
+                        thinking_parts.append(event.get("delta", ""))
+
+                    elif event_type == "response.reasoning_summary_part.added":
+                        # Separate reasoning summary parts with a blank line
+                        if thinking_parts:
+                            thinking_parts.append("\n\n")
 
                     elif event_type == "response.output_item.done":
                         item = event.get("item", {})
@@ -156,6 +178,7 @@ class CodexClient:
                         r = event.get("response", {})
                         if not response_id:
                             response_id = r.get("id", "")
+                        usage = _map_usage(r.get("usage"))
 
         full_content = "".join(content_parts)
         full_thinking = "".join(thinking_parts)
@@ -181,7 +204,7 @@ class CodexClient:
                         "finish_reason": "stop" if not tool_calls else "tool_calls",
                     }
                 ],
-                "usage": {},
+                "usage": usage,
             },
         }
 
@@ -213,8 +236,10 @@ class CodexClient:
                 for part in item.get("content", []):
                     if part.get("type") == "output_text":
                         content += part.get("text", "")
-                    elif part.get("type") == "thinking":
-                        thinking += part.get("thinking", "")
+            elif item.get("type") == "reasoning":
+                for part in item.get("summary", []):
+                    if part.get("type") == "summary_text":
+                        thinking += part.get("text", "")
             elif item.get("type") == "function_call":
                 tool_calls.append({
                     "id": item.get("call_id", ""),
@@ -243,7 +268,7 @@ class CodexClient:
                         "finish_reason": "stop" if not tool_calls else "tool_calls",
                     }
                 ],
-                "usage": {},
+                "usage": _map_usage(data.get("usage")),
             },
         }
 
@@ -254,6 +279,7 @@ class CodexClient:
         max_tokens: int = 4096,
         temperature: Optional[float] = None,
         tools: Optional[List[Dict]] = None,
+        reasoning: bool = False,
         timeout: int = 120,
     ) -> Generator[Dict[str, Any], None, None]:
         """Yield SSE delta chunks for real-time streaming to the frontend."""
@@ -263,6 +289,8 @@ class CodexClient:
             "stream": True,
             "store": False,
         }
+        if reasoning:
+            payload["reasoning"] = {"summary": "auto"}
         if tools:
             payload["tools"] = self._convert_tools(tools)
 

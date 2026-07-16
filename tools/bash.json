@@ -4,13 +4,13 @@
   "description": "Execute a bash script in a sandboxed Docker container.",
   "function": {
     "name": "bash",
-    "description": "Execute a bash script in an isolated Docker container. The container is shared with the runpy tool within the same session — files written by Python code are immediately accessible to bash scripts and vice versa. The working directory is /workspace, which is the project root. The container persists across calls so state (environment variables set with export, files in /tmp, installed packages) survives between script executions within the same session.",
+    "description": "Execute a bash script in an isolated Docker container.",
     "parameters": {
       "type": "object",
       "properties": {
         "script": {
           "type": "string",
-          "description": "The bash script to execute. Can be multi-line. Runs via 'bash -s' (stdin). The working directory is /workspace.",
+          "description": "The bash script to execute.",
           "view": "code"
         },
         "action": {
@@ -19,7 +19,7 @@
             "run",
             "destroy"
           ],
-          "description": "Action to perform. 'run' (default) executes the script. 'destroy' tears down the container for this session and frees resources (also destroys the shared runpy container)."
+          "description": "'run' to execute, 'destroy' to tear down the container."
         },
         "timeout": {
           "type": "integer",

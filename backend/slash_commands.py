@@ -44,6 +44,33 @@ class SlashCommandRegistry:
         return [(cmd.name, cmd.description) for cmd in self._commands.values()]
 
 
+def list_available_commands(agent_id: str, channel_id: Optional[str] = None) -> list:
+    """Return registered commands available to an agent on the given channel."""
+    commands = command_registry.list_commands()
+    try:
+        from models.db import db
+        super_agent = db.get_super_agent()
+        is_super = bool(super_agent and super_agent.get('id') == agent_id)
+        agent = db.get_agent(agent_id)
+        workplace_id = agent.get('workplace_id') if agent else None
+        workplace = db.get_workplace(workplace_id) if workplace_id else None
+        can_cd = is_super or bool(workplace and workplace.get('type') in ('remote', 'tunnel'))
+        has_subagent = is_super or 'subagent' in db.get_agent_skills(agent_id)
+    except Exception:
+        is_super = can_cd = has_subagent = False
+
+    available = []
+    for name, description in commands:
+        if name in {'cd', 'cwd'} and not can_cd:
+            continue
+        if name in {'restart', 'shutdown'} and not is_super:
+            continue
+        if name == 'sub' and not has_subagent:
+            continue
+        available.append((name, description))
+    return sorted(available, key=lambda command: command[0])
+
+
 # Global registry instance
 command_registry = SlashCommandRegistry()
 
@@ -141,6 +168,8 @@ def _register_builtins():
             'plan_file': fresh.plan_file,
             'states': fresh.states,
             'auto_trivial': fresh.auto_trivial,
+            'atg': None,   # full-replace already wipes these; explicit for clarity
+            'cmp': None,
         }
         db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
         # Global: reset focus only
@@ -185,46 +214,8 @@ def _register_builtins():
         channel_id: Optional[str],
         args: str,
     ) -> str:
-        commands = command_registry.list_commands()
-        # Filter out /restart for non-super agents
-        try:
-            from models.db import db
-            super_agent = db.get_super_agent()
-            is_super = super_agent and super_agent.get('id') == agent_id
-        except Exception:
-            is_super = False
-        # /cd and /cwd are also available to agents with remote/tunnel workplaces
-        can_cd = is_super
-        if not can_cd:
-            try:
-                agent = db.get_agent(agent_id)
-                if agent:
-                    workplace_id = agent.get('workplace_id')
-                    if workplace_id:
-                        workplace = db.get_workplace(workplace_id)
-                        if workplace and workplace.get('type') in ('remote', 'tunnel'):
-                            can_cd = True
-            except Exception:
-                pass
         lines = ["**Available commands:**"]
-        super_only = {"restart", "cd", "cwd", "shutdown"}
-        web_only = set()  # all commands now available on both web and channels
-        # /sub requires the subagent skill
-        has_subagent = False
-        try:
-            skills = db.get_agent_skills(agent_id)
-            has_subagent = "subagent" in skills
-        except Exception:
-            pass
-        for name, desc in commands:
-            if name in {"cd", "cwd"} and not can_cd:
-                continue
-            if name in {"restart", "shutdown"} and not is_super:
-                continue
-            if name in web_only and channel_id is not None:
-                continue
-            if name == "sub" and not has_subagent and not is_super:
-                continue
+        for name, desc in list_available_commands(agent_id, channel_id):
             lines.append(f"- `/{name}` — {desc}")
         return "\n".join(lines)
 
@@ -796,6 +787,16 @@ def _register_builtins():
         if session_content:
             sess_ms = AgentState.deserialize(session_content)
             lines.append(f"Mode: {sess_ms.mode}")
+            if sess_ms.cmp and sess_ms.cmp.get('paths'):
+                _paths = sess_ms.cmp['paths']
+                _active = _paths.get(sess_ms.cmp.get('active_id')) or {}
+                _preserved = sum(1 for p in _paths.values()
+                                 if p.get('status') in ('preserved', 'dormant'))
+                _archived = sum(1 for p in _paths.values() if p.get('status') == 'archived')
+                lines.append(
+                    f"Paths: {len(_paths)} (active: {_active.get('id')} "
+                    f"\"{_active.get('title', '')[:40]}\"; "
+                    f"{_preserved} preserved, {_archived} archived)")
             if sess_ms.plan_file:
                 # Try per-agent path first, then fallback to legacy centralized path
                 project_root = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
@@ -966,6 +967,18 @@ def _register_builtins():
 
             prov_names = {p["id"]: p.get("name", p["id"]) for p in providers}
 
+            # Web renders responses as markdown, where "21. name" becomes an
+            # ordered-list item and gets renumbered sequentially — hiding the
+            # real shortcode. Escape the dot so the number renders verbatim.
+            # Messaging channels show plain text, so keep the plain dot there.
+            is_compact = False
+            if channel_id:
+                channel = db.get_channel(channel_id)
+                if channel:
+                    ch_type = channel.get("type", "")
+                    is_compact = ch_type in ("telegram", "whatsapp", "whatsapp_shared")
+            dot = "." if is_compact else "\\."
+
             def _sort_key(m):
                 sc = m.get("shortcode")
                 return sc if isinstance(sc, int) else 1_000_000
@@ -981,9 +994,9 @@ def _register_builtins():
                     model_name = m.get("model_name", "")
                     is_current = " ✓" if m.get("id") == current_id else ""
                     if model_name:
-                        lines.append(f"{sc}. {name} ({model_name}){is_current}")
+                        lines.append(f"{sc}{dot} {name} ({model_name}){is_current}")
                     else:
-                        lines.append(f"{sc}. {name}{is_current}")
+                        lines.append(f"{sc}{dot} {name}{is_current}")
                 lines.append("")
 
             if current:
@@ -993,7 +1006,11 @@ def _register_builtins():
                 lines.append("**Current:** none")
             lines.append("")
             lines.append("Type /model <number> or /model <provider/model> to switch.")
-            return "\n".join(lines)
+            # Web: escaped-dot lines are plain paragraphs, so they need a
+            # blank line between them to render one model per line.
+            if is_compact:
+                return "\n".join(lines)
+            return "\n\n".join(l for l in lines if l)
 
         # Set model
         new_model_id = args.strip()

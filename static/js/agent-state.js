@@ -374,14 +374,26 @@ function _cmpRenderDetail() {
 
     // Per-path context size (independent numbers — NOT cumulative down the
     // dependency chain):
-    //   Full    = this path's raw transcript size (what it costs while it is
-    //             the active/loaded path). Green when currently in context.
+    //   Full    = this path's RAW transcript size on disk (untruncated tool
+    //             outputs included). Green when currently in context.
+    //   Actual  = the same transcript AS THE LLM SEES IT — segment
+    //             reconstruction with tool-output compaction and rehydration
+    //             tails, i.e. what it really costs when loaded. The
+    //             Full→Actual gap is what compaction saves.
     //   Offload = its IPPC card — the tiny compressed summary it shrinks to
-    //             once offloaded. The Full→Offload gap is the compression CMP buys.
+    //             once offloaded. The Actual→Offload gap is the compression CMP buys.
     var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
     var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
+    var actual = p.llm_tokens || 0;
     var fullCls = isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300';
     var fullNote = isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var actualNote = isLoaded
+        ? ' <span class="text-[10px] font-normal opacity-70">in context</span>'
+        : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var actualRow = actual
+        ? '<div class="text-blue-500 dark:text-blue-400 font-semibold">Actual: ' +
+          _cmpFmtTokens(actual) + actualNote + '</div>'
+        : '';
     // Archived nodes contribute their title only — the card is NOT in
     // context until a return (or a descendant) restores them to preserved.
     var offNote = isLoaded ? '' : (status === 'archived'
@@ -394,6 +406,7 @@ function _cmpRenderDetail() {
     var ctxHeader = isMobile ? '' :
         '<div class="text-right text-xs leading-tight">' +
         '<div class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + fullNote + '</div>' +
+        actualRow +
         '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) + offNote + '</div></div>';
 
     var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
@@ -419,6 +432,8 @@ function _cmpRenderDetail() {
     if (isMobile) {
         html += '<div class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700 flex gap-4 text-xs">' +
             '<div><span class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + '</span>' + fullNote + '</div>' +
+            (actual ? '<div><span class="text-blue-500 dark:text-blue-400 font-semibold">Actual: ' +
+                _cmpFmtTokens(actual) + '</span>' + actualNote + '</div>' : '') +
             '<div><span class="text-gray-500 dark:text-gray-300 font-semibold">Offload: ' + _cmpFmtTokens(offloadTok) + '</span>' + offNote + '</div></div>';
     }
     host.innerHTML = html;

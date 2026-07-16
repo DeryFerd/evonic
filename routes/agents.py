@@ -1841,7 +1841,8 @@ def api_chat_agent_state(agent_id):
             try:
                 from backend.agent_runtime.cmp.render import render_map
                 from backend.agent_runtime.cmp.compactor import (
-                    card_token_estimate, path_token_estimate)
+                    card_token_estimate, path_llm_token_estimate,
+                    path_token_estimate)
                 from models.chatlog import chatlog_manager
                 agent_row = db.get_agent(agent_id)
                 agent_name = (agent_row or {}).get('name') or agent_id.replace('_', ' ').title()
@@ -1853,6 +1854,7 @@ def api_chat_agent_state(agent_id):
                              'key_facts', 'artifacts', 'depends_on', 'last_active',
                              'state_since')}
                     card['tokens'] = path_token_estimate(_cmp_chatlog, p)
+                    card['llm_tokens'] = path_llm_token_estimate(_cmp_chatlog, p)
                     card['card_tokens'] = card_token_estimate(p)
                     _path_cards.append(card)
                 payload['cmp'] = {

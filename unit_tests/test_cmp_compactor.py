@@ -143,3 +143,28 @@ def test_path_and_card_token_estimates():
     # empty path → 0, never raises
     assert path_token_estimate(FakeChatlog([]), {'id': 'x', 'segments': []}) == 0
     assert card_token_estimate({'id': 'x'}) == 0
+
+
+def test_path_llm_token_estimate_reflects_compacted_view():
+    """Actual (llm view) must sit far below the raw estimate when a path
+    carries an oversized tool output: reconstruction compacts what the raw
+    chatlog stores in full."""
+    from backend.agent_runtime.cmp.compactor import (path_llm_token_estimate,
+                                                     path_token_estimate)
+    from models.chatlog import chatlog_manager
+    log = chatlog_manager.get('cmp_compactor_est_agent', 'sess-est')
+    log.append({'type': 'user', 'ts': 1100, 'content': 'jalankan explorer',
+                'session_id': 's'})
+    log.append({'type': 'tool_call', 'ts': 1200, 'function': 'Explore',
+                'params': {'query': 'x'}, 'id': 'c1', 'session_id': 's'})
+    log.append({'type': 'tool_output', 'ts': 1300, 'session_id': 's',
+                'content': 'hasil scan: baris temuan panjang\n' * 8000,
+                'tool_call_id': 'c1', 'function': 'Explore'})
+    log.append({'type': 'final', 'ts': 1400, 'content': 'selesai',
+                'session_id': 's'})
+    path = {'id': 'A1', 'segments': [[1000, None]]}
+    raw = path_token_estimate(log, path)
+    actual = path_llm_token_estimate(log, path)
+    assert 0 < actual < raw / 5      # the compaction gap is visible
+    # a chatlog without segment support degrades to 0, never raises
+    assert path_llm_token_estimate(FakeChatlog([]), path) == 0

@@ -82,6 +82,27 @@ def path_token_estimate(chatlog, path: dict) -> int:
         return 0
 
 
+def path_llm_token_estimate(chatlog, path: dict) -> int:
+    """Token size of the path's transcript AS THE LLM ACTUALLY SEES IT —
+    segment-scoped reconstruction with the same tool-output compaction and
+    closed-segment tail trimming the assembler applies. The gap between this
+    and path_token_estimate (the raw transcript) is what compaction saves.
+    Best-effort, 0 on failure."""
+    try:
+        from backend.llm_usage_events import estimate_tokens
+        total = 0
+        for msg in chatlog.get_entries_for_llm_segments(
+                path.get('segments') or []):
+            total += estimate_tokens(str(msg.get('content') or ''))
+            for tc in msg.get('tool_calls') or []:
+                total += estimate_tokens(
+                    str((tc.get('function') or {}).get('arguments') or ''))
+        return total
+    except Exception:
+        _logger.warning("CMP path LLM token estimate failed", exc_info=True)
+        return 0
+
+
 def card_token_estimate(path: dict) -> int:
     """Estimated token size of a path's IPPC card — the compact structured
     summary that stays in the context window when the path is offloaded."""

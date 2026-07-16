@@ -1971,8 +1971,13 @@ class AgentRuntime:
             # Resolve workspace: workplace config takes priority over agent.workspace.
             # For tunnel workplaces, never fall back to the agent's /workspace path —
             # Evonet runs on the remote device and has its own working directory.
+            # EXPLORERS: their workspace is set by explorer.build_config to the
+            # user-requested absolute path (the 'path' parameter of Explore).
+            # Use it directly — the workplace_id is only for SSH backend routing.
             _workplace_id = agent.get('workplace_id') or None
-            if _workplace_id:
+            if agent.get('is_explorer'):
+                _workspace = agent.get('workspace') or None
+            elif _workplace_id:
                 try:
                     import json as _json
                     _workplace = db.get_workplace(_workplace_id)

@@ -12,7 +12,7 @@ import { log } from './debug.js';
 
 const SSE_EVENTS = [
     'turn_begin', 'turn_split', 'thinking', 'tool_call_started', 'tool_executed',
-    'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
+    'state:changed', 'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
     'message_injected', 'message_injection_applied', 'session_clear',
     'heartbeat',
 ];

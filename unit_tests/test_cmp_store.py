@@ -120,13 +120,15 @@ def test_preserved_archives_when_over_max_cap():
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)    # suspends A1 @2000
     store.create_path(ms.cmp, ms, 'third', now_ts=3000)     # suspends A2 @3000
     store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)    # suspends A3 @4000
-    # 3 preserved: A1(2000), A2(3000), A3(4000) → oldest A1 must archive
-    result = store.tick_lifecycle(ms.cmp, now_ts=5000)
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)     # suspends A4 @5000
+    # 4 preserved: A1(2000), A2(3000), A3(4000), A4(5000) → oldest A1 must archive
+    result = store.tick_lifecycle(ms.cmp, now_ts=6000)
     assert result == {'archived': ['A1'], 'pruned': []}
     assert ms.cmp['paths']['A1']['status'] == 'archived'
     assert ms.cmp['paths']['A2']['status'] == 'preserved'
     assert ms.cmp['paths']['A3']['status'] == 'preserved'
-    assert ms.cmp['paths']['A4']['status'] == 'active'
+    assert ms.cmp['paths']['A4']['status'] == 'preserved'
+    assert ms.cmp['paths']['A5']['status'] == 'active'
     # atg snapshot cleared on archive
     assert ms.cmp['paths']['A1']['atg'] is None
 
@@ -164,18 +166,19 @@ def test_reactivation_resets_the_lifecycle_clock():
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)     # A1 preserved @2000
     store.create_path(ms.cmp, ms, 'third', now_ts=3000)      # A2 preserved @3000
     store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)     # A3 preserved @4000
-    # 3 preserved: A1(2000), A2(3000), A3(4000) → A1 archived
-    store.tick_lifecycle(ms.cmp, now_ts=5000)
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)      # A4 preserved @5000
+    # 4 preserved: A1(2000), A2(3000), A3(4000), A4(5000) → A1 archived
+    store.tick_lifecycle(ms.cmp, now_ts=5100)
     assert ms.cmp['paths']['A1']['status'] == 'archived'
 
-    store.switch_to(ms.cmp, ms, 'A1', now_ts=5100)           # reactivate
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=5200)           # reactivate
     p1 = ms.cmp['paths']['A1']
-    assert p1['status'] == 'active' and p1['state_since'] == 5100
+    assert p1['status'] == 'active' and p1['state_since'] == 5200
 
-    store.switch_to(ms.cmp, ms, 'A4', now_ts=5200)           # suspend again
+    store.switch_to(ms.cmp, ms, 'A5', now_ts=5300)           # suspend again
     assert p1['status'] == 'preserved'                       # NOT archived (fresh clock)
-    # A1 state_since=5200, A2=3000, A3=4000 → A2 is now oldest → archived
-    result = store.tick_lifecycle(ms.cmp, now_ts=5300)
+    # A1 state_since=5300, A2=3000, A3=4000, A4=5000 → A2 is now oldest → archived
+    result = store.tick_lifecycle(ms.cmp, now_ts=5400)
     assert result == {'archived': ['A2'], 'pruned': []}
     assert p1['status'] == 'preserved'  # A1 still preserved (fresh clock)
 
@@ -204,12 +207,13 @@ def test_active_lineage_is_exempt_from_archiving():
     store.create_path(ms.cmp, ms, 'z1', now_ts=3000)    # B1→preserved, A2 active
     store.create_path(ms.cmp, ms, 'z2', now_ts=4000)    # A2→preserved, A3 active
     store.create_path(ms.cmp, ms, 'z3', now_ts=5000)    # A3→preserved, A4 active
+    store.create_path(ms.cmp, ms, 'z4', now_ts=6000)    # A4→preserved, A5 active
 
     # Switch back to B1 (which depends on A1) → A1 is a protected ancestor
-    store.switch_to(ms.cmp, ms, 'B1', now_ts=5100)
-    # B1 active, protected={A1}. Preserved: A2(4000), A3(5000), A4(5100)
-    # Unprotected = 3 > 2 → A2 (oldest) archived; A1 exempt
-    result = store.tick_lifecycle(ms.cmp, now_ts=5200)
+    store.switch_to(ms.cmp, ms, 'B1', now_ts=6100)
+    # B1 active, protected={A1}. Preserved: A2(4000), A3(5000), A4(6000), A5(6100)
+    # Unprotected = 4 > 3 → A2 (oldest) archived; A1 exempt
+    result = store.tick_lifecycle(ms.cmp, now_ts=6200)
     assert 'A1' not in result['archived']
     assert result['archived'] == ['A2']
     assert ms.cmp['paths']['A1']['status'] == 'preserved'
@@ -219,18 +223,19 @@ def test_legacy_dormant_status_normalizes():
     ms = _init(ts=1000)
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
     store.create_path(ms.cmp, ms, 'third', now_ts=3000)
-    # 2 preserved: A1(2000), A2(3000) — exactly at cap, no archiving
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)
+    # 3 preserved: A1(2000), A2(3000), A3(4000) — exactly at cap, no archiving
     p1 = ms.cmp['paths']['A1']
     p1['status'] = 'dormant'                                   # pre-lifecycle data
     del p1['state_since']
     assert store.path_status(p1) == 'preserved'
     # ticks treat it as preserved, with last_active as the clock fallback
-    result = store.tick_lifecycle(ms.cmp, now_ts=3100)
+    result = store.tick_lifecycle(ms.cmp, now_ts=4100)
     assert result['archived'] == []
 
     # Create one more to push over cap → A1 (oldest, with last_active fallback) archived
-    store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)
-    result = store.tick_lifecycle(ms.cmp, now_ts=4100)
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)
+    result = store.tick_lifecycle(ms.cmp, now_ts=5100)
     assert result['archived'] == ['A1']
     assert p1['status'] == 'archived'
 

@@ -19,7 +19,7 @@ MAX_PATHS = 20
 # boundaries): each state strictly reduces a path's context cost — active
 # (full card), preserved (snippet, max MAX_PRESERVED), archived (map-node
 # title only), pruned (record removed).
-MAX_PRESERVED = 2                          # per-cap, oldest preserved archived
+MAX_PRESERVED = 3                          # per-cap, oldest preserved archived
 ARCHIVED_TTL_MS = 3 * 24 * 3600 * 1000    # archived  > 3 days → pruned
 RESTORE_MAX_HOPS = 3                       # lineage auto-restore depth
 

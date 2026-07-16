@@ -107,6 +107,20 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
         'file_path': target_path,
     }
 
+    # --- Sync to remote workplace if applicable (Phase 3: proactive sync) ---
+    workplace_path = None
+    try:
+        agent = db.get_agent(agent_id)
+        if agent and (agent.get('workplace_id') or agent.get('sandbox_enabled')):
+            from backend.tools._ensure_workplace_file import ensure_workplace_file
+            workplace_path = ensure_workplace_file(target_path, agent)
+            attachment_info['workplace_path'] = workplace_path
+    except Exception as e:
+        _logger.warning(
+            "Failed to sync attachment to remote workplace for agent %s: %s",
+            agent_id, e
+        )
+
     # --- Image: convert to JPEG base64 for LLM vision ---
     if is_image:
         try:
@@ -131,6 +145,8 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
     if _is_pdf(mime_type, target_path):
         text = _read_pdf_text(target_path, offset=1)
         prefix = f"[Attached file: {original_name}]\n```\n{text}\n```"
+        if workplace_path:
+            prefix = f"[Workplace path: {workplace_path}]\n" + prefix
         return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
     # --- Text/code file: read content ---
@@ -140,10 +156,14 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
         except Exception:
             content = '[Could not decode file content]'
         prefix = f"[Attached file: {original_name}]\n```\n{content}\n```"
+        if workplace_path:
+            prefix = f"[Workplace path: {workplace_path}]\n" + prefix
         return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
     # --- Other binary ---
     prefix = f"[Attached file: {original_name} ({mime_type}, {size_bytes} bytes) — binary file, content not readable]"
+    if workplace_path:
+        prefix += f"\n[Workplace path: {workplace_path}]"
     return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
 

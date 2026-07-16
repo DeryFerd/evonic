@@ -1777,7 +1777,7 @@ class AgentRuntime:
                 _logger.exception("CMP history filter failed — using full history")
                 _jsonl_entries = None
             if _jsonl_entries is None:
-                _jsonl_entries = chatlog.get_entries_for_llm(
+                _jsonl_entries = chatlog.get_entries_for_llm_trail(
                     after_ts=summary_record.get('last_message_ts') if summary_record else None,
                 )
             # NOTE: The second condition handles an edge case where _jsonl_entries is empty

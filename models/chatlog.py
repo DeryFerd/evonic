@@ -387,6 +387,44 @@ class ChatLog:
 
         return _reconstruct_llm_messages(raw_entries)
 
+    def get_entries_for_llm_trail(self, after_ts: Optional[int] = None,
+                                   limit: int = 50) -> List[Dict[str, Any]]:
+        """Like get_entries_for_llm, but strips tool_call and tool_output entries.
+
+        In trail mode, only semantic messages (user, intermediate, final, error,
+        system, thinking) are kept. Mechanical tool invocations and results are
+        dropped — the assistant's intermediate/final text already summarizes
+        the findings. This reduces context window usage for subsequent turns.
+        """
+        raw_entries: List[dict] = []
+
+        if after_ts is not None:
+            for raw in self._iter_lines_forward():
+                entry = self._parse(raw)
+                if entry is None:
+                    continue
+                if entry.get('ts', 0) <= after_ts:
+                    continue
+                if entry.get('type') in _LLM_CONTEXT_TYPES:
+                    raw_entries.append(entry)
+        else:
+            collected = []
+            semantic_count = 0
+            for raw in self._iter_lines_reverse():
+                entry = self._parse(raw)
+                if entry is None:
+                    continue
+                if entry.get('type') in _LLM_CONTEXT_TYPES:
+                    collected.append(entry)
+                    if entry.get('type') in _SUMMARY_COUNT_TYPES:
+                        semantic_count += 1
+                        if semantic_count >= limit:
+                            break
+            collected.reverse()
+            raw_entries = collected
+
+        return _reconstruct_llm_messages(raw_entries, trail_mode=True)
+
     def get_entries_for_llm_segments(self, segments: List[list],
                                      after_ts: Optional[int] = None,
                                      closed_tail_semantic: int = 6,
@@ -545,11 +583,17 @@ def _fix_interleaved_user_messages(msgs: List[Dict[str, Any]]) -> List[Dict[str,
     return result
 
 
-def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
+def _reconstruct_llm_messages(entries: List[dict],
+                              trail_mode: bool = False) -> List[Dict[str, Any]]:
     """Convert a list of JSONL entries to the OpenAI messages array format.
 
     Groups consecutive tool_call entries into a single assistant message with
     tool_calls array, matching what the LLM originally produced.
+
+    trail_mode: When True, skip tool_call and tool_output entries — only keep
+    user, intermediate, final, error, system, and thinking. This reduces
+    context window usage by removing mechanical tool invocations and results
+    from subsequent turns.
     """
     messages: List[Dict[str, Any]] = []
     i = 0
@@ -622,6 +666,12 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             i += 1
 
         elif etype == 'tool_call':
+            if trail_mode:
+                # In trail mode, skip all tool_call entries. Clear pending
+                # reasoning since reasoning is tied to tool calls in this mode.
+                _pending_reasoning = ''
+                i += 1
+                continue
             # Collect the immediately preceding intermediate content (if any) and
             # all consecutive tool_call entries into one assistant message.
             preceding_content = ''
@@ -668,6 +718,10 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             messages.append(asst_msg)
 
         elif etype == 'tool_output':
+            if trail_mode:
+                # In trail mode, skip all tool output entries.
+                i += 1
+                continue
             tc_id = entry.get('tool_call_id', '') or ''
             if not tc_id.strip():
                 if _pending_tool_ids:
@@ -686,6 +740,8 @@ def _reconstruct_llm_messages(entries: List[dict]) -> List[Dict[str, Any]]:
             # Skip turn_begin, turn_end, pending
             i += 1
 
+    if trail_mode:
+        return _fix_interleaved_user_messages(messages)
     return _drop_orphaned_tool_messages(
         _fix_interleaved_user_messages(messages))
 

@@ -151,12 +151,11 @@ export class ChatUI {
             onTrigger:       (evtName, data) => {
                 this._log.debug('turn event', evtName, data);
                 this.$bus.trigger(evtName, [data]);
-                // agent-state bridge: fire document-level event for tool:executed
-                if (evtName === 'tool:executed') {
-                    const toolName = data && data.tool;
-                    if (['save_plan', 'set_mode', 'update_tasks', 'state', 'use_skill', 'unload_skill'].includes(toolName)) {
-                        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
-                    }
+                if (evtName === 'state:changed') {
+                    document.dispatchEvent(new CustomEvent('evonic:state-changed', { detail: data }));
+                    // Keep the established page-level event for consumers that have
+                    // not migrated to the more specific SSE event name yet.
+                    document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
                 }
                 if (evtName === 'approval:required') {
                     document.dispatchEvent(new CustomEvent('evonic:approval-required', { detail: data }));

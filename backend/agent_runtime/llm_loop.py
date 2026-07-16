@@ -2030,6 +2030,10 @@ def run_tool_loop(agent: Dict[str, Any],
                         'original_reasons': pending.safety_result.get('reasons', []),
                     }
 
+            # Track lazy-skill state changes and publish their snapshot only after
+            # tool_executed, preserving chat-stream ordering for the browser.
+            _skill_state_changed = False
+
             # Lazy tool injection: use_skill returned tool defs to inject mid-turn
             if fn_name == 'use_skill' and isinstance(tool_result, dict) and 'inject_tools' in tool_result:
                 injected = tool_result.pop('inject_tools')
@@ -2045,6 +2049,7 @@ def run_tool_loop(agent: Dict[str, Any],
                     session_skill_tools.setdefault(session_id, {})[loaded_sid] = [
                         t for t in tools if t.get('function', {}).get('name', '') in set(injected_fns)
                     ]
+                    _skill_state_changed = True
                     event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
                 # Add injected tool IDs to assigned_tool_ids for authorization guard
                 _assigned = agent_context.get('assigned_tool_ids')
@@ -2062,6 +2067,7 @@ def run_tool_loop(agent: Dict[str, Any],
                 if loaded_sid:
                     _skill_system_mds[loaded_sid] = tool_result['system_md']
                     session_skill_mds.setdefault(session_id, {})[loaded_sid] = tool_result['system_md']
+                    _skill_state_changed = True
                     event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
 
             # Lazy tool removal: unload_skill removes injected tools from context
@@ -2087,6 +2093,7 @@ def run_tool_loop(agent: Dict[str, Any],
                 unload_sid = tool_result.get('id', '')
                 _skill_system_mds.pop(unload_sid, None)
                 session_skill_mds.get(session_id, {}).pop(unload_sid, None)
+                _skill_state_changed = bool(unload_sid)
                 event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
 
             # ── Layer B: Tool Result Scanner (post-execution injection scan) ──
@@ -2214,12 +2221,32 @@ def run_tool_loop(agent: Dict[str, Any],
                 'tool_result': result_dict, 'has_error': has_error,
             })
 
-            # Persist agent state immediately for state-changing built-in tools
+            # Persist agent state immediately for state-changing built-in tools, then
+            # push the fresh per-session snapshot. event_stream.emit only mutates its
+            # in-memory buffers here; listener work is delegated to its executor.
             if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state',
                            'compile_task_graph', 'switch_path', 'new_path'):
                 _ms = agent_context.get('agent_state')
                 if _ms is not None:
                     _persist_agent_state_split(_ms, agent_id, session_id, db_agent_id)
+                    event_stream.emit('state:changed', {
+                        'agent_id': agent_id,
+                        'session_id': session_id,
+                        'mode': _ms.mode,
+                        'plan_file': _ms.plan_file,
+                        'tasks': list(_ms.tasks),
+                    })
+
+            if _skill_state_changed:
+                loaded_skills = sorted(
+                    set(session_skill_tools.get(session_id, {})) |
+                    set(session_skill_mds.get(session_id, {}))
+                )
+                event_stream.emit('state:changed', {
+                    'agent_id': agent_id,
+                    'session_id': session_id,
+                    'loaded_skills': loaded_skills,
+                })
 
             # Record in trace (for animated bubbles)
             tool_trace.append({"tool": fn_name, "args": args, "result": result_dict})

@@ -2177,7 +2177,7 @@ async function _renderViewerContent($body, url, filename, category) {
 
 const SSE_EVENTS = [
     'turn_begin', 'turn_split', 'thinking', 'tool_call_started', 'tool_executed',
-    'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
+    'state:changed', 'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
     'message_injected', 'message_injection_applied', 'session_clear',
     'state_changed',
     'heartbeat',
@@ -2824,6 +2824,11 @@ class Turn {
             return;
         }
 
+        if (evtName === 'state:changed') {
+            this._onTrigger('state:changed', data);
+            return;
+        }
+
         if (evtName === 'response_chunk' && data.content) {
             // Render every response chunk in the trace (intermediate + final), matching
             // the history-render view. Only the FINAL chunk is stashed for the final
@@ -3327,12 +3332,11 @@ class ChatUI {
             onTrigger:       (evtName, data) => {
                 this._log.debug('turn event', evtName, data);
                 this.$bus.trigger(evtName, [data]);
-                // agent-state bridge: fire document-level event for tool:executed
-                if (evtName === 'tool:executed') {
-                    const toolName = data && data.tool;
-                    if (['save_plan', 'set_mode', 'update_tasks', 'state', 'use_skill', 'unload_skill'].includes(toolName)) {
-                        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
-                    }
+                if (evtName === 'state:changed') {
+                    document.dispatchEvent(new CustomEvent('evonic:state-changed', { detail: data }));
+                    // Keep the established page-level event for consumers that have
+                    // not migrated to the more specific SSE event name yet.
+                    document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
                 }
                 if (evtName === 'approval:required') {
                     document.dispatchEvent(new CustomEvent('evonic:approval-required', { detail: data }));

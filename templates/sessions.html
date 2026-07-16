@@ -496,10 +496,9 @@ function dispatchSessionEvent(evtName, data, sessionId) {
             _sseThinkingId = chatUI.showThinkingIndicator();
         }
         chatUI.appendTimelineEntry(_sseThinkingId, {type: 'tool_result', tool: data.tool, result: data.result, error: data.error});
-        if (['save_plan', 'set_mode', 'update_tasks', 'state'].includes(data.tool)) {
-            loadAgentState();
-            loadSessionSummary();
-        }
+    } else if (evtName === 'state:changed') {
+        document.dispatchEvent(new CustomEvent('evonic:state-changed', {detail: data}));
+        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', {detail: data}));
     } else if (evtName === 'response_chunk') {
         if (data.content && _sseThinkingId) {
             chatUI.appendTimelineEntry(_sseThinkingId, {type: 'response', content: data.content});
@@ -1135,7 +1134,7 @@ function connectSessionStream(sessionId, afterSeq = 0) {
         dispatch(data);
     }
 
-    for (const evtName of ['thinking', 'tool_call_started', 'tool_executed', 'response_chunk', 'turn_split', 'session_clear', 'approval_required', 'approval_resolved']) {
+    for (const evtName of ['thinking', 'tool_call_started', 'tool_executed', 'state:changed', 'response_chunk', 'turn_split', 'session_clear', 'approval_required', 'approval_resolved']) {
         es.addEventListener(evtName, e => {
             if (currentSessionId !== sessionId) return;
             const data = JSON.parse(e.data);
@@ -1933,78 +1932,89 @@ function _stopBgLogPolling() {
 }
 
 let lastSummaryText = null;
+let _sessionStateData = {};
+let _summaryRefreshTimer = null;
+
+function _renderSessionStateSnapshot(stateData) {
+    let planHtml = '';
+    if (stateData.mode) {
+        const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+        planHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
+    }
+    if (stateData.plan_file) {
+        planHtml += `<button class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1 cursor-pointer hover:underline hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors border-0" onclick="openPlanModal('${esc(stateData.plan_file)}')" title="Click to view plan">📋 ${esc(stateData.plan_file)}</button> `;
+    }
+    if (stateData.tasks && stateData.tasks.length > 0) {
+        const icons = {pending: '\u2610', in_progress: '\u27f3', done: '\u2713'};
+        const iconColors = {pending: 'text-gray-400', in_progress: 'text-amber-500', done: 'text-green-500'};
+        planHtml += '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Tasks</div><ul class="space-y-0.5">';
+        for (const t of stateData.tasks) {
+            const active = t.status === 'in_progress';
+            const spinnerSvg = '<svg class="task-active-icon animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.2"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 60"/></svg>';
+            const icon = active ? spinnerSvg : (icons[t.status] || '\u2610');
+            const color = iconColors[t.status] || 'text-gray-400';
+            const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
+            const iconCls = `${color} inline-flex items-center justify-center w-4 h-4 text-xs flex-shrink-0`;
+            const textCls = active ? 'task-active-text text-xs' : `${textClass} text-xs`;
+            planHtml += `<li class="flex items-start gap-1.5"><span class="${iconCls}">${icon}</span><span class="${textCls}">${esc(t.text)}</span></li>`;
+        }
+        planHtml += '</ul></div>';
+    }
+    planHtml += buildBgProcessesHtml(stateData.background_processes);
+
+    const skills = Array.isArray(stateData.loaded_skills)
+        ? stateData.loaded_skills.map(skill => typeof skill === 'string'
+            ? {skill_id: skill, name: skill}
+            : skill)
+        : [];
+    const badges = _buildSkillBadges(skills);
+    ['', 'mobile-'].forEach(prefix => {
+        const ctxEl = document.getElementById(prefix + 'SessionContext');
+        const planEl = document.getElementById(prefix + 'SessionPlan');
+        const skillsEl = document.getElementById(prefix + 'SessionSkills');
+        if (ctxEl) ctxEl.innerHTML = buildContextUsageHtml(stateData.context_usage);
+        if (planEl) planEl.innerHTML = planHtml ? `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">${planHtml}</div>` : '';
+        if (skillsEl) skillsEl.innerHTML = badges.hasBadges ? '<div class="pt-2 border-t border-gray-100 dark:border-gray-600"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">📜 ' + badges.count + ' Skills:</div><div class="flex flex-wrap gap-1 mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">' + badges.html + '</div></div>' : '';
+    });
+}
+
+function _renderSessionSummary(data) {
+    const metaText = data.summary
+        ? `${data.message_count} msgs summarized` + (data.updated_at ? ` · ${formatTime(data.updated_at)}` : '')
+        : null;
+    ['', 'mobile-'].forEach(prefix => {
+        const summaryEl = document.getElementById(prefix + 'SessionSummary');
+        const meta = document.getElementById(prefix + 'summary-meta');
+        if (summaryEl && data.summary) {
+            summaryEl.innerHTML = '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
+            if (meta) {
+                meta.textContent = metaText || '';
+                meta.classList.remove('hidden');
+            }
+        } else if (summaryEl) {
+            summaryEl.innerHTML = '<p class="text-xs text-gray-400 italic">No summary yet.</p>';
+            if (meta) meta.classList.add('hidden');
+        }
+    });
+    lastSummaryText = data.summary || null;
+}
 
 async function loadSessionSummary() {
     if (!currentSessionId) return;
     try {
-        // Fetch session summary and agent state in parallel
-        const fetches = [fetch(`/api/sessions/${currentSessionId}/summary`)];
-        if (currentAgentId) {
-            const userId = document.getElementById('hdr-user')?.textContent || 'web_test';
-            fetches.push(fetch(`/api/agents/${currentAgentId}/chat/state?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(currentSessionId)}`));
-        } else {
-            fetches.push(Promise.resolve(null));
-        }
-        const [sumRes, stateRes] = await Promise.all(fetches);
-        const data = await sumRes.json();
-        const stateData = (stateRes && stateRes.ok) ? await stateRes.json() : {};
-
-        // Build plan section: mode badge + plan file + tasks
-        let planHtml = '';
-        if (stateData.mode) {
-            const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-            planHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
-        }
-        if (stateData.plan_file) {
-            planHtml += `<button class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1 cursor-pointer hover:underline hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors border-0" onclick="openPlanModal('${esc(stateData.plan_file)}')" title="Click to view plan">📋 ${esc(stateData.plan_file)}</button> `;
-        }
-        if (stateData.tasks && stateData.tasks.length > 0) {
-            const icons = {pending: '\u2610', in_progress: '\u27f3', done: '\u2713'};
-            const iconColors = {pending: 'text-gray-400', in_progress: 'text-amber-500', done: 'text-green-500'};
-            planHtml += '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Tasks</div><ul class="space-y-0.5">';
-            for (const t of stateData.tasks) {
-                const active = t.status === 'in_progress';
-                const spinnerSvg = '<svg class="task-active-icon animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.2"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 60"/></svg>';
-                const icon = active ? spinnerSvg : (icons[t.status] || '\u2610');
-                const color = iconColors[t.status] || 'text-gray-400';
-                const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
-                const iconCls = `${color} inline-flex items-center justify-center w-4 h-4 text-xs flex-shrink-0`;
-                const textCls = active ? 'task-active-text text-xs' : `${textClass} text-xs`;
-                planHtml += `<li class="flex items-start gap-1.5"><span class="${iconCls}">${icon}</span><span class="${textCls}">${esc(t.text)}</span></li>`;
-            }
-            planHtml += '</ul></div>';
-        }
-        planHtml += buildBgProcessesHtml(stateData.background_processes);
-
-        // Build skill badges section
-        const skills = Array.isArray(stateData.loaded_skills) ? stateData.loaded_skills : [];
-        const badges = _buildSkillBadges(skills);
-
-        const metaText = data.summary
-            ? `${data.message_count} msgs summarized` + (data.updated_at ? ` \u00b7 ${formatTime(data.updated_at)}` : '')
-            : null;
-
-        ['', 'mobile-'].forEach(prefix => {
-            const ctxEl = document.getElementById(prefix + 'SessionContext');
-            const planEl = document.getElementById(prefix + 'SessionPlan');
-            const skillsEl = document.getElementById(prefix + 'SessionSkills');
-            const summaryEl = document.getElementById(prefix + 'SessionSummary');
-            const meta = document.getElementById(prefix + 'summary-meta');
-            if (ctxEl) ctxEl.innerHTML = buildContextUsageHtml(stateData.context_usage);
-            if (planEl) planEl.innerHTML = planHtml ? `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">${planHtml}</div>` : '';
-            if (skillsEl) skillsEl.innerHTML = badges.hasBadges ? '<div class="pt-2 border-t border-gray-100 dark:border-gray-600"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">📜 ' + badges.count + ' Skills:</div><div class="flex flex-wrap gap-1 mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">' + badges.html + '</div></div>' : '';
-            if (summaryEl && data.summary) {
-                summaryEl.innerHTML = '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
-                meta.textContent = metaText || '';
-                meta.classList.remove('hidden');
-            } else if (summaryEl) {
-                summaryEl.innerHTML = '<p class="text-xs text-gray-400 italic">No summary yet.</p>';
-                meta.classList.add('hidden');
-            }
-        });
-        lastSummaryText = data.summary || null;
+        const sumRes = await fetch(`/api/sessions/${currentSessionId}/summary`);
+        if (sumRes.ok) _renderSessionSummary(await sumRes.json());
     } catch(e) { /* ignore */ }
 }
+
+function scheduleSessionSummaryRefresh() {
+    clearTimeout(_summaryRefreshTimer);
+    _summaryRefreshTimer = setTimeout(() => {
+        _summaryRefreshTimer = null;
+        loadSessionSummary();
+    }, 1000);
+}
+
 async function forceRecap(btn) {
     if (!currentSessionId) return;
     const original = btn.textContent;
@@ -2026,6 +2036,8 @@ async function forceRecap(btn) {
 }
 
 function clearSummaryPanel() {
+    clearTimeout(_summaryRefreshTimer);
+    _summaryRefreshTimer = null;
     ['', 'mobile-'].forEach(prefix => {
         const ctxEl = document.getElementById(prefix + 'SessionContext');
         const planEl = document.getElementById(prefix + 'SessionPlan');
@@ -2046,16 +2058,49 @@ function clearSummaryPanel() {
 async function loadAgentState() {
     if (!currentAgentId) return;
     const userId = document.getElementById('hdr-user')?.textContent || 'web_test';
-    renderAgentState(currentAgentId, userId, ['agent-state-content', 'mobile-agent-state-content'], currentSessionId);
+    try {
+        const url = `/api/agents/${currentAgentId}/chat/state?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(currentSessionId || '')}`;
+        const response = await fetch(url);
+        if (!response.ok) return;
+        _sessionStateData = await response.json();
+        _renderSessionStateSnapshot(_sessionStateData);
+        renderAgentState(
+            currentAgentId,
+            userId,
+            ['agent-state-content', 'mobile-agent-state-content'],
+            currentSessionId,
+            _sessionStateData
+        );
+    } catch(e) { /* ignore */ }
 }
 
 function clearAgentStatePanel() {
+    _sessionStateData = {};
     clearAgentState(['agent-state-content', 'mobile-agent-state-content']);
 }
 
-document.addEventListener('evonic:agent-state-changed', function() {
-    loadAgentState();
-    loadSessionSummary();
+document.addEventListener('evonic:agent-state-changed', function(event) {
+    const detail = event.detail || {};
+    const stateKeys = ['mode', 'plan_file', 'tasks', 'loaded_skills'];
+    const hasStateSnapshot = stateKeys.some(key => Object.prototype.hasOwnProperty.call(detail, key));
+
+    if (hasStateSnapshot) {
+        for (const key of stateKeys) {
+            if (Object.prototype.hasOwnProperty.call(detail, key)) _sessionStateData[key] = detail[key];
+        }
+        _renderSessionStateSnapshot(_sessionStateData);
+        renderAgentState(
+            currentAgentId,
+            null,
+            ['agent-state-content', 'mobile-agent-state-content'],
+            currentSessionId,
+            _sessionStateData
+        );
+    } else {
+        // ATG and non-stream callers still emit the legacy event without a snapshot.
+        loadAgentState();
+    }
+    scheduleSessionSummaryRefresh();
 });
 
 function toggleMobileSummary() {

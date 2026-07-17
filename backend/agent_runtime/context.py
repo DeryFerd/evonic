@@ -288,6 +288,25 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
                         tool_prompt = tool_prompt.replace('/workspace', _resolve_workspace(agent))
                     parts.append(tool_prompt)
 
+    # Scratchpad policy — only injected for agents that can create/run scripts
+    # (bash / runpy / write_file). Keeps throwaway operational scripts and temp
+    # files out of the project root and workspace by pointing them at a dedicated
+    # per-agent scratchpad directory.
+    _script_tools = {'bash', 'runpy', 'write_file'}
+    if assigned_ids & _script_tools:
+        from backend.tools._workspace import scratch_dir
+        scratch = scratch_dir(agent.get('agent_id') or aid)
+        parts.append(
+            "\n## Script & Scratch File Policy (MANDATORY)\n"
+            "You have tools that create and run scripts. Write EVERY throwaway "
+            "script, temporary file, and intermediate operational output to your "
+            f"dedicated scratchpad directory:\n\n    {scratch}/\n\n"
+            f"- Create it first if missing: `mkdir -p {scratch}`\n"
+            "- Never scatter one-off scripts or temp files in the project root, the "
+            "workspace, or arbitrary /tmp paths.\n"
+            "- Only durable, intentional deliverables belong outside the scratchpad."
+        )
+
     # Message Wrapper Protocol
     parts.append("")
     parts.append("## Message Wrapper Protocol")

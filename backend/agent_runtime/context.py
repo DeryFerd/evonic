@@ -1100,6 +1100,40 @@ def build_attachment_note(attachment_info: dict,
     return note
 
 
+def build_attachment_notes(attachment_infos: list,
+                           has_describe_image: bool = True,
+                           audio_enabled: bool = False) -> str:
+    """Render notes for multiple attachments, numbered when more than one.
+
+    Mirrors ``runtime._append_attachment_context`` so a DB-reconstructed message
+    and a freshly-handled one produce identical model-visible context.  Each note
+    starts with ``\\n\\n`` so callers can append with ``content.rstrip() + notes``.
+    """
+    notes = []
+    count = len(attachment_infos)
+    for index, info in enumerate(attachment_infos, 1):
+        file_path = info.get('file_path', '')
+        if file_path and not os.path.isabs(file_path):
+            file_path = os.path.abspath(os.path.join(_BASE_DIR, file_path))
+        filename = info.get('filename', '')
+        mime_type = info.get('mime_type', '')
+        size_bytes = int(info.get('size_bytes', 0) or 0)
+        if size_bytes >= 1048576:
+            size_str = f"{size_bytes / 1048576:.1f} MB"
+        elif size_bytes >= 1024:
+            size_str = f"{size_bytes / 1024:.1f} KB"
+        else:
+            size_str = f"{size_bytes} B"
+        label = f"Attachment #{index}" if count > 1 else "Attachment"
+        note = f"\n\n[{label}: {filename} ({mime_type}, {size_str})]\nFile path: {file_path}"
+        if mime_type.startswith('image/') and has_describe_image:
+            note += "\nUse the `describe_image` tool to view and analyze this image."
+        if mime_type.startswith('audio/') and audio_enabled:
+            note += "\nUse the `transcribe_audio` tool to listen to this audio."
+        notes.append(note)
+    return ''.join(notes)
+
+
 def append_attachment_note(msg: dict,
                            attachment_info: dict,
                            has_describe_image: bool = True,
@@ -1126,9 +1160,21 @@ def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True)
     has_video = msg_video and agent.get('video_enabled')
 
     # Build attachment context note from authoritative structured metadata.
+    # Prefer the plural attachment_infos list; fall back to the legacy singular
+    # attachment_info when no valid plural entries are present.
+    attachment_infos = _msg_meta.get('attachment_infos') if _msg_meta else None
     attachment_info = _msg_meta.get('attachment_info') if _msg_meta else None
+    if not isinstance(attachment_infos, list):
+        attachment_infos = []
+    attachment_infos = [info for info in attachment_infos if isinstance(info, dict)]
     attachment_note = None
-    if attachment_info and isinstance(attachment_info, dict):
+    if attachment_infos:
+        attachment_note = build_attachment_notes(
+            attachment_infos,
+            has_describe_image=has_describe_image,
+            audio_enabled=bool(agent.get('audio_enabled')),
+        )
+    elif attachment_info and isinstance(attachment_info, dict):
         attachment_note = build_attachment_note(
             attachment_info,
             has_describe_image=has_describe_image,

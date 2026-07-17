@@ -1114,7 +1114,7 @@ html.dark .agent-tab.active {
                 </div>
             </div>
             <!-- Summary Panel — hidden on mobile, sidebar on desktop -->
-            <div class="hidden lg:flex flex-col gap-3 flex-shrink-0 min-h-0 min-w-0 w-80">
+            <div class="hidden lg:flex flex-col gap-3 flex-shrink-0 min-h-0 min-w-0 overflow-hidden w-80">
                 <!-- Agent State Card -->
                 {% if agent.enable_agent_state %}
                 <div id="agent-state-card" class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 flex-col flex-shrink-0" style="min-height:0;">
@@ -1124,7 +1124,7 @@ html.dark .agent-tab.active {
                             <span id="state-busy-dot" class="hidden items-center gap-1.5 text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>Busy</span>
                         </div>
                     </div>
-                    <div id="agent-state-content" class="overflow-y-auto px-4 pb-3 flex-shrink-0" style="max-height:260px;">
+                    <div id="agent-state-content" class="overflow-y-auto overflow-x-hidden px-4 pb-3 flex-shrink-0 break-words" style="max-height:260px;">
                         <p class="text-sm text-gray-400 italic">No state yet.</p>
                     </div>
                 </div>
@@ -1138,7 +1138,7 @@ html.dark .agent-tab.active {
                             Refresh
                         </button>
                     </div>
-                    <div id="summary-content" class="flex-1 overflow-y-auto p-4 min-h-0">
+                    <div id="summary-content" class="flex-1 overflow-y-auto overflow-x-hidden p-4 min-h-0 break-words">
                         <p class="text-sm text-gray-400 italic">No summary yet. Start chatting to generate one.</p>
                     </div>
                     <div id="summary-meta" class="hidden px-4 py-2 border-t border-gray-100 text-xs text-gray-400 flex-shrink-0"></div>

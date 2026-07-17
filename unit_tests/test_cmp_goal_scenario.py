@@ -15,6 +15,17 @@ cards only); the active path's dependency ancestors stay in memory because
 the child consumes their results; returning reloads a path's detail.
 """
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """The single-pass turn op is a real LLM call — fail it fast so any
+    unmocked detect() falls back mechanically (no network in tests)."""
+    monkeypatch.setattr('backend.agent_runtime.cmp.detector._call_turn_llm',
+                        lambda *a, **k: None)
+
+
 from unittest.mock import patch
 
 from backend.agent_runtime.cmp import assembler, on_turn_boundary
@@ -25,19 +36,11 @@ from models.chatlog import chatlog_manager
 AGENT = {'id': 'cmp_goal_agent', 'enable_cmp': 1, 'enable_agent_state': 1}
 
 
-def _decide(decision, target=None):
+def _decide(decision, target=None, new_path=None):
     return patch('backend.agent_runtime.cmp.detector.detect',
                  return_value={'decision': decision, 'target': target,
-                               'layer': 'LLM', 'reason': 'scripted'})
-
-
-def _mock_card(title, action):
-    return patch('backend.agent_runtime.cmp.compactor.generate_card',
-                 return_value={'title': title, 'action': action,
-                               'goal': f'{action} — {title}',
-                               'outcome': f'{title} selesai',
-                               'key_facts': [f'detail rahasia {title}'],
-                               'artifacts': [f'/out/{title.replace(" ", "-")}.pdf']})
+                               'layer': 'LLM', 'reason': 'scripted',
+                               'new_path': new_path})
 
 
 def test_goal_scenario_end_to_end():
@@ -47,9 +50,11 @@ def test_goal_scenario_end_to_end():
     # ── 1. weekly report → A1 ────────────────────────────────────────────────
     log.append({'type': 'user', 'ts': 1000,
                 'content': 'buatkan laporan mingguan Perusahaan A', 'session_id': 's'})
-    result = on_turn_boundary(AGENT, ms, log, 'buatkan laporan mingguan Perusahaan A')
+    with _decide('continue', new_path={'title': 'Perusahaan A',
+                                       'action': 'create report'}):
+        result = on_turn_boundary(AGENT, ms, log,
+                                  'buatkan laporan mingguan Perusahaan A')
     assert result['decision'] == 'init'
-    ms.cmp['paths']['A1'].update(title='Perusahaan A', action='create report')
     log.append({'type': 'final', 'ts': 1500,
                 'content': 'laporan mingguan Perusahaan A selesai', 'session_id': 's'})
     assert 'A1["Perusahaan A *"]' in render_map(ms.cmp)
@@ -57,11 +62,11 @@ def test_goal_scenario_end_to_end():
     # ── 2. blog article → A2, A1 offloaded ──────────────────────────────────
     log.append({'type': 'user', 'ts': 2000,
                 'content': 'buatkan tulisan blog untuk robin.blog.com', 'session_id': 's'})
-    with _decide('indep_branch'), _mock_card('Perusahaan A', 'create report'):
+    with _decide('indep_branch', new_path={'title': 'blog',
+                                           'action': 'create article'}):
         result = on_turn_boundary(AGENT, ms, log,
                                   'buatkan tulisan blog untuk robin.blog.com')
     assert result['target'] == 'A2'
-    ms.cmp['paths']['A2'].update(title='blog', action='create article')
     log.append({'type': 'final', 'ts': 2500, 'content': 'artikel blog selesai',
                 'session_id': 's'})
 
@@ -79,11 +84,11 @@ def test_goal_scenario_end_to_end():
     log.append({'type': 'user', 'ts': 3000,
                 'content': 'buatkan invoice atas nama Perusahaan A untuk client X',
                 'session_id': 's'})
-    with _decide('dep_branch', 'A1'), _mock_card('blog', 'create article'):
+    with _decide('dep_branch', 'A1', new_path={'title': 'client X',
+                                               'action': 'create invoice'}):
         result = on_turn_boundary(AGENT, ms, log,
                                   'buatkan invoice atas nama Perusahaan A untuk client X')
     assert result['target'] == 'B1'
-    ms.cmp['paths']['B1'].update(title='client X', action='create invoice')
     log.append({'type': 'final', 'ts': 3500, 'content': 'invoice client X selesai',
                 'session_id': 's'})
     assert 'A1 -->|create invoice| B1["client X *"]' in render_map(ms.cmp)
@@ -99,11 +104,11 @@ def test_goal_scenario_end_to_end():
     # ── 4. invoice client Y → B2 (sibling level index) ──────────────────────
     log.append({'type': 'user', 'ts': 4000,
                 'content': 'buatkan invoice lagi tapi untuk client Y', 'session_id': 's'})
-    with _decide('dep_branch', 'A1'), _mock_card('client X', 'create invoice'):
+    with _decide('dep_branch', 'A1', new_path={'title': 'client Y',
+                                               'action': 'create invoice'}):
         result = on_turn_boundary(AGENT, ms, log,
                                   'buatkan invoice lagi tapi untuk client Y')
     assert result['target'] == 'B2'
-    ms.cmp['paths']['B2'].update(title='client Y', action='create invoice')
     log.append({'type': 'final', 'ts': 4500, 'content': 'invoice client Y selesai',
                 'session_id': 's'})
 
@@ -122,7 +127,7 @@ def test_goal_scenario_end_to_end():
     log.append({'type': 'user', 'ts': 5000,
                 'content': 'laporan perusahaan tadi masih kurang laporan keuangan, tambahkan',
                 'session_id': 's'})
-    with _decide('return', 'A1'), _mock_card('client Y', 'create invoice'):
+    with _decide('return', 'A1'):
         result = on_turn_boundary(AGENT, ms, log,
                                   'laporan perusahaan tadi masih kurang laporan keuangan, tambahkan')
     assert result['decision'] == 'return'

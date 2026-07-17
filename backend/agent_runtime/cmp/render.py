@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import re
 
-from backend.agent_runtime.cmp.store import dependency_ancestors, sort_path_ids
+from backend.agent_runtime.cmp.store import (dependency_ancestors, path_status,
+                                              sort_path_ids)
 
 RENDER_MAX_CHARS = 4000
 
@@ -87,7 +88,7 @@ def _compact_card(path: dict, reason: str) -> list:
 def _snippet_card(path: dict) -> str:
     summary = path.get("outcome") or path.get("goal") or ""
     return (f"- {path['id']} {path.get('title') or ''} "
-            f"[{path.get('status')}] — {summary[:100]}")
+            f"[{path_status(path)}] — {summary[:100]}")
 
 
 def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
@@ -108,10 +109,20 @@ def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
 
     others = [cmp["paths"][pid] for pid in sort_path_ids(cmp["paths"])
               if pid != active_id and pid not in ancestors]
-    if others:
+    # Lifecycle tiers: preserved paths keep their snippet card; archived
+    # paths contribute their title only (their map node) — the next rung
+    # down in context cost before pruning removes them entirely.
+    preserved = [p for p in others if path_status(p) != "archived"]
+    archived = [p for p in others if path_status(p) == "archived"]
+    if preserved:
         lines.append("")
         lines.append("Offloaded paths (details load on return):")
-        lines.extend(_snippet_card(p) for p in others)
+        lines.extend(_snippet_card(p) for p in preserved)
+    if archived:
+        lines.append("")
+        lines.append("Archived paths (title only — returning restores them):")
+        lines.extend(f"- {p['id']} {p.get('title') or ''} [archived]"
+                     for p in archived)
 
     lines.append("")
     lines.append("Use switch_path(path_id) to resume another path, or "

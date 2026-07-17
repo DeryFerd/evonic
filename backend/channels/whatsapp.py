@@ -426,15 +426,21 @@ class WhatsAppChannel(BaseChannel):
         if self._process and self._process.poll() is None:
             self._process.terminate()
             try:
-                self._process.wait(timeout=10)
+                self._process.wait(timeout=15)
             except subprocess.TimeoutExpired:
+                _logger.error(
+                    "WhatsApp bridge did not finish graceful shutdown for channel %s — forcing exit",
+                    self.channel_id,
+                )
                 self._process.kill()
+                self._process.wait(timeout=5)
         self._process = None
         _logger.info("WhatsApp channel %s stopped", self.channel_id)
 
     def handle_callback(self, payload: dict):
         """Process incoming message POSTed by the sidecar."""
         from backend.agent_runtime import agent_runtime
+        from backend.slash_commands import parse_command
         from models.db import db
         from backend.event_stream import event_stream
 
@@ -575,18 +581,31 @@ class WhatsAppChannel(BaseChannel):
             _logger.info("WhatsApp message dropped (no usable content): sender=%s", sender)
             return
 
+        # Keep group slash commands raw so the runtime can detect them before
+        # adding the sender context that normal group messages require.
+        group_command = is_group and parse_command(text)
+
         # Prepend group/sender context (groups) or reply context (DMs)
         final_text = text
-        if is_group:
+        if is_group and not group_command:
             final_text = _wrap_group_message(
                 text, group_name, push_name, sender,
                 quoted_text, quoted_is_bot,
                 quoted_sender_name, quoted_sender)
-        elif quoted_text:
+        elif not is_group and quoted_text:
             label = "Replying to bot" if quoted_is_bot else "Replying to"
             final_text = f"[{label}: {quoted_text[:200]}]\n{text}"
 
-        session_id = db.get_or_create_session(agent_id, sender, self.channel_id)
+        # For group messages, anchor the session to the group ID so all
+        # participants share a single session.  Individual DMs keep the
+        # sender as the external_user_id.
+        if is_group:
+            group_id = jid.split('@')[0] if '@' in jid else jid
+            session_user_id = group_id
+        else:
+            session_user_id = sender
+
+        session_id = db.get_or_create_session(agent_id, session_user_id, self.channel_id)
 
         # Persist the image to disk and build attachment_info — the in-memory
         # data URL alone is invisible to the agent (images are never auto-fed
@@ -609,7 +628,7 @@ class WhatsAppChannel(BaseChannel):
 
         _logger.info("WhatsApp message received from %s (channel %s)", sender, self.channel_id)
         result = agent_runtime.handle_message(
-            agent_id, sender, final_text, self.channel_id,
+            agent_id, session_user_id, final_text, self.channel_id,
             image_url=image_url, video_url=video_url,
             metadata={'attachment_info': attachment_info} if attachment_info else None,
         )

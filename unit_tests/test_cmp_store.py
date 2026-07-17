@@ -47,7 +47,7 @@ def test_create_path_branches_and_resets_task_state():
 
     # old path suspended: segment closed at turn boundary, state snapshotted
     p1 = ms.cmp['paths']['A1']
-    assert p1['status'] == 'dormant'
+    assert p1['status'] == 'preserved'
     assert p1['segments'] == [[999, 1999]]
     assert p1['mode'] == 'execute'
     assert p1['plan_file'] == 'plan/old.md'
@@ -87,7 +87,7 @@ def test_switch_restores_task_state_round_trip():
     assert target['atg'] is None and target['plan_file'] is None
     # A2 snapshotted
     p2 = ms.cmp['paths']['A2']
-    assert p2['status'] == 'dormant'
+    assert p2['status'] == 'preserved'
     assert p2['plan_file'] == 'plan/two.md'
     assert p2['atg']['status'] == 'compiled'
     # segments: P1 reopened, P2 closed
@@ -110,45 +110,148 @@ def test_switch_to_unknown_or_active_raises():
         assert 'A1' in str(e)
 
 
-# ── Hysteresis / caps ────────────────────────────────────────────────────────
+# ── Lifecycle (full → preserved → archived → pruned) / caps ──────────────────
 
-def test_hysteresis_archives_after_k_turns():
+
+def test_preserved_archives_when_over_max_cap():
+    """When more than MAX_PRESERVED paths are preserved, the oldest ones
+    (by state_since) get archived — the cap is strictly enforced."""
+    ms = _init(ts=1000)
+    store.create_path(ms.cmp, ms, 'second', now_ts=2000)    # suspends A1 @2000
+    store.create_path(ms.cmp, ms, 'third', now_ts=3000)     # suspends A2 @3000
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)    # suspends A3 @4000
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)     # suspends A4 @5000
+    # 4 preserved: A1(2000), A2(3000), A3(4000), A4(5000) → oldest A1 must archive
+    result = store.tick_lifecycle(ms.cmp, now_ts=6000)
+    assert result == {'archived': ['A1'], 'pruned': []}
+    assert ms.cmp['paths']['A1']['status'] == 'archived'
+    assert ms.cmp['paths']['A2']['status'] == 'preserved'
+    assert ms.cmp['paths']['A3']['status'] == 'preserved'
+    assert ms.cmp['paths']['A4']['status'] == 'preserved'
+    assert ms.cmp['paths']['A5']['status'] == 'active'
+    # atg snapshot cleared on archive
+    assert ms.cmp['paths']['A1']['atg'] is None
+
+
+def test_archived_prunes_after_three_days():
     ms = _init(ts=1000)
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
+    t_arch = 2100   # hand-craft A1 as archived (preserved cap won't archive it)
+    store._set_status(ms.cmp['paths']['A1'], 'archived', t_arch)
+    store.tick_lifecycle(ms.cmp, now_ts=t_arch + store.ARCHIVED_TTL_MS)
+    assert 'A1' in ms.cmp['paths']                             # exactly at TTL: kept
+    result = store.tick_lifecycle(ms.cmp, now_ts=t_arch + store.ARCHIVED_TTL_MS + 1)
+    assert result['pruned'] == ['A1']
+    assert 'A1' not in ms.cmp['paths']                         # record fully removed
+
+
+def test_prune_blocked_while_a_living_path_depends_on_it():
+    """Pruning a referenced parent would re-root the child's established
+    edge — dead subtrees must decay bottom-up instead."""
+    ms = _init(ts=1000)
+    store.create_path(ms.cmp, ms, 'child', depends_on=['A1'], now_ts=2000)
+    store.create_path(ms.cmp, ms, 'other', now_ts=3000)        # B1 suspended
+    ms.cmp['paths']['A1'].update(status='archived', state_since=3000)
+    result = store.tick_lifecycle(ms.cmp, now_ts=3001 + store.ARCHIVED_TTL_MS)
+    assert result['pruned'] == []                              # A1 protected by B1
+    assert 'A1' in ms.cmp['paths']
+    # once the child is gone, the parent can prune
+    del ms.cmp['paths']['B1']
+    result = store.tick_lifecycle(ms.cmp, now_ts=3002 + store.ARCHIVED_TTL_MS)
+    assert result['pruned'] == ['A1']
+
+
+def test_reactivation_resets_the_lifecycle_clock():
+    ms = _init(ts=1000)
+    store.create_path(ms.cmp, ms, 'second', now_ts=2000)     # A1 preserved @2000
+    store.create_path(ms.cmp, ms, 'third', now_ts=3000)      # A2 preserved @3000
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)     # A3 preserved @4000
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)      # A4 preserved @5000
+    # 4 preserved: A1(2000), A2(3000), A3(4000), A4(5000) → A1 archived
+    store.tick_lifecycle(ms.cmp, now_ts=5100)
+    assert ms.cmp['paths']['A1']['status'] == 'archived'
+
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=5200)           # reactivate
     p1 = ms.cmp['paths']['A1']
-    archived = []
-    for _ in range(store.CMP_DORMANT_TURNS_K):
-        archived = store.tick_hysteresis(ms.cmp)
-    assert p1['status'] == 'archived'
-    assert archived == ['A1']
-    # archived paths drop their atg snapshot
-    assert p1['atg'] is None
+    assert p1['status'] == 'active' and p1['state_since'] == 5200
+
+    store.switch_to(ms.cmp, ms, 'A5', now_ts=5300)           # suspend again
+    assert p1['status'] == 'preserved'                       # NOT archived (fresh clock)
+    # A1 state_since=5300, A2=3000, A3=4000, A4=5000 → A2 is now oldest → archived
+    result = store.tick_lifecycle(ms.cmp, now_ts=5400)
+    assert result == {'archived': ['A2'], 'pruned': []}
+    assert p1['status'] == 'preserved'  # A1 still preserved (fresh clock)
 
 
-def test_return_resets_dormant_counter():
+def test_restore_lineage_promotes_archived_ancestors_within_three_hops():
+    """A1 <- B1 <- C1 <- D1 <- E1(active): archived ancestors within 3 hops
+    of the active node (B1, C1, D1) restore to preserved; the 4th hop (A1)
+    stays archived."""
+    ms = _init(ts=1000)
+    for title, dep in (('b', 'A1'), ('c', 'B1'), ('d', 'C1'), ('e', 'D1')):
+        store.create_path(ms.cmp, ms, title, depends_on=[dep], now_ts=2000)
+    for pid in ('A1', 'B1', 'C1', 'D1'):
+        ms.cmp['paths'][pid].update(status='archived', state_since=2000)
+    promoted = store.restore_lineage(ms.cmp, 'E1', now_ts=3000)
+    assert sorted(promoted) == ['B1', 'C1', 'D1']
+    assert ms.cmp['paths']['A1']['status'] == 'archived'       # 4th hop untouched
+    for pid in ('B1', 'C1', 'D1'):
+        assert ms.cmp['paths'][pid]['status'] == 'preserved'
+        assert ms.cmp['paths'][pid]['state_since'] == 3000
+
+
+def test_active_lineage_is_exempt_from_archiving():
+    ms = _init(ts=1000)
+    store.create_path(ms.cmp, ms, 'child', depends_on=['A1'], now_ts=2000)
+    # B1 active @2000, A1 preserved @2000 (B1's parent → protected)
+    store.create_path(ms.cmp, ms, 'z1', now_ts=3000)    # B1→preserved, A2 active
+    store.create_path(ms.cmp, ms, 'z2', now_ts=4000)    # A2→preserved, A3 active
+    store.create_path(ms.cmp, ms, 'z3', now_ts=5000)    # A3→preserved, A4 active
+    store.create_path(ms.cmp, ms, 'z4', now_ts=6000)    # A4→preserved, A5 active
+
+    # Switch back to B1 (which depends on A1) → A1 is a protected ancestor
+    store.switch_to(ms.cmp, ms, 'B1', now_ts=6100)
+    # B1 active, protected={A1}. Preserved: A2(4000), A3(5000), A4(6000), A5(6100)
+    # Unprotected = 4 > 3 → A2 (oldest) archived; A1 exempt
+    result = store.tick_lifecycle(ms.cmp, now_ts=6200)
+    assert 'A1' not in result['archived']
+    assert result['archived'] == ['A2']
+    assert ms.cmp['paths']['A1']['status'] == 'preserved'
+
+
+def test_legacy_dormant_status_normalizes():
     ms = _init(ts=1000)
     store.create_path(ms.cmp, ms, 'second', now_ts=2000)
-    store.tick_hysteresis(ms.cmp)
-    assert ms.cmp['paths']['A1']['dormant_turns'] == 1
-    store.switch_to(ms.cmp, ms, 'A1', now_ts=3000)
-    assert ms.cmp['paths']['A1']['dormant_turns'] == 0
-    assert ms.cmp['paths']['A1']['status'] == 'active'
+    store.create_path(ms.cmp, ms, 'third', now_ts=3000)
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=4000)
+    # 3 preserved: A1(2000), A2(3000), A3(4000) — exactly at cap, no archiving
+    p1 = ms.cmp['paths']['A1']
+    p1['status'] = 'dormant'                                   # pre-lifecycle data
+    del p1['state_since']
+    assert store.path_status(p1) == 'preserved'
+    # ticks treat it as preserved, with last_active as the clock fallback
+    result = store.tick_lifecycle(ms.cmp, now_ts=4100)
+    assert result['archived'] == []
+
+    # Create one more to push over cap → A1 (oldest, with last_active fallback) archived
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=5000)
+    result = store.tick_lifecycle(ms.cmp, now_ts=5100)
+    assert result['archived'] == ['A1']
+    assert p1['status'] == 'archived'
 
 
-def test_caps_prune_oldest_archived_to_stubs():
+def test_caps_fully_remove_oldest_archived():
     ms = _init(ts=1000)
     for i in range(store.MAX_PATHS + 3):
         store.create_path(ms.cmp, ms, f'task {i}', now_ts=2000 + i)
-        for path in ms.cmp['paths'].values():
-            if path['status'] == 'dormant':
-                path['status'] = 'archived'
-    assert len(ms.cmp['paths']) == store.MAX_PATHS + 4  # before enforcement pass
+    # preserved paths are never cap-removed, so the graph can exceed the cap
+    assert len(ms.cmp['paths']) == store.MAX_PATHS + 4
+    for path in ms.cmp['paths'].values():
+        if path['status'] == 'preserved':
+            path['status'] = 'archived'
     store.enforce_caps(ms.cmp)
-    assert len(ms.cmp['paths']) == store.MAX_PATHS + 4  # stubs replace, not delete
-    # earliest archived became a stub (map node + segments survive)
-    p1 = ms.cmp['paths']['A1']
-    assert p1['goal'] == '' and p1['atg'] is None
-    assert p1['segments']  # transcript ref survives
+    assert len(ms.cmp['paths']) == store.MAX_PATHS      # prune semantics: removed
+    assert 'A1' not in ms.cmp['paths']                  # oldest archived went first
 
 
 def test_card_field_caps():
@@ -181,3 +284,55 @@ def test_dependency_ancestors_bounded():
     assert store.dependency_ancestors(ms.cmp, 'C1') == ['B1', 'A1']
     assert store.dependency_ancestors(ms.cmp, 'C1', max_depth=1) == ['B1']
     assert store.dependency_ancestors(ms.cmp, 'A1') == []
+
+
+# ── apply_card_delta (single-pass turn op, deterministic layer) ──────────────
+
+def test_apply_card_delta_updates_only_card_content():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    p1['action'] = 'do first'
+    before = {k: p1[k] for k in ('id', 'title', 'action', 'depends_on',
+                                 'segments', 'status')}
+    store.apply_card_delta(p1, {
+        'outcome': 'draft reviewed by user',
+        'new_facts': ['user wants weekly cadence'],
+        'new_artifacts': ['/out/report.pdf'],
+        # hostile fields the delta op must ignore (node identity is immutable)
+        'title': 'RENAMED', 'action': 'renamed', 'id': 'Z9',
+        'depends_on': ['Z9'], 'status': 'archived',
+    })
+    assert p1['outcome'] == 'draft reviewed by user'
+    assert p1['key_facts'] == ['user wants weekly cadence']
+    assert p1['artifacts'] == ['/out/report.pdf']
+    for key, val in before.items():
+        assert p1[key] == val, key
+
+
+def test_apply_card_delta_appends_dedupes_and_caps():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    store.apply_card_delta(p1, {'new_facts': ['fact 1', 'fact 2']})
+    store.apply_card_delta(p1, {'new_facts': ['fact 2', 'fact 3']})  # dedupe
+    assert p1['key_facts'] == ['fact 1', 'fact 2', 'fact 3']
+    # overflow keeps the newest facts
+    store.apply_card_delta(p1, {'new_facts': [f'fact {i}' for i in range(4, 10)]})
+    assert len(p1['key_facts']) == store.KEY_FACTS_MAX
+    assert p1['key_facts'][-1] == 'fact 9' and 'fact 1' not in p1['key_facts']
+    # empty outcome never clobbers the existing one
+    p1['outcome'] = 'standing outcome'
+    store.apply_card_delta(p1, {'outcome': '', 'new_facts': None})
+    assert p1['outcome'] == 'standing outcome'
+
+
+def test_apply_card_delta_clamps_and_survives_garbage():
+    ms = _init(ts=1000)
+    p1 = ms.cmp['paths']['A1']
+    store.apply_card_delta(p1, {'outcome': 'o' * 999,
+                                'new_facts': ['f' * 999, '', 42],
+                                'new_artifacts': 'not-a-list'})
+    assert len(p1['outcome']) == store.OUTCOME_MAX
+    assert p1['key_facts'] == ['f' * store.KEY_FACT_CHARS, '42']
+    assert p1['artifacts'] == []
+    store.apply_card_delta(p1, None)          # non-dict deltas are no-ops
+    store.apply_card_delta(p1, 'garbage')

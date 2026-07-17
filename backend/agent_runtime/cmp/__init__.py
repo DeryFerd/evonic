@@ -31,7 +31,7 @@ def render_cmp_section(cmp: dict, agent_name: str = "Agent") -> str:
 
 def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
     """Per-turn CMP orchestration: first-path init, boundary detection,
-    path lifecycle (switch/branch), hysteresis. Called from the runtime at
+    path ops (switch/branch), lifecycle decay. Called from the runtime at
     the re-arm slot; subsumes maybe_rearm_atg for cmp agents (a new branch
     IS the re-arm — fresh plan cycle on its own path).
 
@@ -48,18 +48,30 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
     text = (user_text or '').strip()
     user_ts = _last_user_ts(chatlog)
 
-    # First-path init: adopt the ongoing work (or this first message) as P1.
+    # First-path init: adopt the ongoing work (or this first message) as A1.
     if not ms.cmp or not ms.cmp.get('paths'):
-        title = _current_work_title(ms) or text[:60] or 'Session start'
-        ms.cmp = store.new_cmp(ms, title=title, goal=text[:300],
-                               now_ts=user_ts)
+        title = _current_work_title(ms)
+        ms.cmp = store.new_cmp(ms, title=title or text[:60] or 'Session start',
+                               goal=text[:300], now_ts=user_ts)
+        if not title:  # raw message as title reads badly on the map — name it
+            named = detector.detect(ms.cmp, ms, text,
+                                    initializing=True).get('new_path')
+            _apply_naming(ms.cmp['paths'][ms.cmp['active_id']], named)
         _emit(agent, 'cmp_path_created',
-              {'path_id': 'P1', 'title': title, 'initiator': 'auto-init'})
-        return {'decision': 'init', 'target': 'P1', 'layer': 'init'}
+              {'path_id': ms.cmp['active_id'],
+               'title': ms.cmp['paths'][ms.cmp['active_id']]['title'],
+               'initiator': 'auto-init'})
+        return {'decision': 'init', 'target': ms.cmp['active_id'], 'layer': 'init'}
 
     decision = detector.detect(ms.cmp, ms, text,
-                               recent_tail=_last_final_excerpt(chatlog))
+                               recent_tail=_last_final_excerpt(chatlog),
+                               recent_dialogue=_recent_dialogue(chatlog))
     d, target = decision['decision'], decision.get('target')
+    # The delta describes the just-completed turn on the (still) active path;
+    # apply it before any switch/branch suspends that path.
+    if decision.get('card_delta'):
+        store.apply_card_delta(store.active_path(ms.cmp),
+                               decision['card_delta'])
     try:
         if d == 'return':
             finalize_active_card(chatlog, ms.cmp, ms)
@@ -72,6 +84,7 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
                 ms.cmp, ms, title=text[:60], goal=text[:300],
                 depends_on=[target] if (d == 'dep_branch' and target) else [],
                 now_ts=user_ts)
+            _apply_naming(record, decision.get('new_path'))
             decision['target'] = record['id']
             _emit(agent, 'cmp_path_created',
                   {'path_id': record['id'], 'depends_on': record['depends_on'],
@@ -82,10 +95,29 @@ def on_turn_boundary(agent: dict, ms, chatlog, user_text: str):
             "CMP path operation failed — continuing on the active path")
         decision = {'decision': 'continue', 'target': None, 'layer': 'error'}
 
-    for archived_id in store.tick_hysteresis(ms.cmp):
+    lifecycle = store.tick_lifecycle(ms.cmp, now_ts=user_ts)
+    for archived_id in lifecycle['archived']:
         _emit(agent, 'cmp_path_archived', {'path_id': archived_id})
+    for pruned_id in lifecycle['pruned']:
+        _emit(agent, 'cmp_path_pruned', {'path_id': pruned_id})
     _emit(agent, 'cmp_boundary_decision', decision)
     return decision
+
+
+def _apply_naming(record: dict, named) -> None:
+    """Set a new path's title/action ONCE, from the single-pass envelope's
+    in-context naming. Both fields are immutable afterwards (map node labels
+    and edges never change). Falls back to the mechanical raw-message
+    title/action already on the record when the envelope carried no name."""
+    if not isinstance(named, dict):
+        return
+    from backend.agent_runtime.cmp import store
+    title = str(named.get('title') or '').strip()
+    action = str(named.get('action') or '').strip()
+    if title:
+        record['title'] = title[:store.TITLE_MAX]
+    if action:
+        record['action'] = action[:store.ACTION_MAX]
 
 
 def _current_work_title(ms) -> str:
@@ -99,13 +131,37 @@ def _current_work_title(ms) -> str:
     return ''
 
 
-def _last_final_excerpt(chatlog, max_chars: int = 300) -> str:
+def _last_final_excerpt(chatlog, max_chars: int = 1000) -> str:
     """Excerpt of the agent's latest final reply — the just-delivered
-    deliverable, fed to the boundary classifier for context."""
+    deliverable, fed to the single-pass turn call both as routing context
+    and as the substance for the active path's card delta."""
     try:
         entry = chatlog.get_last_entry(types=frozenset({'final'}))
         content = (entry or {}).get('content') or ''
         return content[:max_chars]
+    except Exception:
+        return ''
+
+
+def _recent_dialogue(chatlog, max_msgs: int = 5, per_msg: int = 400,
+                     max_chars: int = 1600) -> str:
+    """The last few user↔agent turns before the current message — the
+    immediate conversational context the boundary detector needs to ground
+    terse messages ('coba lagi', 'yang itu aja', 'lanjut'). Excludes the
+    current user message (the one being classified, already the newest 'user'
+    entry) so the detector doesn't just echo it back."""
+    try:
+        entries = [e for e in chatlog.tail(limit=24)
+                   if e.get('type') in ('user', 'final', 'intermediate')
+                   and (e.get('content') or '').strip()
+                   and not (e.get('metadata') or {}).get('slash_command')]
+        if entries and entries[-1].get('type') == 'user':
+            entries = entries[:-1]  # drop the message being classified now
+        lines = []
+        for e in entries[-max_msgs:]:
+            role = 'User' if e.get('type') == 'user' else 'Agent'
+            lines.append(f"{role}: {(e.get('content') or '').strip()[:per_msg]}")
+        return '\n'.join(lines)[-max_chars:]
     except Exception:
         return ''
 

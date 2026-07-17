@@ -61,93 +61,6 @@ When in doubt, classify as COMPLEX.
 Respond with exactly one word: TRIVIAL or COMPLEX"""
 
 
-_BOUNDARY_SYSTEM = """You route a user's new message in a multi-task session for an AI agent.
-The session contains several task paths (below). Decide exactly one:
-  CONTINUE        - the message is about the ACTIVE path's SAME deliverable:
-                    feedback, refinement, bug report, correction, approval,
-                    or a question about that work.
-  RETURN:<id>     - the message resumes a specific NON-ACTIVE path
-                    (ids look like A1, A2, B1 - the letter is the level).
-  DEP_BRANCH:<id> - a NEW goal with a DIFFERENT deliverable that uses the
-                    results, tools, or context of path <id>. Examples:
-                    "now make an invoice for the client A website" (after the
-                    path that built it); "update the CLI tool we just used";
-                    "rebuild the server that hosts it".
-  INDEP_BRANCH    - a new goal unrelated to any existing path.
-
-The test is the DELIVERABLE, not the topic: a new imperative goal is a
-BRANCH even when it involves the same project, tools, or domain as the
-active path — especially when the active path's work is already finished.
-CONTINUE only when the message is about the same deliverable the active
-path is producing.
-
-Also CONTINUE (never branch) for: approvals or acknowledgements of the
-active path's plan ("ok", "lanjutkan", "ya, setuju"), and small quick
-requests that a few tool calls satisfy — only substantial new goals
-deserve their own path. Explicitly mentioning a path id (e.g. "lanjutkan
-A2") is a RETURN to that path. When genuinely unsure, answer CONTINUE.
-Respond with exactly one token, e.g.: CONTINUE or RETURN:A1 or DEP_BRANCH:A1 or INDEP_BRANCH"""
-
-_BOUNDARY_RE = re.compile(
-    r'\b(CONTINUE|RETURN:([A-Z]+\d+)|DEP_BRANCH:([A-Z]+\d+)|INDEP_BRANCH)\b')
-
-
-def classify_boundary(map_text: str, active_card: str, other_cards: str,
-                      user_text: str) -> dict:
-    """4-class session boundary decision for CMP.
-
-    Returns {'decision': 'continue'|'return'|'dep_branch'|'indep_branch',
-             'target': 'P<n>'|None}. Defaults to continue on ANY doubt,
-    parse failure, or LLM error (precision-first: a false branch severs
-    context; a missed branch only costs tokens).
-    """
-    fallback = {"decision": "continue", "target": None}
-    text = (user_text or "").strip()
-    if not text:
-        return fallback
-    try:
-        client = _get_classifier_client('cmp_model_id')
-        _t0 = time.time()
-        user_prompt = (f"## Path map\n{map_text}\n\n"
-                       f"## Active path\n{active_card}\n\n"
-                       f"## Other paths\n{other_cards}\n\n"
-                       f"## New message\n{text[:4000]}")
-        response = client.chat_completion(
-            [{"role": "system", "content": _BOUNDARY_SYSTEM},
-             {"role": "user", "content": user_prompt}],
-            tools=None, temperature=0.0, enable_thinking=False,
-            max_tokens=150,
-        )
-        _dur = time.time() - _t0
-        if not response.get("success"):
-            _logger.warning("CMP boundary LLM call failed [%s] (model=%s, %.1fs) — defaulting to continue",
-                            response.get("error_type"), getattr(client, 'model', None), _dur)
-            return fallback
-        msg = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
-        content = (msg.get("content") or "").strip().upper()
-        if not content:
-            content = (msg.get("reasoning_content") or "").strip().upper()
-        m = _BOUNDARY_RE.search(content)
-        if not m:
-            _logger.warning("CMP boundary verdict unparseable (model=%s, %.1fs) — "
-                            "defaulting to continue. Raw: %.120s",
-                            getattr(client, 'model', None), _dur, content or '(empty)')
-            return fallback
-        token = m.group(1)
-        _logger.info("CMP boundary verdict: %s (model=%s, %.1fs)",
-                     token, getattr(client, 'model', None), _dur)
-        if token == "CONTINUE":
-            return fallback
-        if token == "INDEP_BRANCH":
-            return {"decision": "indep_branch", "target": None}
-        if token.startswith("RETURN:"):
-            return {"decision": "return", "target": m.group(2)}
-        return {"decision": "dep_branch", "target": m.group(3)}
-    except Exception as e:
-        _logger.warning("Boundary classifier failed, defaulting to continue: %s", e)
-        return fallback
-
-
 _CONTINUATION_SYSTEM = """You decide whether a user's new message starts a NEW task or CONTINUES the previous one, for an AI coding agent.
 
 The agent just finished this task:
@@ -177,15 +90,13 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
 
     try:
         client = _get_classifier_client('cmp_model_id')
-        response = client.chat_completion(
+        response = classifier_chat(
+            client,
             [{"role": "system",
               "content": _CONTINUATION_SYSTEM.format(goal=previous_goal.strip()[:1000])},
              {"role": "user", "content": text[:4000]}],
-            tools=None,
-            temperature=0.0,
-            enable_thinking=False,
-            max_tokens=100,
-        )
+            max_tokens=1024, log_label="CMP continuation",
+            source="cmp", archive_category="boundary")
         if not response.get("success"):
             _logger.warning("Continuation classifier LLM call failed: %s",
                             response.get("error_type"))
@@ -200,6 +111,61 @@ def classify_continuation(previous_goal: str, user_message: str) -> str:
     except Exception as e:
         _logger.warning("Continuation classifier failed, defaulting to continuation: %s", e)
         return "continuation"
+
+
+def classifier_chat(client, messages, max_tokens: int, log_label: str = "classifier",
+                    source: str = None, archive_category: str = None,
+                    agent_id: str = None, session_id: str = None):
+    """chat_completion for classifier-style calls, with ONE retry at a doubled
+    budget when the model burns the whole max_tokens on implicit reasoning
+    (finish_reason=length with empty content → error_type generation_timeout;
+    deepseek-style models emit CoT even with thinking off, so any fixed budget
+    occasionally loses the race).
+    
+    source: value for llm_usage source tag (token monitor).
+    archive_category: if set and SESSION_ARCHIVE enabled, write training example
+        to session_archive.db → cmp table. One of 'boundary', 'card', 'naming'.
+    """
+    from backend.llm_usage_events import usage_context
+    with usage_context(source=source or log_label):
+        response = client.chat_completion(
+            messages, tools=None, temperature=0.0, enable_thinking=False,
+            max_tokens=max_tokens)
+        if (not response.get("success")
+                and response.get("error_type") == "generation_timeout"):
+            _logger.info("%s hit generation_timeout (model=%s) — retrying with max_tokens=%d",
+                         log_label, getattr(client, 'model', None), max_tokens * 2)
+            response = client.chat_completion(
+                messages, tools=None, temperature=0.0, enable_thinking=False,
+                max_tokens=max_tokens * 2)
+        
+        # ── Archive CMP training example if configured ──
+        if archive_category and response.get("success"):
+            try:
+                from models.session_archive import SessionArchiver
+                msg_resp = (response.get("response", {}).get("choices") or [{}])[0].get("message", {})
+                output = (msg_resp.get("content")
+                          or msg_resp.get("reasoning_content") or "").strip()
+                system_prompt = ""
+                input_text = ""
+                for m in messages:
+                    if m.get("role") == "system":
+                        system_prompt = m.get("content", "")
+                    elif m.get("role") == "user":
+                        input_text = m.get("content", "")
+                SessionArchiver.write_cmp_example(
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    category=archive_category,
+                    system_prompt=system_prompt,
+                    input=input_text,
+                    output=output,
+                    model=getattr(client, 'model', None),
+                )
+            except Exception:
+                _logger.debug("CMP archive write failed", exc_info=True)
+        
+        return response
 
 
 def _get_classifier_client(setting_key: str = 'task_classifier_model_id') -> LLMClient:
@@ -281,13 +247,8 @@ def classify_task(user_message: str) -> str:
             {"role": "system", "content": _CLASSIFIER_SYSTEM},
             {"role": "user", "content": text},
         ]
-        response = client.chat_completion(
-            messages,
-            tools=None,
-            temperature=0.0,
-            enable_thinking=False,
-            max_tokens=100,  # Increased from 10 to ensure model can produce full response
-        )
+        response = classifier_chat(client, messages, max_tokens=1024,
+                                   log_label="task classifier")
         if not response.get("success"):
             _logger.warning("Task classifier LLM call failed [%s] (model=%s, %.1fs) — defaulting to complex",
                             response.get("error_type"), getattr(client, 'model', None),

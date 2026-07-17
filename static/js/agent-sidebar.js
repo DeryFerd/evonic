@@ -634,6 +634,10 @@ function closeBusyRealtime() {
     }
 }
 
+// Close the fallback EventSource on navigation (no-ops on the shared-RT
+// path, which manages its own lifecycle via getSharedRealtime's handler).
+window.addEventListener('pagehide', closeBusyRealtime);
+window.addEventListener('beforeunload', closeBusyRealtime);
 window.addEventListener('pageshow', function () {
     resyncBusyState();
     subscribeBusySSE();

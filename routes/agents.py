@@ -267,6 +267,19 @@ def api_get_agent(agent_id):
     return jsonify(_sanitize_agent(agent))
 
 
+@agents_bp.route('/api/agents/<agent_id>/commands', methods=['GET'])
+def api_list_agent_commands(agent_id):
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    from backend.slash_commands import list_available_commands
+
+    commands = [
+        {'name': name, 'description': description}
+        for name, description in list_available_commands(agent_id)
+    ]
+    return jsonify({'commands': commands})
+
+
 @agents_bp.route('/api/agents', methods=['POST'])
 def api_create_agent():
     if not db.has_super_agent():
@@ -1512,69 +1525,77 @@ def api_chat(agent_id):
     if not db.get_agent(agent_id):
         return jsonify({'error': 'Agent not found'}), 404
 
-    # Support both JSON and multipart/form-data (for file uploads)
+    # Support both JSON and multipart/form-data (including repeated files fields).
     if request.content_type and request.content_type.startswith('multipart/form-data'):
         message = (request.form.get('message') or '').strip()
         user_id = (request.form.get('user_id') or 'anonymous').strip()
-        file = request.files.get('file')
+        files = [f for f in request.files.getlist('files') if f and f.filename]
+        if not files:
+            legacy_file = request.files.get('file')
+            files = [legacy_file] if legacy_file and legacy_file.filename else []
     else:
-        data = request.get_json()
+        data = request.get_json() or {}
         message = data.get('message', '').strip()
         user_id = data.get('user_id', 'anonymous')
-        file = None
+        files = []
 
-    if not message and not file:
+    if not message and not files:
         return jsonify({'error': 'Message is required'}), 400
 
     from backend.agent_runtime import agent_runtime
     from routes.sessions import _process_upload, _ALLOWED_EXTS
 
-    image_url = None
-    upload_meta = None
-    attachment_info = None
+    image_urls = []
+    attachment_infos = []
+    text_prefixes = []
 
-    if file:
-        # Validate extension
-        ext = os.path.splitext(file.filename or '')[1].lower()
-        if ext not in _ALLOWED_EXTS:
-            return jsonify({'error': f'File type {ext} not supported'}), 400
-
-        # Get/create session for attachment storage
+    if files:
         session_id = db.get_or_create_session(agent_id, user_id)
-
-        # Check if attachments are enabled for this agent
         cfg = db.get_agent_attachment_config(agent_id)
         if not cfg.get('enabled'):
             return jsonify({'error': 'File attachments are not enabled for this agent. Enable them in agent settings.'}), 400
 
         max_bytes = cfg.get('max_size_mb', 20) * 1024 * 1024
-        file.seek(0, os.SEEK_END)
-        fsize = file.tell()
-        file.seek(0)
-        if fsize > max_bytes:
-            return jsonify({'error': f'File too large (max {cfg.get("max_size_mb", 20)}MB)'}), 400
+        for file in files:
+            ext = os.path.splitext(file.filename or '')[1].lower()
+            if ext not in _ALLOWED_EXTS:
+                return jsonify({'error': f'File type {ext} not supported'}), 400
+            file.seek(0, os.SEEK_END)
+            fsize = file.tell()
+            file.seek(0)
+            if fsize > max_bytes:
+                return jsonify({'error': f'File too large (max {cfg.get("max_size_mb", 20)}MB)'}), 400
+            try:
+                upload = _process_upload(file, agent_id, session_id, user_id, None)
+            except Exception as e:
+                print(f"[WebChat] Upload processing failed: {e}")
+                return jsonify({'error': 'Failed to process uploaded file'}), 500
+            attachment_infos.append(upload['attachment_info'])
+            if upload['image_url']:
+                image_urls.append(upload['image_url'])
+            if upload['text_prefix']:
+                text_prefixes.append(upload['text_prefix'])
 
-        try:
-            result = _process_upload(
-                file, agent_id, session_id,
-                user_id,
-                None,  # channel_id
-            )
-        except Exception as e:
-            print(f"[WebChat] Upload processing failed: {e}")
-            return jsonify({'error': 'Failed to process uploaded file'}), 500
-
-        image_url = result['image_url']
-        attachment_info = result['attachment_info']
-        upload_meta = {'attachment_info': attachment_info}
-
-        # For non-image files, prepend extracted text to user message
-        if result['text_prefix']:
-            message = f"{result['text_prefix']}\n\n{message}" if message else result['text_prefix']
-
-        # Fallback display text when no user text provided
+        if text_prefixes:
+            message = '\n\n'.join(text_prefixes + ([message] if message else []))
         if not message:
-            message = '[Image]' if attachment_info.get('is_image') else f"[File: {attachment_info['filename']}]"
+            image_slot = 0
+            placeholders = []
+            for info in attachment_infos:
+                if info.get('is_image'):
+                    image_slot += 1
+                    placeholders.append(f'[Image #{image_slot}]')
+                else:
+                    placeholders.append(f'[File: {info["filename"]}]')
+            message = ' '.join(placeholders)
+
+    image_url = image_urls[0] if image_urls else None
+    attachment_info = attachment_infos[0] if attachment_infos else None
+    upload_meta = None
+    if attachment_infos:
+        upload_meta = {'attachment_infos': attachment_infos}
+        if len(attachment_infos) == 1:
+            upload_meta['attachment_info'] = attachment_info
 
     try:
         result = agent_runtime.handle_message(
@@ -1584,13 +1605,17 @@ def api_chat(agent_id):
         )
         if result.get('buffered'):
             resp = {'success': True, 'buffered': True}
-            if attachment_info:
-                resp['attachment_info'] = attachment_info
+            if attachment_infos:
+                resp['attachment_infos'] = attachment_infos
+                if len(attachment_infos) == 1:
+                    resp['attachment_info'] = attachment_info
             return jsonify(resp)
         if result.get('injected'):
             resp = {'success': True, 'injected': True}
-            if attachment_info:
-                resp['attachment_info'] = attachment_info
+            if attachment_infos:
+                resp['attachment_infos'] = attachment_infos
+                if len(attachment_infos) == 1:
+                    resp['attachment_info'] = attachment_info
             return jsonify(resp)
         resp = {
             'success': True,
@@ -1601,8 +1626,10 @@ def api_chat(agent_id):
             'bash_exec': result.get('bash_exec', False),
             'clear_ui': result.get('clear_ui', False),
         }
-        if attachment_info:
-            resp['attachment_info'] = attachment_info
+        if attachment_infos:
+            resp['attachment_infos'] = attachment_infos
+            if len(attachment_infos) == 1:
+                resp['attachment_info'] = attachment_info
         if result.get('error'):
             resp['error'] = True
         return jsonify(resp)
@@ -1840,18 +1867,30 @@ def api_chat_agent_state(agent_id):
         if state.cmp and state.cmp.get('paths'):
             try:
                 from backend.agent_runtime.cmp.render import render_map
+                from backend.agent_runtime.cmp.compactor import (
+                    card_token_estimate, path_llm_token_estimate,
+                    path_token_estimate)
+                from models.chatlog import chatlog_manager
                 agent_row = db.get_agent(agent_id)
                 agent_name = (agent_row or {}).get('name') or agent_id.replace('_', ' ').title()
+                _cmp_chatlog = chatlog_manager.get(agent_id, session_id)
+                _path_cards = []
+                for _, p in sorted(state.cmp['paths'].items()):
+                    card = {k: p.get(k) for k in
+                            ('id', 'title', 'status', 'action', 'goal', 'outcome',
+                             'key_facts', 'artifacts', 'depends_on', 'last_active',
+                             'state_since')}
+                    card['tokens'] = path_token_estimate(_cmp_chatlog, p)
+                    card['llm_tokens'] = path_llm_token_estimate(_cmp_chatlog, p)
+                    card['card_tokens'] = card_token_estimate(p)
+                    _path_cards.append(card)
                 payload['cmp'] = {
                     'active_id': state.cmp.get('active_id'),
+                    'agent_id': agent_id,
                     'agent_name': agent_name,
+                    'has_avatar': bool((agent_row or {}).get('avatar_path')),
                     'mermaid': render_map(state.cmp, agent_name),
-                    'paths': [
-                        {k: p.get(k) for k in
-                         ('id', 'title', 'status', 'action', 'goal', 'outcome',
-                          'key_facts', 'artifacts', 'depends_on', 'last_active')}
-                        for _, p in sorted(state.cmp['paths'].items())
-                    ],
+                    'paths': _path_cards,
                 }
             except Exception:
                 pass
@@ -2055,6 +2094,57 @@ def api_agent_plan_file_update(agent_id):
     return jsonify({'success': True, 'plan_file': plan_file})
 
 
+@agents_bp.route('/api/agents/<agent_id>/bg-job/log', methods=['GET'])
+def api_bg_job_log(agent_id):
+    """Read log output for a background job.
+
+    Query params:
+        file      - log file path (must start with /tmp/evonic_build_)
+        lines     - number of lines to return (default 200, max 2000)
+        direction - 'tail' (default) or 'head'
+    """
+    log_path = (request.args.get('file') or '').strip()
+    if not log_path.startswith('/tmp/evonic_build_') or '..' in log_path:
+        return jsonify({'error': 'Invalid log file path'}), 400
+
+    real = os.path.realpath(log_path)
+    if not real.startswith('/tmp/evonic_build_'):
+        return jsonify({'error': 'Invalid log file path'}), 400
+
+    if not os.path.isfile(real):
+        return jsonify({'error': 'Log file not found'}), 404
+
+    lines_count = min(int(request.args.get('lines', 200)), 2000)
+    direction = request.args.get('direction', 'tail')
+
+    try:
+        file_size = os.path.getsize(real)
+        fd = os.open(real, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'r', encoding='utf-8', errors='replace') as f:
+            if direction == 'tail':
+                avg_line = 120
+                seek_pos = max(0, file_size - lines_count * avg_line)
+                if seek_pos > 0:
+                    f.seek(seek_pos)
+                    f.readline()
+                all_lines = f.readlines()
+                content = [l.rstrip('\n\r') for l in all_lines[-lines_count:]]
+            else:
+                content = []
+                for i, line in enumerate(f):
+                    if i >= lines_count:
+                        break
+                    content.append(line.rstrip('\n\r'))
+
+        return jsonify({
+            'content': content,
+            'file_size': file_size,
+            'total_lines': len(content),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @agents_bp.route('/api/agents/<agent_id>/chat/clear', methods=['POST'])
 def api_chat_clear(agent_id):
     agent = db.get_agent(agent_id)
@@ -2165,6 +2255,10 @@ def api_chat_stream(agent_id):
             'result': d.get('tool_result', {}),
             'error': d.get('has_error', False),
         }),
+        'state:changed':      ('state:changed',    lambda d: {
+            key: d[key] for key in ('mode', 'plan_file', 'tasks', 'loaded_skills')
+            if key in d
+        }),
         'llm_response_chunk': ('response_chunk',  lambda d: {
             'content': d.get('content', ''),
             'is_final': d.get('is_final', False),
@@ -2209,6 +2303,10 @@ def api_chat_stream(agent_id):
             'agent_id': d.get('agent_id', ''),
         }),
         'turn_split': ('turn_split', lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {
+            'agent_id': d.get('agent_id', ''),
+            'session_id': d.get('session_id', ''),
+        }),
     }
 
     handlers = {
@@ -2436,6 +2534,7 @@ def api_chat_events(agent_id):
         'llm_thinking':      ('thinking',        lambda d: {'content': d.get('thinking', '')}),
         'tool_call_started': ('tool_call_started', lambda d: {'tool': d.get('tool_name', ''), 'args': d.get('tool_args', {}), 'param_types': d.get('param_types', {})}),
         'tool_executed':     ('tool_executed',    lambda d: {'tool': d.get('tool_name', ''), 'args': d.get('tool_args', {}), 'result': d.get('tool_result', {}), 'error': d.get('has_error', False)}),
+        'state:changed':     ('state:changed',    lambda d: {key: d[key] for key in ('mode', 'plan_file', 'tasks', 'loaded_skills') if key in d}),
         'llm_response_chunk':('response_chunk',  lambda d: {'content': d.get('content', ''), 'is_final': d.get('is_final', False), 'send_as_message': d.get('send_as_message', False)}),
         'turn_complete':     ('done',             lambda d: {
             'thinking_duration': d.get('thinking_duration'),
@@ -2449,6 +2548,7 @@ def api_chat_events(agent_id):
         'message_injection_applied': ('message_injection_applied', lambda d: {'content': d.get('content', ''), 'count': d.get('count', 1)}),
         'session_clear':     ('session_clear',     lambda d: {'session_id': d.get('session_id', ''), 'agent_id': d.get('agent_id', '')}),
         'turn_split':        ('turn_split',        lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {'agent_id': d.get('agent_id', ''), 'session_id': d.get('session_id', '')}),
     }
 
     if up_to_seq is None:

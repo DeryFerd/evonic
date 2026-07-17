@@ -24,7 +24,7 @@
         }
     })();
     </script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=6">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=8">
     <script src="{{ url_for('static', filename='js/ui-toggle.js') }}?v=1" defer></script>
     <!-- jQuery stays synchronous: inline body scripts call $() at parse time -->
     <script src="{{ url_for('static', filename='js/jquery-3.7.1.min.js') }}?v=1"></script>
@@ -167,6 +167,16 @@
                 <div id="ev-update-banner-actions" class="flex items-center shrink-0"></div>
             </div>
         </div>
+        <!-- WhatsApp disconnect warning banner (hidden by default) -->
+        <div id="wa-disconnect-banner" class="hidden bg-amber-50 border-b border-amber-200 text-gray-700">
+            <div class="max-w-[1600px] mx-auto px-4 py-2.5 flex items-center justify-between gap-3 text-sm">
+                <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 flex-shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                    <span id="wa-disconnect-banner-text"></span>
+                </div>
+                <button type="button" onclick="document.getElementById('wa-disconnect-banner').classList.add('hidden')" class="flex-shrink-0 p-1 rounded text-gray-500 hover:text-gray-800 hover:bg-amber-100 transition-colors text-lg leading-none" title="Dismiss" aria-label="Dismiss WhatsApp channel alert">&times;</button>
+            </div>
+        </div>
         <!-- System alert banners (critical background errors) -->
         <div id="ev-system-alerts"></div>
         <!-- Thin loading bar at the bottom edge of the navbar -->
@@ -247,19 +257,48 @@
     <script>
     // WhatsApp disconnect badge — derived from live bridge status, silent-fail
     (function () {
+        var STATUS_LABELS = {disconnected: 'WA Disconnected', qr_pending: 'QR Pending'};
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+        function updateDisconnectBanner(agents) {
+            var banner = document.getElementById('wa-disconnect-banner');
+            if (!banner) return;
+            if (agents.length === 0) {
+                banner.classList.add('hidden');
+            } else {
+                var items = agents.map(function (a) {
+                    var agentId = String(a.id || '').replace(/^\/+|\/+$/g, '');
+                    var label = '<span class="font-semibold text-gray-800">' + esc(a.name) + '</span>';
+                    if (agentId) {
+                        var href = '/agents/' + encodeURIComponent(agentId);
+                        label = '<a href="' + href + '" class="font-semibold text-amber-700 hover:text-gray-900 underline transition-colors">' + esc(a.name) + '</a>';
+                    }
+                    return label + ' <span class="text-gray-500">(' + esc(STATUS_LABELS[a.status] || a.status) + ')</span>';
+                });
+                document.getElementById('wa-disconnect-banner-text').innerHTML =
+                    '<strong class="font-semibold text-gray-800">WhatsApp channel alert:</strong> ' + items.join(', ');
+                banner.classList.remove('hidden');
+            }
+        }
         function updateWABadge() {
             fetch('/api/whatsapp/disconnected-count')
                 .then(function (r) { return r.ok ? r.json() : null; })
                 .then(function (data) {
                     if (!data) return;
                     var badge = document.getElementById('wa-disconnect-badge');
-                    if (!badge) return;
-                    if (data.count > 0) {
-                        badge.textContent = data.count;
-                        badge.classList.remove('hidden');
-                    } else {
-                        badge.classList.add('hidden');
+                    window._waDisconnectedAgents = (data && data.agents) ? data.agents : [];
+                    if (badge) {
+                        if (data.count > 0) {
+                            badge.textContent = data.count;
+                            badge.classList.remove('hidden');
+                        } else {
+                            badge.classList.add('hidden');
+                        }
                     }
+                    updateDisconnectBanner(window._waDisconnectedAgents);
                 })
                 .catch(function () {});
         }

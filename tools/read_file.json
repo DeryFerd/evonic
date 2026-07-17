@@ -4,15 +4,15 @@
   "description": "Reads the entire content of a text file.",
   "function": {
     "name": "read_file",
-    "description": "Read a text file and return its content as plain text with 1-based line numbers (e.g. '10: line content'). Large files are paginated automatically — the response header shows total lines and the range shown; if there are remaining lines, a footer tells you the next offset to call. Use the `offset` parameter to read subsequent pages. Use this for source code, logs, configs, and any workspace file. Also supports /_self/kb/ paths for reading agent KB files. Accepts /workspace/... absolute paths from the runpy sandbox, which are automatically mapped to the real project root. Constraints: file must be a text file (not binary) and must be 400KB or smaller.",
+    "description": "Read a text file with 1-based line numbers. Use offset for pagination.",
     "parameters": {
       "properties": {
         "file_path": {
-          "description": "Path to the file. Use /workspace/... for project files (e.g. '/workspace/app.py').",
+          "description": "Path to the text file.",
           "type": "string"
         },
         "offset": {
-          "description": "1-based line number to start reading from (default: 1). Use this to paginate through large files — the footer in each response tells you the next offset to use.",
+          "description": "1-based line number to start reading from (default: 1).",
           "type": "integer"
         }
       },

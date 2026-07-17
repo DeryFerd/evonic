@@ -12,8 +12,9 @@ import { log } from './debug.js';
 
 const SSE_EVENTS = [
     'turn_begin', 'turn_split', 'thinking', 'tool_call_started', 'tool_executed',
-    'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
+    'state:changed', 'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
     'message_injected', 'message_injection_applied', 'session_clear',
+    'state_changed',
     'heartbeat',
 ];
 
@@ -251,6 +252,12 @@ export class SSEAdapter {
     }
 
     _dispatch(evtName, data) {
+        if (evtName === 'state_changed') {
+            // Not turn-scoped — bridge straight to the document-level event that
+            // agent_detail.html / sessions.html already listen for (debounced refresh).
+            document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
+            return;
+        }
         if (evtName === 'session_clear') {
             this._handler({ event: 'session_clear', data, seq: data.seq || 0 });
             return;

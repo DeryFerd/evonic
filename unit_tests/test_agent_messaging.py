@@ -842,6 +842,36 @@ class TestOnFinalAnswer(unittest.TestCase):
         self.assertEqual(kwargs.get('external_user_id'), 'user_123')
         self.assertTrue(kwargs.get('trigger_llm'))
 
+    def test_auto_forward_preserves_exact_origin_session(self):
+        """Human-origin replies pass the saved session ID to central validation."""
+        messages = [
+            {'metadata': {
+                'from_agent_id': 'agent_a',
+                'report_to_id': 'user_123',
+                'report_to_channel_id': 'channel-1',
+                'session_id': 'origin-session',
+            }},
+        ]
+        target_agent = _make_target_agent(agent_id='agent_b', name='Agent B')
+        with mock.patch(
+            'backend.tools.agent_messaging.db.get_session_messages',
+            return_value=messages,
+        ), mock.patch(
+            'backend.tools.agent_messaging.db.get_agent',
+            return_value=target_agent,
+        ), mock.patch(
+            'backend.agent_runtime.notifier.notify_agent',
+            return_value={
+                'success': True,
+                'session_id': 'web-fallback',
+                'route': 'web_fallback',
+                'fallback_reason': 'inactive_channel',
+            },
+        ) as mock_notify:
+            self._call(self._build_data(answer='Done!'))
+
+        self.assertEqual(mock_notify.call_args.kwargs.get('session_id'), 'origin-session')
+
     def test_depth_preserved_in_forwarded_metadata(self):
         """_on_final_answer preserves agent_message_depth from original message in forwarded metadata."""
         messages = [

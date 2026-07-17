@@ -142,9 +142,6 @@ function _renderAgentStateCore(containerIds, data) {
             'CMP: ' + data.cmp.paths.length + ' cards</span>';
     }
 
-    // Raw JSON for debug
-    var rawJson = JSON.stringify(data, null, 2);
-
     var html = '<div class="space-y-2 text-sm">';
 
     // Status cards row
@@ -167,14 +164,6 @@ function _renderAgentStateCore(containerIds, data) {
         }
         html += '</ul></div>';
     }
-
-    // Debug: raw JSON toggle
-    html += '<div class="mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">';
-    html += '<div class="flex justify-end">';
-    html += '<button onclick="this.parentElement.nextElementSibling.classList.toggle(\'hidden\');this.textContent=this.parentElement.nextElementSibling.classList.contains(\'hidden\')?\'Show Raw JSON\':\'Hide Raw JSON\'" class="text-[10px] text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 underline cursor-pointer">Show Raw JSON</button>';
-    html += '</div>';
-    html += '<pre class="hidden mt-1 rounded p-2 text-[10px] font-mono overflow-x-auto whitespace-pre-wrap break-all max-h-40 overflow-y-auto">' + esc(rawJson) + '</pre>';
-    html += '</div>';
 
     html += '</div>';
 
@@ -254,10 +243,23 @@ var _cmpMapData = null;
 var _cmpSelectedPath = null;
 
 var _CMP_STATUS_STYLE = {
-    active:   { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
-    dormant:  { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'dormant' },
-    archived: { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
+    active:    { stroke: '#22c55e', fill: 'rgba(34,197,94,0.12)',  label: 'active' },
+    preserved: { stroke: '#f59e0b', fill: 'rgba(245,158,11,0.10)', label: 'preserved' },
+    archived:  { stroke: '#9ca3af', fill: 'rgba(156,163,175,0.10)', label: 'archived' }
 };
+
+/** Normalized lifecycle status ('dormant' is the legacy name of 'preserved'). */
+function _cmpStatus(p) {
+    var s = (p && p.status) || 'preserved';
+    return s === 'dormant' ? 'preserved' : s;
+}
+
+/** Rough countdown to the next lifecycle transition ("18h", "2d"). */
+function _cmpFmtEta(ms) {
+    if (ms <= 0) return 'next turn';
+    var h = Math.round(ms / 3600000);
+    return h < 1 ? '<1h' : (h < 48 ? h + 'h' : Math.round(h / 24) + 'd');
+}
 
 function _openCmpMap() {
     if (!_cmpMapData || !_cmpMapData.paths || !_cmpMapData.paths.length) return;
@@ -265,19 +267,24 @@ function _openCmpMap() {
     var existing = document.getElementById('cmp-map-modal');
     if (existing) existing.remove();
 
+    var isMobile = window.innerWidth <= 640;
+
     var overlay = document.createElement('div');
     overlay.id = 'cmp-map-modal';
     overlay.setAttribute('style',
-        'position:fixed;inset:0;z-index:1000;display:flex;align-items:center;' +
-        'justify-content:center;background:rgba(0,0,0,0.55);padding:16px;');
+        'position:fixed;inset:0;z-index:1000;display:flex;justify-content:center;' +
+        'background:rgba(0,0,0,0.55);' +
+        (isMobile ? 'align-items:stretch;padding:0;' : 'align-items:center;padding:16px;'));
     overlay.addEventListener('click', function (e) {
         if (e.target === overlay) _closeCmpMap();
     });
 
     var panel = document.createElement('div');
-    panel.className = 'bg-white dark:bg-gray-800 rounded-lg shadow-xl';
-    panel.setAttribute('style',
-        'max-width:760px;width:100%;max-height:85vh;overflow-y:auto;padding:20px;');
+    panel.className = 'bg-white dark:bg-gray-800 shadow-xl' + (isMobile ? '' : ' rounded-lg');
+    // Mobile: fill the screen; desktop: large viewport-based card.
+    panel.setAttribute('style', isMobile
+        ? 'width:100%;max-width:100%;height:100%;overflow-y:auto;padding:14px;'
+        : 'width:min(90vw,1100px);height:min(85vh,800px);overflow-y:auto;padding:20px;');
 
     panel.innerHTML =
         '<div class="flex items-center justify-between mb-3">' +
@@ -320,6 +327,26 @@ function _cmpSelectPath(pathId) {
     _cmpRenderDetail();
 }
 
+/** ids whose transcript is loaded into context = active path + its transitive
+ *  dependency ancestors (mirrors cmp/assembler.build_history). */
+function _cmpLoadedSet(cmp) {
+    var byId = {}, loaded = {};
+    (cmp.paths || []).forEach(function (p) { byId[p.id] = p; });
+    loaded[cmp.active_id] = true;
+    (function walk(id) {
+        var deps = (byId[id] && byId[id].depends_on) || [];
+        for (var i = 0; i < deps.length; i++) {
+            if (byId[deps[i]] && !loaded[deps[i]]) { loaded[deps[i]] = true; walk(deps[i]); }
+        }
+    })(cmp.active_id);
+    return loaded;
+}
+
+function _cmpFmtTokens(n) {
+    n = n || 0;
+    return n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+}
+
 function _cmpRenderDetail() {
     var host = document.getElementById('cmp-map-detail');
     if (!host || !_cmpMapData) return;
@@ -328,11 +355,67 @@ function _cmpRenderDetail() {
         if (_cmpMapData.paths[i].id === _cmpSelectedPath) { p = _cmpMapData.paths[i]; break; }
     }
     if (!p) { host.innerHTML = ''; return; }
-    var st = _CMP_STATUS_STYLE[p.status] || _CMP_STATUS_STYLE.archived;
-    var html = '<div class="flex items-center gap-2 mb-1">' +
+    var status = p.id === _cmpMapData.active_id ? 'active' : _cmpStatus(p);
+    var st = _CMP_STATUS_STYLE[status] || _CMP_STATUS_STYLE.archived;
+
+    // Lifecycle line: what this node costs in context right now, and when
+    // it decays to the next state (preserved -1d-> archived -3d-> pruned).
+    var DAY = 86400000, since = p.state_since || p.last_active || 0;
+    var lifeNote;
+    if (status === 'active') {
+        lifeNote = 'full card + transcript in context';
+    } else if (status === 'preserved') {
+        lifeNote = 'summary card in context' +
+            (since ? ' · archives in ' + _cmpFmtEta(since + DAY - Date.now()) : '');
+    } else {
+        lifeNote = 'title only in context — returning restores it' +
+            (since ? ' · prunes in ' + _cmpFmtEta(since + 3 * DAY - Date.now()) : '');
+    }
+
+    // Per-path context size (independent numbers — NOT cumulative down the
+    // dependency chain):
+    //   Full    = this path's RAW transcript size on disk (untruncated tool
+    //             outputs included). Green when currently in context.
+    //   Actual  = the same transcript AS THE LLM SEES IT — segment
+    //             reconstruction with tool-output compaction and rehydration
+    //             tails, i.e. what it really costs when loaded. The
+    //             Full→Actual gap is what compaction saves.
+    //   Offload = its IPPC card — the tiny compressed summary it shrinks to
+    //             once offloaded. The Actual→Offload gap is the compression CMP buys.
+    var isLoaded = !!_cmpLoadedSet(_cmpMapData)[p.id];
+    var full = p.tokens || 0, offloadTok = p.card_tokens || 0;
+    var actual = p.llm_tokens || 0;
+    var fullCls = isLoaded ? 'text-green-500 dark:text-green-400' : 'text-gray-500 dark:text-gray-300';
+    var fullNote = isLoaded ? '' : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var actualNote = isLoaded
+        ? ' <span class="text-[10px] font-normal opacity-70">in context</span>'
+        : ' <span class="text-[10px] font-normal opacity-70">(on return)</span>';
+    var actualRow = actual
+        ? '<div class="text-blue-500 dark:text-blue-400 font-semibold">Actual: ' +
+          _cmpFmtTokens(actual) + actualNote + '</div>'
+        : '';
+    // Archived nodes contribute their title only — the card is NOT in
+    // context until a return (or a descendant) restores them to preserved.
+    var offNote = isLoaded ? '' : (status === 'archived'
+        ? ' <span class="text-[10px] opacity-70">(on restore)</span>'
+        : ' <span class="text-[10px] opacity-70">in context now</span>');
+    var isMobile = window.innerWidth <= 640;
+
+    // Desktop: token figures sit top-right of the header. Mobile: they move to
+    // a full-width block at the very bottom (after the note).
+    var ctxHeader = isMobile ? '' :
+        '<div class="text-right text-xs leading-tight">' +
+        '<div class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + fullNote + '</div>' +
+        actualRow +
+        '<div class="text-gray-400 dark:text-gray-500">Offload: ' + _cmpFmtTokens(offloadTok) + offNote + '</div></div>';
+
+    var html = '<div class="flex items-start justify-between gap-2 mb-1">' +
+        '<div class="flex items-center gap-2">' +
         '<span class="font-semibold text-gray-800 dark:text-gray-100">' + esc(p.id) + ' — ' + esc(p.title || '(untitled)') + '</span>' +
         '<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium" style="color:' + st.stroke + ';background:' + st.fill + '">' +
-        (p.id === _cmpMapData.active_id ? 'ACTIVE' : esc(p.status)) + '</span></div>';
+        (status === 'active' ? 'ACTIVE' : esc(st.label)) + '</span></div>' +
+        ctxHeader + '</div>' +
+        '<div class="text-[10px] text-gray-400 dark:text-gray-500 mb-1">' + lifeNote + '</div>';
     if (p.goal) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Goal:</span> ' + esc(p.goal) + '</div>';
     if (p.outcome) html += '<div class="text-gray-600 dark:text-gray-300 text-xs mb-1"><span class="font-medium">Outcome:</span> ' + esc(p.outcome) + '</div>';
     if (p.key_facts && p.key_facts.length) {
@@ -346,143 +429,223 @@ function _cmpRenderDetail() {
     if (p.depends_on && p.depends_on.length) {
         html += '<div class="text-xs text-gray-500 dark:text-gray-400 mt-1">depends on: ' + esc(p.depends_on.join(', ')) + '</div>';
     }
+    if (isMobile) {
+        html += '<div class="mt-3 pt-2 border-t border-gray-100 dark:border-gray-700 flex gap-4 text-xs">' +
+            '<div><span class="' + fullCls + ' font-semibold">Full: ' + _cmpFmtTokens(full) + '</span>' + fullNote + '</div>' +
+            (actual ? '<div><span class="text-blue-500 dark:text-blue-400 font-semibold">Actual: ' +
+                _cmpFmtTokens(actual) + '</span>' + actualNote + '</div>' : '') +
+            '<div><span class="text-gray-500 dark:text-gray-300 font-semibold">Offload: ' + _cmpFmtTokens(offloadTok) + '</span>' + offNote + '</div></div>';
+    }
     host.innerHTML = html;
 }
 
-
 /**
- * Offline SVG rendering of the session graph (no mermaid.js dependency) as a
- * proper TREE: the Agent root on top, each path positioned under its
- * dependency parent, solid arrows carrying the action label. Extra
- * dependencies (beyond the primary parent) render as dashed arrows.
- * Click a node to inspect its card.
+ * Offline SVG rendering of the session graph as a RADIAL tree (mind-map):
+ * the Agent hub at the center, paths fanning out in rings by dependency
+ * depth, smooth curved connectors carrying the action label. Node fill
+ * encodes CMP status (active/preserved/archived); the active node glows.
+ * Click a node to inspect its card. No mermaid.js dependency.
  */
+// Deterministic avatar background color — MUST mirror agent-sidebar.js so the
+// hub color matches the agent's sidebar avatar exactly.
+var _CMP_AVATAR_COLORS = [
+    'hsl(200, 70%, 40%)', 'hsl(260, 60%, 45%)', 'hsl(330, 60%, 42%)',
+    'hsl(160, 55%, 35%)', 'hsl(30, 70%, 38%)', 'hsl(290, 50%, 40%)',
+    'hsl(80, 50%, 32%)', 'hsl(10, 65%, 40%)',
+];
+function _cmpAvatarColor(id) {
+    var h = 0, s = String(id || '');
+    for (var i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
+    return _CMP_AVATAR_COLORS[Math.abs(h) % _CMP_AVATAR_COLORS.length];
+}
+
 function _buildCmpSvg(cmp) {
     var paths = cmp.paths || [];
-    var NODE_W = 172, NODE_H = 48, GAP_X = 26, GAP_Y = 74;
     var ROOT = '__agent__';
+    var NODE_W = 128, NODE_H = 40;
+    var R1 = 170, RING = 148;          // radius of first ring, then per level
+    var PAD = 24;
+    var isDark = document.documentElement.classList.contains('dark');
 
-    // Build the tree: primary parent = first known dependency, else Agent.
+    // Tree: primary parent = first known dependency, else the Agent hub.
     var byId = {};
     for (var i = 0; i < paths.length; i++) byId[paths[i].id] = paths[i];
-    var children = {};
-    children[ROOT] = [];
-    var extraDeps = [];  // [fromId, toId] dashed secondary dependencies
+    var children = {}; children[ROOT] = [];
+    var extraDeps = [];
     for (var j = 0; j < paths.length; j++) {
-        var p = paths[j];
-        var deps = (p.depends_on || []).filter(function (d) { return byId[d]; });
+        var deps = (paths[j].depends_on || []).filter(function (d) { return byId[d]; });
         var parent = deps.length ? deps[0] : ROOT;
-        (children[parent] = children[parent] || []).push(p.id);
-        for (var k = 1; k < deps.length; k++) extraDeps.push([p.id, deps[k]]);
+        (children[parent] = children[parent] || []).push(paths[j].id);
+        for (var k = 1; k < deps.length; k++) extraDeps.push([paths[j].id, deps[k]]);
     }
 
-    // Tidy tree layout: subtree width = max(node, sum of children), parents
-    // centered over their children.
-    var widths = {};
-    function subtreeWidth(id) {
+    // Leaf counts drive angular allocation (a wide subtree gets a wide arc).
+    var leaves = {};
+    function countLeaves(id) {
         var kids = children[id] || [];
-        if (!kids.length) return (widths[id] = NODE_W);
-        var total = 0;
-        for (var c = 0; c < kids.length; c++) {
-            total += subtreeWidth(kids[c]);
-            if (c > 0) total += GAP_X;
-        }
-        return (widths[id] = Math.max(NODE_W, total));
+        if (!kids.length) return (leaves[id] = 1);
+        var t = 0; for (var c = 0; c < kids.length; c++) t += countLeaves(kids[c]);
+        return (leaves[id] = t);
     }
-    subtreeWidth(ROOT);
+    countLeaves(ROOT);
 
-    var pos = {};   // id -> {x, y} of node top-left
-    var maxDepth = 0;
-    function place(id, left, depth) {
+    // "Loaded" set: the active path plus its transitive dependency ancestors —
+    // exactly the paths whose transcript stays in the context window (mirrors
+    // cmp/assembler.build_history). Rendered dark-green to signal "in memory".
+    var loaded = _cmpLoadedSet(cmp);
+
+    // Radial placement: center at math-origin; angle = middle of the node's
+    // arc, radius = depth * ring. Start fanning from the top (-90°).
+    var node = {};   // id -> {x, y, r, angle, depth}
+    node[ROOT] = { x: 0, y: 0, r: 0, angle: 0, depth: 0 };
+    function place(id, a0, a1, depth) {
         var kids = children[id] || [];
-        var w = widths[id];
-        pos[id] = { x: left + (w - NODE_W) / 2, y: depth * (NODE_H + GAP_Y) + 10 };
-        if (depth > maxDepth) maxDepth = depth;
-        var cursor = left + (w > NODE_W ? 0 : (NODE_W - w) / 2);
-        if (w <= NODE_W && kids.length) cursor = left + (NODE_W - widths[kids[0]]) / 2;
+        var total = leaves[id] || 1, cursor = a0;
         for (var c = 0; c < kids.length; c++) {
-            place(kids[c], cursor, depth + 1);
-            cursor += widths[kids[c]] + GAP_X;
+            var span = (a1 - a0) * (leaves[kids[c]] / total);
+            var mid = cursor + span / 2;
+            var r = depth === 0 ? R1 : node[id].r + RING;
+            node[kids[c]] = { x: r * Math.cos(mid), y: r * Math.sin(mid),
+                              r: r, angle: mid, depth: depth + 1 };
+            place(kids[c], cursor, cursor + span, depth + 1);
+            cursor += span;
         }
     }
-    place(ROOT, 10, 0);
+    var START = -Math.PI / 2;
+    place(ROOT, START, START + 2 * Math.PI, 0);
 
-    var width = widths[ROOT] + 20;
-    var height = (maxDepth + 1) * (NODE_H + GAP_Y) - GAP_Y + 24;
+    // Bounds → shift into positive canvas coords. Reserve room for the center
+    // hub (r=46) plus the agent-name label below it (~+62).
+    var minX = -60, maxX = 60, minY = -56, maxY = 74;
+    for (var id in node) {
+        var n = node[id];
+        minX = Math.min(minX, n.x - NODE_W / 2); maxX = Math.max(maxX, n.x + NODE_W / 2);
+        minY = Math.min(minY, n.y - NODE_H / 2); maxY = Math.max(maxY, n.y + NODE_H / 2);
+    }
+    var offX = -minX + PAD, offY = -minY + PAD;
+    var width = maxX - minX + 2 * PAD, height = maxY - minY + 2 * PAD;
+    var cx = offX, cy = offY;   // hub center (math-origin shifted)
+    function px(id) { return node[id].x + offX; }
+    function py(id) { return node[id].y + offY; }
 
-    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height +
-        '" viewBox="0 0 ' + width + ' ' + height + '" style="min-width:320px">';
-    svg += '<defs>' +
-        '<marker id="cmp-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
-        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/></marker>' +
-        '<marker id="cmp-arrow-dep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">' +
-        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#8b5cf6"/></marker>' +
-        '</defs>';
+    // Responsive: the viewBox drives scaling — width:100% up to the natural
+    // size means the map shrinks to fit a narrow (mobile) container instead of
+    // overflowing, and never upscales past its natural size on desktop.
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' +
+        Math.round(width) + ' ' + Math.round(height) +
+        '" style="width:100%;max-width:' + Math.round(width) +
+        'px;height:auto;display:block;margin:0 auto">';
 
-    // Tree edges (parent -> child) with the action label at the midpoint.
-    function edge(fromX, fromY, toX, toY, label) {
-        var midX = (fromX + toX) / 2, midY = (fromY + toY) / 2;
-        var d = 'M ' + fromX + ' ' + fromY +
-                ' C ' + fromX + ' ' + (fromY + 26) + ', ' + toX + ' ' + (toY - 30) +
-                ', ' + toX + ' ' + (toY - 4);
-        var out = '<path d="' + d + '" fill="none" stroke="#9ca3af" stroke-width="1.2" opacity="0.7" marker-end="url(#cmp-arrow)"/>';
-        if (label) {
-            out += '<text x="' + midX + '" y="' + (midY - 2) + '" text-anchor="middle" font-size="9"' +
-                ' fill="currentColor" opacity="0.65" font-style="italic">' + esc(label) + '</text>';
+    // ── curved edges (drawn first, under nodes) ──────────────────────────────
+    function polar(r, a) { return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; }
+    function edge(childId, dashed) {
+        var deps = (byId[childId].depends_on || []).filter(function (d) { return byId[d]; });
+        var parentId = deps.length ? deps[0] : ROOT;
+        var pc = node[parentId], cc = node[childId];
+        var rmid = (pc.r + cc.r) / 2;
+        var pAngle = pc.r === 0 ? cc.angle : pc.angle;
+        var c1 = polar(rmid, pAngle), c2 = polar(rmid, cc.angle);
+        var stroke = dashed ? '#8b5cf6' : '#9ca3af';
+        var d = 'M ' + px(parentId).toFixed(1) + ' ' + py(parentId).toFixed(1) +
+                ' C ' + c1[0].toFixed(1) + ' ' + c1[1].toFixed(1) + ', ' +
+                c2[0].toFixed(1) + ' ' + c2[1].toFixed(1) + ', ' +
+                px(childId).toFixed(1) + ' ' + py(childId).toFixed(1) + '';
+        var out = '<path d="' + d + '" fill="none" stroke="' + stroke + '" stroke-width="1.3"' +
+                  (dashed ? ' stroke-dasharray="4 3"' : '') + ' opacity="0.7"/>';
+        if (!dashed) {
+            var label = byId[childId].action || '';
+            if (label) {
+                var lx = (px(parentId) + px(childId)) / 2, ly = (py(parentId) + py(childId)) / 2;
+                out += '<text x="' + lx.toFixed(1) + '" y="' + (ly - 2).toFixed(1) +
+                    '" text-anchor="middle" font-size="9" fill="' + (isDark ? 'currentColor' : '#64748b') + '"' +
+                    ' opacity="0.6" font-style="italic">' + esc(label.slice(0, 22)) + '</text>';
+            }
         }
         return out;
     }
+    var edges = '';
+    for (var e = 0; e < paths.length; e++) edges += edge(paths[e].id, false);
+    for (var x = 0; x < extraDeps.length; x++) {
+        // secondary dependency: dashed straight-ish curve to the extra parent
+        var from = node[extraDeps[x][0]], to = node[extraDeps[x][1]];
+        if (!from || !to) continue;
+        edges += '<path d="M ' + (from.x + offX).toFixed(1) + ' ' + (from.y + offY).toFixed(1) +
+            ' Q ' + cx.toFixed(1) + ' ' + cy.toFixed(1) + ', ' +
+            (to.x + offX).toFixed(1) + ' ' + (to.y + offY).toFixed(1) +
+            '" fill="none" stroke="#8b5cf6" stroke-width="1.1" stroke-dasharray="3 3" opacity="0.55"/>';
+    }
 
-    var edges = '', nodes = '';
-
-    // Agent root
-    var rootPos = pos[ROOT];
-    var rootCx = rootPos.x + NODE_W / 2;
-    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 24);
-    var rootRx = Math.max(42, agentLabel.length * 4 + 14);
-    nodes += '<ellipse cx="' + rootCx + '" cy="' + (rootPos.y + NODE_H / 2) + '" rx="' + rootRx + '" ry="20"' +
-        ' fill="rgba(99,102,241,0.12)" stroke="#6366f1" stroke-width="1.5"/>' +
-        '<text x="' + rootCx + '" y="' + (rootPos.y + NODE_H / 2 + 4) + '" text-anchor="middle" font-size="12"' +
-        ' font-weight="600" fill="currentColor">' + esc(agentLabel) + '</text>';
-
-    for (var n = 0; n < paths.length; n++) {
-        var pn = paths[n];
-        var xy = pos[pn.id];
-        var st = _CMP_STATUS_STYLE[pn.status] || _CMP_STATUS_STYLE.archived;
-        var isActive = pn.id === cmp.active_id;
-        var isSelected = pn.id === _cmpSelectedPath;
-        var title = (pn.title || '').length > 21 ? (pn.title || '').slice(0, 20) + '…' : (pn.title || '');
-
-        // edge from primary parent
-        var deps = (pn.depends_on || []).filter(function (d) { return byId[d]; });
-        var parentPos = deps.length ? pos[deps[0]] : rootPos;
-        var fromY = deps.length ? parentPos.y + NODE_H : rootPos.y + NODE_H / 2 + 20;
-        edges += edge(parentPos.x + NODE_W / 2, fromY,
-                      xy.x + NODE_W / 2, xy.y, pn.action || '');
-
-        nodes += '<g style="cursor:pointer" onclick="_cmpSelectPath(\'' + esc(pn.id) + '\')">';
-        nodes += '<rect x="' + xy.x + '" y="' + xy.y + '" width="' + NODE_W + '" height="' + NODE_H + '" rx="8"' +
-            ' fill="' + st.fill + '" stroke="' + st.stroke + '"' +
-            ' stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
-            (isSelected ? ' filter="drop-shadow(0 0 3px ' + st.stroke + ')"' : '') + '/>';
-        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 19) + '" font-size="11" font-weight="600" fill="currentColor">' +
-            esc(pn.id) + (isActive ? ' ●' : '') + '</text>';
-        nodes += '<text x="' + (xy.x + 10) + '" y="' + (xy.y + 35) + '" font-size="10" fill="currentColor" opacity="0.75">' + esc(title) + '</text>';
-        nodes += '<text x="' + (xy.x + NODE_W - 8) + '" y="' + (xy.y + 19) + '" text-anchor="end" font-size="9" fill="' + st.stroke + '">' +
+    // ── nodes ────────────────────────────────────────────────────────────────
+    var nodes = '';
+    for (var m = 0; m < paths.length; m++) {
+        var p = paths[m], nn = node[p.id];
+        var status = p.id === cmp.active_id ? 'active' : _cmpStatus(p);
+        var st = _CMP_STATUS_STYLE[status] || _CMP_STATUS_STYLE.archived;
+        var isActive = p.id === cmp.active_id, isSel = p.id === _cmpSelectedPath;
+        var isLoaded = !!loaded[p.id];
+        // Archived = title-only in context: dashed outline, dimmed — visually
+        // "just a label" until a return (or an active descendant) restores it.
+        var isArchived = status === 'archived' && !isLoaded;
+        // Opaque fills so the connector lines never show through the node.
+        // Green fill = memory loaded into context (active = bright, ancestors
+        // = darker green); neutral slate otherwise. Stroke keeps status color,
+        // but the loaded chain gets a green stroke to reinforce "in context".
+        var fill = isActive ? (isDark ? '#17402a' : '#dcfce7') :
+                   (isLoaded ? (isDark ? '#0f2c1c' : '#f0fdf4') :
+                               (isDark ? '#232c3d' : '#f8fafc'));
+        var stroke = isActive ? '#22c55e' : (isLoaded ? '#3f9e6a' : st.stroke);
+        var nx = nn.x + offX - NODE_W / 2, ny = nn.y + offY - NODE_H / 2;
+        var title = (p.title || '').length > 15 ? (p.title || '').slice(0, 14) + '…' : (p.title || '');
+        nodes += '<g style="cursor:pointer"' + (isArchived ? ' opacity="0.55"' : '') +
+            ' onclick="_cmpSelectPath(\'' + esc(p.id) + '\')">';
+        nodes += '<rect x="' + nx.toFixed(1) + '" y="' + ny.toFixed(1) + '" width="' + NODE_W +
+            '" height="' + NODE_H + '" rx="9" fill="' + fill + '" stroke="' + stroke +
+            '" stroke-width="' + (isActive ? 2.5 : 1.2) + '"' +
+            (isArchived ? ' stroke-dasharray="4 3"' : '') +
+            (isActive || isSel ? ' filter="drop-shadow(0 0 4px ' + stroke + ')"' : '') + '/>';
+        nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
+            '" font-size="11" font-weight="600" fill="' + (isDark ? 'currentColor' : '#1e293b') + '">' + esc(p.id) +
+            (isActive ? ' ●' : '') + '</text>';
+        nodes += '<text x="' + (nx + 9).toFixed(1) + '" y="' + (ny + 32).toFixed(1) +
+            '" font-size="10" fill="' + (isDark ? 'currentColor' : '#475569') + '" opacity="0.75">' + esc(title) + '</text>';
+        nodes += '<text x="' + (nx + NODE_W - 8).toFixed(1) + '" y="' + (ny + 17).toFixed(1) +
+            '" text-anchor="end" font-size="8" fill="' + st.stroke + '">' +
             (isActive ? 'ACTIVE' : esc(st.label)) + '</text>';
         nodes += '</g>';
     }
 
-    // Secondary dependencies (dashed purple)
-    for (var e = 0; e < extraDeps.length; e++) {
-        var from = pos[extraDeps[e][0]], to = pos[extraDeps[e][1]];
-        if (!from || !to) continue;
-        var x1 = from.x + NODE_W / 2, y1 = from.y;
-        var x2 = to.x + NODE_W / 2, y2 = to.y + NODE_H;
-        edges += '<path d="M ' + x1 + ' ' + y1 + ' C ' + x1 + ' ' + (y1 - 30) + ', ' + x2 + ' ' + (y2 + 30) + ', ' + x2 + ' ' + (y2 + 4) + '"' +
-            ' fill="none" stroke="#8b5cf6" stroke-width="1.3" stroke-dasharray="4 3" marker-end="url(#cmp-arrow-dep)" opacity="0.8"/>';
+    // ── central Agent hub: the agent's avatar (image if any, else initial +
+    //    sidebar-matching color) ────────────────────────────────────────────
+    var agentLabel = String(cmp.agent_name || cmp.agentName || 'Agent').slice(0, 24);
+    var hubR = 46;
+    var initial = (agentLabel.charAt(0) || 'A').toUpperCase();
+    var bg = _cmpAvatarColor(cmp.agent_id || agentLabel);
+    var cxs = cx.toFixed(1), cys = cy.toFixed(1);
+
+    // Base colored circle + initial — shown as-is when there's no avatar, and
+    // as the fallback layer beneath the image if it fails to load.
+    var hub = '<circle cx="' + cxs + '" cy="' + cys + '" r="' + hubR +
+        '" fill="' + bg + '" stroke="#6366f1" stroke-width="2"/>' +
+        '<text x="' + cxs + '" y="' + (cy + 8).toFixed(1) +
+        '" text-anchor="middle" font-size="24" font-weight="700" fill="#ffffff">' +
+        esc(initial) + '</text>';
+
+    if (cmp.has_avatar && cmp.agent_id) {
+        var clip = 'cmp-hub-clip';
+        var url = '/api/agents/' + encodeURIComponent(cmp.agent_id) + '/avatar?size=small';
+        hub = '<defs><clipPath id="' + clip + '"><circle cx="' + cxs + '" cy="' + cys +
+                '" r="' + hubR + '"/></clipPath></defs>' + hub +
+            '<image href="' + esc(url) + '" x="' + (cx - hubR).toFixed(1) + '" y="' +
+                (cy - hubR).toFixed(1) + '" width="' + (hubR * 2) + '" height="' + (hubR * 2) +
+                '" clip-path="url(#' + clip + ')" preserveAspectRatio="xMidYMid slice"/>' +
+            '<circle cx="' + cxs + '" cy="' + cys + '" r="' + hubR +
+                '" fill="none" stroke="#6366f1" stroke-width="2"/>';
     }
 
-    svg += edges + nodes + '</svg>';
-    return svg;
+    // Agent name below the avatar.
+    hub += '<text x="' + cxs + '" y="' + (cy + hubR + 16).toFixed(1) +
+        '" text-anchor="middle" font-size="12" font-weight="700" fill="currentColor">' +
+        esc(agentLabel) + '</text>';
+
+    return svg + edges + nodes + hub + '</svg>';
 }

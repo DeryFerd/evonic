@@ -38,6 +38,7 @@ CHAT_FORWARDED_EVENTS = frozenset({
     'llm_thinking',
     'tool_call_started',
     'tool_executed',
+    'state:changed',
     'llm_response_chunk',
     'turn_complete',
     'approval_required',
@@ -47,6 +48,7 @@ CHAT_FORWARDED_EVENTS = frozenset({
     'message_injection_applied',
     'session_clear',
     'turn_split',
+    'evonic:agent-state-changed',
 })
 
 

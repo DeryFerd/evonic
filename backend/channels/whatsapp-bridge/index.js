@@ -9,7 +9,8 @@ const path = require('path');
 const PORT = parseInt(process.env.PORT || '3001', 10);
 const CALLBACK_URL = process.env.CALLBACK_URL || '';
 const CALLBACK_SECRET = process.env.CALLBACK_SECRET || '';
-const AUTH_DIR = process.env.AUTH_DIR || './auth_info';
+const AUTH_DIR = path.resolve(process.env.AUTH_DIR || './auth_info');
+const OWNER_DIR = `${AUTH_DIR}.owner`;
 
 const logger = pino({ level: 'warn' });
 const app = express();
@@ -23,12 +24,62 @@ let isShuttingDown = false;
 let botId = '';   // PN-based JID (e.g. 628xxx:1@s.whatsapp.net)
 let botLid = '';  // LID-based JID (e.g. 123456:1@lid)
 let lastPushedStatus = '';
+let saveCredsNow = null;
+let pendingCredsSave = Promise.resolve();
+let ownerAcquired = false;
+let httpServer = null;
+
+function pidIsAlive(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+
+function acquireOwner() {
+    fs.mkdirSync(path.dirname(AUTH_DIR), { recursive: true });
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+            fs.mkdirSync(OWNER_DIR);
+            fs.writeFileSync(path.join(OWNER_DIR, 'pid'), `${process.pid}\n`, { flag: 'wx' });
+            ownerAcquired = true;
+            return;
+        } catch (e) {
+            if (e.code !== 'EEXIST') throw e;
+            let ownerPid = NaN;
+            try { ownerPid = parseInt(fs.readFileSync(path.join(OWNER_DIR, 'pid'), 'utf8'), 10); } catch (_) {}
+            if (pidIsAlive(ownerPid)) {
+                throw new Error(`auth directory is already owned by bridge PID ${ownerPid}`);
+            }
+            fs.rmSync(OWNER_DIR, { recursive: true, force: true });
+        }
+    }
+    throw new Error('failed to acquire auth directory ownership');
+}
+
+function releaseOwner() {
+    if (!ownerAcquired) return;
+    try {
+        const ownerPid = parseInt(fs.readFileSync(path.join(OWNER_DIR, 'pid'), 'utf8'), 10);
+        if (ownerPid === process.pid) fs.rmSync(OWNER_DIR, { recursive: true, force: true });
+    } catch (_) {}
+    ownerAcquired = false;
+}
+
+function queueCredsSave(saveCreds) {
+    pendingCredsSave = pendingCredsSave.catch(() => {}).then(saveCreds);
+    return pendingCredsSave;
+}
+
+async function flushCreds() {
+    if (saveCredsNow) await queueCredsSave(saveCredsNow);
+    await pendingCredsSave;
+}
 
 // Reconnect control — a single-socket guard prevents overlapping sockets from
 // fighting over one credential set (which WhatsApp punishes with a conflict/401
 // that used to wipe the session). Only one restart is ever pending at a time.
 let reconnectAttempts = 0;
 let restartScheduled = false;
+let reconnectTimer = null;
 // Set when WhatsApp reports connectionReplaced (440). A 401 arriving right after
 // a replace is conflict fallout — NOT a genuine logout — so we must not wipe on it.
 let sawReplaced = false;
@@ -70,7 +121,8 @@ function scheduleRestart() {
     const delay = Math.min(BASE_RECONNECT_MS * 2 ** reconnectAttempts, MAX_RECONNECT_MS);
     reconnectAttempts += 1;
     console.log('[whatsapp-bridge] Reconnecting in %dms (attempt %d)', delay, reconnectAttempts);
-    setTimeout(() => {
+    reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
         restartScheduled = false;
         startBaileys().catch((e) => console.error('[whatsapp-bridge] Baileys restart error:', e));
     }, delay);
@@ -97,11 +149,7 @@ async function startBaileys() {
         downloadMediaMessage,
         areJidsSameUser,
     } = baileys;
-    const makeInMemoryStore = baileys.makeInMemoryStore || null;
-    const { Boom } = await import('@hapi/boom');
-    const fs = await import('fs');
-
-    fs.default.mkdirSync(AUTH_DIR, { recursive: true });
+    fs.mkdirSync(AUTH_DIR, { recursive: true });
 
     // Tear down any prior socket before opening a new one — a lingering socket
     // with its listeners still attached would race this one over the same creds
@@ -112,7 +160,28 @@ async function startBaileys() {
         sock = null;
     }
 
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    const { state } = await useMultiFileAuthState(AUTH_DIR);
+    const saveCreds = async () => {
+        const target = path.join(AUTH_DIR, 'creds.json');
+        const temp = `${target}.${process.pid}.${Date.now()}.tmp`;
+        const data = JSON.stringify(state.creds, baileys.BufferJSON.replacer);
+        const handle = await fs.promises.open(temp, 'wx', 0o600);
+        try {
+            await handle.writeFile(data, 'utf8');
+            await handle.sync();
+        } finally {
+            await handle.close();
+        }
+        try {
+            await fs.promises.rename(temp, target);
+            const dir = await fs.promises.open(AUTH_DIR, 'r');
+            try { await dir.sync(); } finally { await dir.close(); }
+        } catch (e) {
+            await fs.promises.rm(temp, { force: true });
+            throw e;
+        }
+    };
+    saveCredsNow = saveCreds;
     const { version } = await fetchLatestBaileysVersion();
 
     sock = makeWASocket({
@@ -125,7 +194,11 @@ async function startBaileys() {
         logger,
     });
 
-    sock.ev.on('creds.update', saveCreds);
+    sock.ev.on('creds.update', () => {
+        queueCredsSave(saveCreds).catch((e) => {
+            console.error('[whatsapp-bridge] Failed to persist credentials:', e.message);
+        });
+    });
 
     sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
         if (qr) {
@@ -140,7 +213,8 @@ async function startBaileys() {
             reconnectAttempts = 0;
             sawReplaced = false;
             botId = sock.user?.id || '';
-            botLid = sock.user?.lid || '';
+            // Baileys v7 sometimes omits lid from sock.user — fall back to creds.
+            botLid = sock.user?.lid || state.creds?.me?.lid || '';
             console.log('[whatsapp-bridge] Connected to WhatsApp (id=%s, lid=%s)', botId, botLid);
         }
 
@@ -154,10 +228,10 @@ async function startBaileys() {
             console.log('[whatsapp-bridge] Connection closed (statusCode=%s reason=%s)',
                 statusCode, reasonName);
 
-            const wipeAndRepair = (why) => {
-                console.log('[whatsapp-bridge] %s — clearing session and re-pairing', why);
-                fs.default.rmSync(AUTH_DIR, { recursive: true, force: true });
-                reconnectAttempts = 0;
+            const requestRepair = (why) => {
+                console.log('[whatsapp-bridge] %s — credentials preserved; reconnecting', why);
+                currentQR = null;
+                pushStatus();
                 scheduleRestart();
             };
 
@@ -170,14 +244,14 @@ async function startBaileys() {
                         sawReplaced = false;
                         scheduleRestart();
                     } else {
-                        // Genuine logout (device removed from the phone): creds
-                        // are dead, so wipe and surface a fresh QR.
-                        wipeAndRepair('Logged out');
+                        // Do not destroy persistent credentials automatically. A
+                        // manual logout endpoint is the only destructive path.
+                        requestRepair('Logged out');
                     }
                     break;
 
                 case DisconnectReason.badSession: // 500 — auth files corrupt
-                    wipeAndRepair('Bad session');
+                    requestRepair('Bad session');
                     break;
 
                 case DisconnectReason.connectionReplaced: // 440
@@ -480,16 +554,39 @@ app.post('/logout', async (req, res) => {
 
 // ---- Start ----
 
-app.listen(PORT, '127.0.0.1', () => {
-    console.log(`[whatsapp-bridge] Listening on 127.0.0.1:${PORT}`);
-    startBaileys().catch((e) => console.error('[whatsapp-bridge] Baileys start error:', e));
-});
-
-process.on('SIGTERM', async () => {
+async function shutdown(signal) {
+    if (isShuttingDown) return;
     isShuttingDown = true;
-    console.log('[whatsapp-bridge] Shutting down');
-    try {
-        if (sock) await sock.end();
-    } catch (_) {}
-    process.exit(0);
-});
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    restartScheduled = false;
+    console.log('[whatsapp-bridge] Shutting down (%s)', signal);
+    try { if (sock) sock.ev.removeAllListeners('connection.update'); } catch (_) {}
+    try { if (sock) sock.end(undefined); } catch (_) {}
+    try { await flushCreds(); } catch (e) {
+        console.error('[whatsapp-bridge] Credential flush failed during shutdown:', e.message);
+        process.exitCode = 1;
+    }
+    if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
+    releaseOwner();
+    process.exit(process.exitCode || 0);
+}
+
+try {
+    acquireOwner();
+    httpServer = app.listen(PORT, '127.0.0.1', () => {
+        console.log(`[whatsapp-bridge] Listening on 127.0.0.1:${PORT}`);
+        startBaileys().catch((e) => {
+            console.error('[whatsapp-bridge] Baileys start error:', e);
+            process.exitCode = 1;
+            shutdown('startup-error');
+        });
+    });
+} catch (e) {
+    console.error('[whatsapp-bridge] Startup refused:', e.message);
+    process.exit(73);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('exit', releaseOwner);

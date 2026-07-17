@@ -59,9 +59,6 @@ class ToolRegistry:
         self._builtins['builtin:remember'] = _builtin_remember_factory
         self._builtins['builtin:recall'] = _builtin_recall_factory
         self._builtins['builtin:forget_memory'] = _builtin_forget_memory_factory
-        # Knowledge collection tools (create/switch session-or-group folders).
-        self._builtins['builtin:create_collection'] = _builtin_create_collection_factory
-        self._builtins['builtin:switch_collection'] = _builtin_switch_collection_factory
         # Session recall tool
         self._builtins['builtin:recall_sessions'] = _builtin_recall_sessions_factory
         # Tool to clear active fallback flag from agent_state (agent calls this)
@@ -469,10 +466,8 @@ def _builtin_use_skill_factory(agent_context: dict):
         "function": {
             "name": "use_skill",
             "description": (
-                "Lazy-load a skill's SYSTEM.md knowledge into the agent context. "
-                "Only works for lazy-loaded skills (eager skills' tools are already available). "
-                "Use this when you need to understand a skill's capabilities before using it. "
-                "Example: use_skill({id: 'kanban'})"
+                "Load a skill's SYSTEM.md knowledge into your context for lazy-loaded skills. "
+                "See Skills section for details."
             ),
             "parameters": {
                 "type": "object",
@@ -501,10 +496,8 @@ def _builtin_unload_skill_factory(agent_context: dict):
         "function": {
             "name": "unload_skill",
             "description": (
-                "Unload a previously lazy-loaded skill, removing its tools from the current context. "
-                "Only works for lazy-loaded skills — eager skills' tools are always available. "
-                "Use this after you are done with a skill to keep the context clean. "
-                "Example: unload_skill({id: 'plugin_creator'})"
+                "Unload a previously loaded lazy skill, removing its tools from context. "
+                "See Skill Cleanup Rule for details."
             ),
             "parameters": {
                 "type": "object",
@@ -533,10 +526,8 @@ def _builtin_set_mode_factory(agent_context: dict):
         "function": {
             "name": "set_mode",
             "description": (
-                "Transition the agent's working mode. "
-                "Use 'plan' during planning — write tools (write_file, str_replace, patch) are blocked. "
-                "Use 'execute' after the user approves the plan — write tools become available. "
-                "Always present your plan to the user and wait for approval before switching to 'execute'."
+                "Switch between plan mode (write tools blocked) and execute mode (write tools available). "
+                "See Agent State section for rules."
             ),
             "parameters": {
                 "type": "object",
@@ -572,11 +563,8 @@ def _builtin_update_tasks_factory(agent_context: dict):
         "function": {
             "name": "update_tasks",
             "description": (
-                "Manage the task list that tracks implementation progress. "
-                "Use 'set' to define the full plan as a task list. "
-                "Use 'add' to append a single task. "
-                "Use 'done' or 'in_progress' to update task status. "
-                "Use 'remove' to delete a task."
+                "Manage your implementation task list "
+                "(set, add, update status, remove)."
             ),
             "parameters": {
                 "type": "object",
@@ -586,9 +574,9 @@ def _builtin_update_tasks_factory(agent_context: dict):
                         "enum": ["set", "add", "done", "in_progress", "remove"],
                         "description": (
                             "'set': replace entire task list (provide 'tasks' array). "
-                            "'add': add one task (provide 'text'). "
-                            "'done'/'in_progress': update status (provide 'task_id'). "
-                            "'remove': delete a task (provide 'task_id')."
+                            "'add': add one task. "
+                            "'done'/'in_progress': update status. "
+                            "'remove': delete a task."
                         )
                     },
                     "task_id": {
@@ -647,11 +635,9 @@ def _builtin_save_plan_factory(agent_context: dict):
         "function": {
             "name": "save_plan",
             "description": (
-                "Save a markdown plan file to your personal plan/ directory (accessible via /_self/plan/) and link it to your agent state. "
-                "The plan content will be re-injected into your context on every turn, "
-                "so you never lose your objective even after conversation summarization. "
-                "You MUST call this before set_mode('execute'). "
-                "To update the plan mid-execution, call save_plan again with the same filename."
+                "Save a markdown plan to your plan/ directory and link it to your agent state. "
+                "Call before set_mode('execute') or to update mid-execution. "
+                "The plan is re-injected into your context on every turn."
             ),
             "parameters": {
                 "type": "object",
@@ -894,7 +880,7 @@ def _builtin_switch_path_factory(agent_context: dict):
                 "Resume another task path from the session map. Use when the "
                 "user returns to an earlier task (e.g. 'back to the website'). "
                 "Restores that path's plan/task-graph state and marks the "
-                "current path dormant."
+                "current path preserved."
             ),
             "parameters": {
                 "type": "object",
@@ -1006,7 +992,7 @@ def _builtin_new_path_factory(agent_context: dict):
         return {
             "result": (
                 f"Started {record['id']} — {record['title']}. The previous "
-                "path is dormant (resumable via switch_path). You are now in "
+                "path is preserved (resumable via switch_path). You are now in "
                 "plan mode for this new task."
             ),
             "path_id": record['id'],
@@ -1022,14 +1008,8 @@ def _builtin_remember_factory(agent_context: dict):
         "function": {
             "name": "remember",
             "description": (
-                "Pin an important fact for the current session. It is noted instantly "
-                "(no delay) and stays available to you for the rest of this conversation; "
-                "the summarizer then persists it to long-term memory and the knowledge "
-                "graph automatically in the background. Use it when the user shares "
-                "something worth retaining (name, preferences, decisions, context, or "
-                "persistent instructions). You do NOT need to remember() routine details "
-                "— the summarizer captures the conversation on its own. "
-                "Example: remember(content='User prefers responses in English', category='preference')"
+                "Store a fact in long-term memory. "
+                "The summarizer persists it and builds the knowledge graph automatically."
             ),
             "parameters": {
                 "type": "object",
@@ -1061,91 +1041,6 @@ def _builtin_remember_factory(agent_context: dict):
     return tool_def, executor
 
 
-def _builtin_create_collection_factory(agent_context: dict):
-    """Factory for the built-in 'create_collection' tool — create + activate a
-    knowledge collection folder (session or group)."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "create_collection",
-            "description": (
-                "Create a named collection folder to organize the knowledge for "
-                "something the user asked you to work on, and make it the ACTIVE "
-                "collection so durable knowledge you save next is filed inside it. "
-                "A collection is a session or a group. Use when the user asks for a "
-                "new session/topic space, e.g. 'buatkan sesi riset XYZ' or "
-                "'kelompokkan ini jadi grup Y'. kind='session' for a working "
-                "session, 'group' for a durable topical group. Docs in any "
-                "collection can still link to docs in other collections (links "
-                "resolve by title across the whole knowledge base). "
-                "Example: create_collection(name='Riset XYZ', kind='session')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Display name of the collection; a folder slug is derived from it."
-                    },
-                    "kind": {
-                        "type": "string",
-                        "enum": ["session", "group"],
-                        "description": "session = a working session; group = a durable topical group. Default: session."
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "One-line description of what this collection holds."
-                    }
-                },
-                "required": ["name"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import create_collection_tool
-        return create_collection_tool(
-            agent_context.get('id', ''), agent_context.get('session_id', ''),
-            args.get('name', ''), args.get('kind', 'session'),
-            args.get('description', ''))
-
-    return tool_def, executor
-
-
-def _builtin_switch_collection_factory(agent_context: dict):
-    """Factory for the built-in 'switch_collection' tool — change the active
-    collection (or 'root')."""
-    tool_def = {
-        "type": "function",
-        "function": {
-            "name": "switch_collection",
-            "description": (
-                "Switch the ACTIVE knowledge collection so durable knowledge you save "
-                "next lands in it. Pass an existing collection name, or 'root' to save "
-                "at the top level. Example: switch_collection(name='Riset XYZ')"
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Name of an existing collection, or 'root' for the top level."
-                    }
-                },
-                "required": ["name"]
-            }
-        }
-    }
-
-    def executor(args: dict) -> dict:
-        from backend.agent_runtime.memory_manager import switch_collection_tool
-        return switch_collection_tool(
-            agent_context.get('id', ''), agent_context.get('session_id', ''),
-            args.get('name', ''))
-
-    return tool_def, executor
-
-
 def _builtin_recall_factory(agent_context: dict):
     """Factory for the built-in 'recall' tool — searches long-term memory.
 
@@ -1165,19 +1060,8 @@ def _builtin_recall_factory(agent_context: dict):
         "function": {
             "name": "recall",
             "description": (
-                "Search your long-term memory for facts from past conversations. "
-                "Modes: mode='fts' (default) for a fast keyword lookup; "
-                "mode='think' to reason over EVERYTHING you know about a topic and "
-                "surface what's missing (synthesis with citations + knowledge gaps); "
-                "mode='graph' to traverse the entity knowledge graph from an entity "
-                "(here 'query' is the entity name; use edge_type/hops to steer); "
-                "mode='links' to view a KB document's link neighborhood — outgoing/"
-                "incoming references, broken links, and same-tag docs (here 'query' "
-                "is the KB filename, e.g. 'evonic.md'). "
-                "Examples: recall(query='user phone number'); "
-                "recall(query='what do I know about Acme Corp?', mode='think'); "
-                "recall(query='Andi Wijaya', mode='graph'); "
-                "recall(query='evonic.md', mode='links')"
+                "Search long-term memory. "
+                "See system prompt Memory Retrieval Protocol for mode details."
             ),
             "parameters": {
                 "type": "object",
@@ -1236,11 +1120,7 @@ def _builtin_forget_memory_factory(agent_context: dict):
         "function": {
             "name": "forget_memory",
             "description": (
-                "Delete a specific memory from your long-term memory by its ID. "
-                "The memory is soft-deleted (marked as expired) so it will no longer "
-                "appear in recall results. Use this when a memory is no longer relevant "
-                "or was stored incorrectly. "
-                "Example: forget_memory(memory_id=42)"
+                "Soft-delete a long-term memory by ID so it no longer appears in recall results."
             ),
             "parameters": {
                 "type": "object",
@@ -1288,10 +1168,8 @@ def _builtin_state_factory(agent_context: dict):
             "name": "state",
             "description": (
                 "Query or transition your workflow state. "
-                "Call with no arguments to see all current states and registered namespaces. "
-                "Call with a label (and optional data) to request a state transition — "
-                "the handler will validate the transition and return instructions on what to do next. "
-                "Labels use 'namespace:action' format, e.g. 'kanban:pick', 'kanban:finish'."
+                "Call with no args for a summary; with label to request a state transition. "
+                "See Agent State section for details."
             ),
             "parameters": {
                 "type": "object",
@@ -1366,10 +1244,8 @@ def _builtin_recall_sessions_factory(agent_context: dict):
         "function": {
             "name": "recall_sessions",
             "description": (
-                "Recall session summaries from previous conversations with this agent. "
-                "Use without query to get all recent sessions. "
-                "Use query to search for specific topics by keyword. "
-                "Example: recall_sessions() or recall_sessions(query='login bug')"
+                "Recall session summaries from previous conversations. "
+                "Leave query empty for recent sessions; use a keyword to search."
             ),
             "parameters": {
                 "type": "object",

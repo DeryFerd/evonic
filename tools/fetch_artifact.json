@@ -4,7 +4,7 @@
   "description": "Copy an artifact file from the host artifacts directory into the sandbox execution environment. Use this to bring images, PDFs, or other binary files into the sandbox for inspection or processing. Works across Docker sandbox, SSH remote, tunnel, and local backends.",
   "function": {
     "name": "fetch_artifact",
-    "description": "Copy an artifact file from the host artifacts directory into the sandbox execution environment. Use this to bring images, PDFs, or other binary files into the sandbox for inspection or processing. Works across Docker sandbox, SSH remote, tunnel, and local backends.",
+    "description": "Copy an artifact file into the sandbox execution environment.",
     "parameters": {
       "type": "object",
       "properties": {

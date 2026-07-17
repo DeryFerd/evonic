@@ -653,6 +653,20 @@ function escape(text) {
     return div.innerHTML;
 }
 
+function normalizeTimestamp(timestamp) {
+    if (timestamp == null || timestamp === '') return null;
+    let value = timestamp;
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (!trimmed) return null;
+        if (/^\d+(?:\.\d+)?$/.test(trimmed)) value = Number(trimmed);
+        else value = trimmed;
+    }
+    if (typeof value === 'number' && Number.isFinite(value) && Math.abs(value) < 1e12) value *= 1000;
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+}
+
 // -- KaTeX math rendering ----------------------------------------------------------
 
 // Renders LaTeX math delimiters ($...$ and $$...$$) in HTML content.
@@ -1636,23 +1650,47 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
 
     } else if (isUser) {
         $bubble = $('<div class="rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap break-words">').addClass(userBubbleClass);
-        // Render image attachment if present
         const meta = opts.metadata || {};
-        if (meta.image_url) {
-            const $img = createLazyImage(meta.image_url);
+        const attachmentInfos = Array.isArray(meta.attachment_infos)
+            ? meta.attachment_infos
+            : (meta.attachment_info ? [meta.attachment_info] : []);
+        const imageInfos = attachmentInfos.filter(info => info && info.is_image);
+        const imageUrls = Array.isArray(meta.image_urls)
+            ? meta.image_urls
+            : (meta.image_url ? [meta.image_url] : imageInfos.map(info =>
+                `/api/attachments/${encodeURIComponent(info.attachment_id)}/view`));
+        const addImage = (slot) => {
+            const imageUrl = imageUrls[slot - 1];
+            if (!imageUrl) return false;
+            const $img = createLazyImage(imageUrl);
             $bubble.append($img);
             _wrapImageWithDownload($img);
             setupImageForLazy($img);
+            return true;
+        };
+        const referenced = new Set();
+        const tokenPattern = /\[Image #(\d+)\]/g;
+        let cursor = 0;
+        let match;
+        while ((match = tokenPattern.exec(content || ''))) {
+            const slot = Number(match[1]);
+            if (!imageUrls[slot - 1]) continue;
+            if (match.index > cursor) $bubble.append(document.createTextNode(content.slice(cursor, match.index)));
+            addImage(slot);
+            referenced.add(slot);
+            cursor = match.index + match[0].length;
         }
-        // Render non-image file badge
-        if (meta.attachment_info && !meta.attachment_info.is_image) {
-            const info = meta.attachment_info;
+        if (content && cursor < content.length) $bubble.append(document.createTextNode(content.slice(cursor)));
+        for (let slot = 1; slot <= imageUrls.length; slot++) {
+            if (!referenced.has(slot)) addImage(slot);
+        }
+        // Render non-image file badges
+        attachmentInfos.filter(info => info && !info.is_image).forEach(info => {
             const $badge = $('<div class="flex items-center gap-1.5 mb-1 px-2 py-1 bg-white/20 rounded text-xs">')
                 .append($('<svg class="w-3.5 h-3.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h6.879a1.5 1.5 0 0 1 1.06.44l4.122 4.12A1.5 1.5 0 0 1 17 7.622V16.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 16.5v-13Z"/></svg>'))
                 .append($('<span class="truncate">').text(info.filename));
-            $bubble.append($badge);
-        }
-        if (content) $bubble.append(document.createTextNode(content));
+            $bubble.prepend($badge);
+        });
 
     } else if (isError) {
         const $icon = $('<svg class="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/></svg>');
@@ -1738,18 +1776,31 @@ function buildMessageBubble(role, content, opts = {}, cfg = {}) {
 
     const $inner = $('<div class="max-w-[80%] min-w-0">').append($bubble);
 
-    if (showTimestamps && opts.timestamp) {
-        let tsStr = '';
-        try {
-            tsStr = formatTimestamp
-                ? formatTimestamp(opts.timestamp)
-                : new Date(opts.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-        } catch(e) {}
-        if (tsStr) {
+    if (showTimestamps && (isUser || role === 'assistant') && opts.timestamp != null) {
+        const date = normalizeTimestamp(opts.timestamp);
+        let label = '';
+        if (date) {
+            try {
+                label = formatTimestamp
+                    ? formatTimestamp(date)
+                    : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            } catch (e) {}
+        }
+        if (date && label) {
             const tsAlign = isUser
                 ? (userAlign === 'left' ? 'text-left' : 'text-right')
                 : (assistantAlign === 'left' ? 'text-left' : 'text-right');
-            $inner.append($('<div class="text-[10px] text-gray-300 mt-0.5 px-1">').addClass(tsAlign).text(tsStr));
+            const accessibleLabel = date.toLocaleString([], {
+                dateStyle: 'long',
+                timeStyle: 'short',
+            });
+            const $time = $('<time class="block text-[10px] leading-4 text-gray-500 dark:text-gray-400 mt-0.5 px-1 tabular-nums">')
+                .addClass(tsAlign)
+                .attr('datetime', date.toISOString())
+                .attr('aria-label', accessibleLabel)
+                .attr('title', accessibleLabel)
+                .text(label);
+            $inner.append($time);
         }
     }
 
@@ -2150,8 +2201,9 @@ async function _renderViewerContent($body, url, filename, category) {
 
 const SSE_EVENTS = [
     'turn_begin', 'turn_split', 'thinking', 'tool_call_started', 'tool_executed',
-    'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
+    'state:changed', 'response_chunk', 'done', 'approval_required', 'approval_resolved', 'retry',
     'message_injected', 'message_injection_applied', 'session_clear',
+    'state_changed',
     'heartbeat',
 ];
 
@@ -2383,6 +2435,12 @@ class SSEAdapter {
     }
 
     _dispatch(evtName, data) {
+        if (evtName === 'state_changed') {
+            // Not turn-scoped — bridge straight to the document-level event that
+            // agent_detail.html / sessions.html already listen for (debounced refresh).
+            document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
+            return;
+        }
         if (evtName === 'session_clear') {
             this._handler({ event: 'session_clear', data, seq: data.seq || 0 });
             return;
@@ -2787,6 +2845,11 @@ class Turn {
             this._showThinkingRow();
             // Fire tool:executed for agent-state-bridge
             this._onTrigger('tool:executed', data);
+            return;
+        }
+
+        if (evtName === 'state:changed') {
+            this._onTrigger('state:changed', data);
             return;
         }
 
@@ -3293,12 +3356,11 @@ class ChatUI {
             onTrigger:       (evtName, data) => {
                 this._log.debug('turn event', evtName, data);
                 this.$bus.trigger(evtName, [data]);
-                // agent-state bridge: fire document-level event for tool:executed
-                if (evtName === 'tool:executed') {
-                    const toolName = data && data.tool;
-                    if (['save_plan', 'set_mode', 'update_tasks', 'state', 'use_skill', 'unload_skill'].includes(toolName)) {
-                        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
-                    }
+                if (evtName === 'state:changed') {
+                    document.dispatchEvent(new CustomEvent('evonic:state-changed', { detail: data }));
+                    // Keep the established page-level event for consumers that have
+                    // not migrated to the more specific SSE event name yet.
+                    document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
                 }
                 if (evtName === 'approval:required') {
                     document.dispatchEvent(new CustomEvent('evonic:approval-required', { detail: data }));
@@ -3390,7 +3452,10 @@ class ChatUI {
                 // If we built the timeline from streaming events, don't also render it
                 // from metadata — that would create a duplicate thinking bubble.
                 const msgMeta = hadStreamingTurn ? Object.assign({}, meta, { timeline: [] }) : meta;
-                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, { metadata: msgMeta });
+                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, {
+                    metadata: msgMeta,
+                    timestamp: entry.ts || entry.created_at || null,
+                });
                 continue;
             }
             if (entry.type === 'error') {

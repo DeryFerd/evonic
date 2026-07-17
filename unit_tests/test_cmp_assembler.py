@@ -59,6 +59,34 @@ def test_return_rehydrates_tail_from_closed_segments():
     assert 'configure the server' not in text     # P2 stays offloaded
 
 
+def test_rehydration_tail_drops_tool_dumps():
+    """Live regression: returning to a tool-heavy path dragged ~50k tokens of
+    tool outputs back through the tail. Closed-segment rehydration keeps
+    conversational messages only — the IPPC card carries the tool facts."""
+    log = _chatlog('sess-tooldump')
+    log.append({'type': 'user', 'ts': 1100, 'content': 'buat laporan invoice',
+                'session_id': 's'})
+    for i in range(30):
+        log.append({'type': 'tool_call', 'ts': 1200 + i * 10, 'id': f't{i}',
+                    'function': 'bash', 'params': {}, 'session_id': 's'})
+        log.append({'type': 'tool_output', 'ts': 1205 + i * 10,
+                    'tool_call_id': f't{i}', 'content': 'X' * 4000,
+                    'session_id': 's'})
+    log.append({'type': 'final', 'ts': 1600, 'content': 'laporan selesai',
+                'session_id': 's'})
+    log.append({'type': 'user', 'ts': 2100, 'content': 'balik ke laporan tadi',
+                'session_id': 's'})
+
+    msgs = log.get_entries_for_llm_segments([[999, 1999], [2099, None]],
+                                            closed_tail_semantic=6)
+    roles = [m.get('role') for m in msgs]
+    assert 'tool' not in roles                       # dumps stay offloaded
+    text = ' '.join(str(m.get('content')) for m in msgs)
+    assert 'laporan selesai' in text                 # conversational tail kept
+    assert 'balik ke laporan tadi' in text           # open segment kept
+    assert len(text) < 2000                          # nothing dragged 120KB back
+
+
 def test_watermark_straddling_segment_drops_orphans():
     log = _chatlog('sess-watermark')
     _fill_two_paths(log)

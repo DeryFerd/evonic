@@ -90,6 +90,12 @@ def _find_doc(entity: dict, action: str, docs: list) -> Optional[dict]:
             continue
         if (d.get("action") or "").strip() != action:
             continue
+        # A doc that explicitly targets a different slug is a different doc —
+        # a matching title must not rescue it (e.g. update of "bandung" does
+        # not satisfy an expected update of "jakarta").
+        d_slug = (d.get("slug") or "").strip()
+        if slug and d_slug and d_slug != slug:
+            continue
         cands = [_norm(n) for n in _doc_names(d)]
         if not any(want == c or (c and (want in c or c in want)) for c in cands):
             continue

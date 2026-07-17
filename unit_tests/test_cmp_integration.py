@@ -1,7 +1,18 @@
 """End-to-end CMP flow over a real chatlog: init → branch → offload →
 return → rehydration, driving on_turn_boundary + the shared assembler."""
 
-from unittest.mock import MagicMock, patch
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """The single-pass turn op is a real LLM call — fail it fast so any
+    unmocked detect() falls back mechanically (no network in tests)."""
+    monkeypatch.setattr('backend.agent_runtime.cmp.detector._call_turn_llm',
+                        lambda *a, **k: None)
+
+
+from unittest.mock import patch
 
 from backend.agent_runtime.cmp import assembler, on_turn_boundary
 from backend.agent_state import AgentState
@@ -11,13 +22,6 @@ AGENT = {'id': 'cmp_e2e_agent', 'enable_cmp': 1, 'enable_agent_state': 1}
 NEW_TASK = ('please build a completely different invoice generator project '
             'under /tmp/invoices with pdf export support')
 RETURN_MSG = 'sekarang balik dulu ke pekerjaan website company profile yang sebelumnya'
-
-
-def _mock_card():
-    return patch('backend.agent_runtime.cmp.compactor.generate_card',
-                 return_value={'title': 'website', 'goal': 'build site',
-                               'outcome': 'scaffolded', 'key_facts': ['repo: /tmp/web'],
-                               'artifacts': ['/tmp/web']})
 
 
 def test_full_session_lifecycle():
@@ -36,7 +40,9 @@ def test_full_session_lifecycle():
     log.append({'type': 'user', 'ts': 2000, 'content': NEW_TASK, 'session_id': 's'})
     with patch('backend.agent_runtime.cmp.detector.detect',
                return_value={'decision': 'indep_branch', 'target': None,
-                             'layer': 'L3'}), _mock_card():
+                             'layer': 'LLM',
+                             'card_delta': {'new_facts': ['repo: /tmp/web'],
+                                            'new_artifacts': ['/tmp/web']}}):
         result = on_turn_boundary(AGENT, ms, log, NEW_TASK)
     assert result['decision'] == 'indep_branch'
     p2 = result['target']
@@ -59,7 +65,7 @@ def test_full_session_lifecycle():
     log.append({'type': 'user', 'ts': 3000, 'content': RETURN_MSG, 'session_id': 's'})
     with patch('backend.agent_runtime.cmp.detector.detect',
                return_value={'decision': 'return', 'target': 'A1',
-                             'layer': 'L3'}), _mock_card():
+                             'layer': 'LLM'}):
         result = on_turn_boundary(AGENT, ms, log, RETURN_MSG)
     assert result['decision'] == 'return'
     assert ms.cmp['active_id'] == 'A1'
@@ -72,5 +78,5 @@ def test_full_session_lifecycle():
     assert 'invoice plan drafted' not in text     # P2 offloaded
 
     # hysteresis bookkeeping ticked throughout
-    assert ms.cmp['paths'][p2]['status'] == 'dormant'
+    assert ms.cmp['paths'][p2]['status'] == 'preserved'
     assert ms.cmp['stats']['switches'] >= 1

@@ -167,12 +167,10 @@ def _bind_node_via_llm(node, dag, outputs, runtime, available_tools,
             continue
         msg = (result.get('response') or {}).get('choices', [{}])[0].get('message', {})
         content = msg.get('content') or msg.get('reasoning_content') or ''
-        m = _JSON_BLOCK_RE.search(content)
-        candidate = m.group(1) if m else content[content.find('{'):content.rfind('}') + 1]
-        try:
-            obj = json.loads(candidate)
-        except ValueError as e:
-            last_error = f"invalid JSON: {e}"
+        from backend.agent_runtime.llm_json import extract_first_json
+        obj = extract_first_json(content)
+        if obj is None:
+            last_error = "invalid JSON: no parseable object in response"
             continue
         tool = node.tool or obj.get('tool')
         args = obj.get('args')
@@ -400,9 +398,8 @@ def _thought_experiment(ctx: _ExecCtx, dag: TaskDAG, planned: list,
             return {}
         msg = (result.get('response') or {}).get('choices', [{}])[0].get('message', {})
         content = msg.get('content') or msg.get('reasoning_content') or ''
-        m = _JSON_BLOCK_RE.search(content)
-        candidate = m.group(1) if m else content[content.find('{'):content.rfind('}') + 1]
-        verdicts = json.loads(candidate)
+        from backend.agent_runtime.llm_json import extract_first_json
+        verdicts = extract_first_json(content)
         return verdicts if isinstance(verdicts, dict) else {}
     except Exception:
         _logger.warning("ATG thought experiment failed — proceeding unchecked",

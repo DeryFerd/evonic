@@ -73,7 +73,9 @@ def test_chat_state_api_exposes_cmp_map():
     # cards carry what the modal needs, nothing sensitive extra
     assert set(cmp['paths'][0]) == {'id', 'title', 'status', 'action', 'goal',
                                     'outcome', 'key_facts', 'artifacts',
-                                    'depends_on', 'last_active'}
+                                    'depends_on', 'last_active', 'state_since',
+                                    'tokens', 'llm_tokens', 'card_tokens'}
+    assert all('tokens' in c and 'card_tokens' in c for c in cmp['paths'])
     # dependency child gets the next level letter
     assert cmp['paths'][1]['id'] == 'B1'
 
@@ -125,6 +127,39 @@ def test_cmp_model_setting_resolution():
          patch('backend.task_classifier.LLMClient') as llm:
         _get_classifier_client('cmp_model_id')
         llm.assert_called_once_with()
+
+
+def test_classifier_chat_retries_generation_timeout_with_doubled_budget():
+    from unittest.mock import MagicMock
+    from backend.task_classifier import classifier_chat
+
+    client = MagicMock()
+    client.chat_completion.side_effect = [
+        {'success': False, 'error_type': 'generation_timeout'},
+        {'success': True, 'response': {'choices': [{'message': {'content': 'OK'}}]}},
+    ]
+    response = classifier_chat(client, [{'role': 'user', 'content': 'x'}],
+                               max_tokens=400)
+    assert response['success']
+    assert client.chat_completion.call_count == 2
+    assert client.chat_completion.call_args_list[0][1]['max_tokens'] == 400
+    assert client.chat_completion.call_args_list[1][1]['max_tokens'] == 800
+
+    # only ONE retry — a second timeout returns the failure
+    client = MagicMock()
+    client.chat_completion.return_value = {'success': False,
+                                           'error_type': 'generation_timeout'}
+    response = classifier_chat(client, [{'role': 'user', 'content': 'x'}],
+                               max_tokens=400)
+    assert not response['success']
+    assert client.chat_completion.call_count == 2
+
+    # other error types never retry
+    client = MagicMock()
+    client.chat_completion.return_value = {'success': False,
+                                           'error_type': 'api_error'}
+    classifier_chat(client, [{'role': 'user', 'content': 'x'}], max_tokens=400)
+    assert client.chat_completion.call_count == 1
 
 
 def test_cmp_model_settings_api():

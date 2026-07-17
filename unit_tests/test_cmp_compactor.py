@@ -1,12 +1,9 @@
-"""Tests for the CMP compactor (path card generation)."""
-
-import json
-from unittest.mock import MagicMock, patch
+"""Tests for the CMP compactor (deterministic card finalization — card prose
+upkeep moved to the per-turn single-pass op, see test_cmp_detector)."""
 
 from backend.agent_runtime.cmp import store
 from backend.agent_runtime.cmp.compactor import (
     finalize_active_card,
-    generate_card,
     lift_atg_facts,
 )
 from backend.agent_state import AgentState
@@ -41,76 +38,11 @@ ATG_STATE = {
 }
 
 
-def _path(segments=((1000, None),)):
-    return {'id': 'P1', 'title': 'client A site', 'status': 'active',
-            'goal': '', 'outcome': '', 'key_facts': [], 'artifacts': [],
-            'depends_on': [], 'segments': [list(s) for s in segments],
-            'card_stale': True}
-
-
-def _scripted_client(payload):
-    client = MagicMock()
-    client.chat_completion.return_value = {
-        'success': True,
-        'response': {'choices': [{'message': {'content': payload}}]}}
-    return client
-
-
-# ── LLM-filled cards ─────────────────────────────────────────────────────────
-
-def test_card_filled_and_capped_from_llm():
-    card_json = json.dumps({
-        'title': 'T' * 100, 'goal': 'Build the site', 'outcome': 'Deploy failed',
-        'key_facts': [f'fact {i}' for i in range(10)],
-        'artifacts': ['/projects/client-a/'],
-    })
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=_scripted_client(card_json)):
-        card = generate_card(FakeChatlog(ENTRIES), _path())
-    assert len(card['title']) == store.TITLE_MAX
-    assert len(card['key_facts']) == store.KEY_FACTS_MAX
-    assert card['outcome'] == 'Deploy failed'
-
-
-def test_atg_facts_merged_even_with_llm_card():
-    card_json = json.dumps({'title': 'x', 'goal': 'g', 'outcome': 'o',
-                            'key_facts': ['llm fact'], 'artifacts': []})
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=_scripted_client(card_json)):
-        card = generate_card(FakeChatlog(ENTRIES), _path(), atg_state=ATG_STATE)
-    facts = ' | '.join(card['key_facts'])
-    assert 'llm fact' in facts
-    assert 'DATABASE_URL' in facts                       # failure cause lifted
-    assert '/projects/client-a/index.html' in card['artifacts']
-
-
-# ── Fallbacks ────────────────────────────────────────────────────────────────
-
-def test_garbage_llm_output_mechanical_fallback():
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=_scripted_client('sorry, I cannot do that')):
-        card = generate_card(FakeChatlog(ENTRIES), _path(), atg_state=ATG_STATE)
-    assert card['title'] == 'client A site'
-    assert 'deploy failed' in card['outcome'].lower()
-    assert any('DATABASE_URL' in f for f in card['key_facts'])
-
-
-def test_llm_exception_never_raises():
-    client = MagicMock()
-    client.chat_completion.side_effect = RuntimeError('boom')
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=client):
-        card = generate_card(FakeChatlog(ENTRIES), _path())
-    assert card['title']  # mechanical card produced
-
-
-def test_empty_transcript_skips_llm():
-    client = MagicMock()
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=client):
-        card = generate_card(FakeChatlog([]), _path(), atg_state=ATG_STATE)
-    client.chat_completion.assert_not_called()
-    assert any('DATABASE_URL' in f for f in card['key_facts'])
+def _ms(atg=None, title='client A site'):
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(ms, title=title, now_ts=1000)
+    ms.atg = atg
+    return ms
 
 
 # ── ATG lifting ──────────────────────────────────────────────────────────────
@@ -123,24 +55,116 @@ def test_lift_atg_facts():
     assert lift_atg_facts(None) == ([], [], "")
 
 
-# ── finalize_active_card ─────────────────────────────────────────────────────
+# ── finalize_active_card (deterministic, no LLM) ─────────────────────────────
 
-def test_finalize_updates_path_and_clears_stale():
-    ms = AgentState(mode='execute')
-    ms.cmp = store.new_cmp(ms, title='client A site', now_ts=1000)
-    ms.atg = ATG_STATE
-    card_json = json.dumps({'title': 'Client A website', 'goal': 'build it',
-                            'outcome': 'deploy failed', 'key_facts': [],
-                            'artifacts': []})
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=_scripted_client(card_json)):
-        finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
+def test_finalize_lifts_atg_and_fills_gaps():
+    ms = _ms(atg=ATG_STATE)
+    finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
     p1 = ms.cmp['paths']['A1']
-    assert p1['title'] == 'Client A website'
+    assert any('DATABASE_URL' in f for f in p1['key_facts'])
+    assert '/projects/client-a/index.html' in p1['artifacts']
+    assert p1['goal'] == 'build client A site'          # filled from ATG
+    assert 'deploy failed' in p1['outcome'].lower()      # last final reply
     assert p1['card_stale'] is False
-    # second call with fresh card is a no-op (no LLM)
-    client = MagicMock()
-    with patch('backend.task_classifier._get_classifier_client',
-               return_value=client):
-        finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
-    client.chat_completion.assert_not_called()
+
+
+def test_finalize_never_renames_the_node():
+    """Regression for the live map bug: finalization used to overwrite the
+    path's title/action with LLM card output, renaming established map nodes
+    and their edge labels. Node identity is immutable after creation."""
+    ms = _ms(atg=ATG_STATE)
+    p1 = ms.cmp['paths']['A1']
+    p1['action'] = 'build site'
+    finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
+    assert p1['title'] == 'client A site'
+    assert p1['action'] == 'build site'
+
+
+def test_finalize_preserves_incremental_card_content():
+    """Facts/outcome accumulated by the per-turn delta op survive
+    finalization — ATG facts merge in, nothing is replaced."""
+    ms = _ms(atg=ATG_STATE)
+    p1 = ms.cmp['paths']['A1']
+    store.apply_card_delta(p1, {'outcome': 'homepage reviewed by user',
+                                'new_facts': ['user wants dark theme']})
+    finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
+    assert 'user wants dark theme' in p1['key_facts']
+    assert any('DATABASE_URL' in f for f in p1['key_facts'])
+    assert p1['outcome'] == 'homepage reviewed by user'  # not overwritten
+
+
+def test_finalize_skips_when_card_fresh():
+    ms = _ms(atg=ATG_STATE)
+    p1 = ms.cmp['paths']['A1']
+    p1['card_stale'] = False
+    finalize_active_card(FakeChatlog(ENTRIES), ms.cmp, ms)
+    assert p1['key_facts'] == [] and p1['outcome'] == ''
+
+
+def test_finalize_never_raises():
+    class ExplodingChatlog:
+        def get_entries_between_ts(self, a, b):
+            raise RuntimeError('boom')
+
+        def get_entries_after_ts(self, a):
+            raise RuntimeError('boom')
+
+    ms = _ms(atg={'garbage': True})
+    finalize_active_card(ExplodingChatlog(), ms.cmp, ms)  # must not raise
+    assert ms.cmp['paths']['A1']['card_stale'] is False
+
+
+# ── token estimates ──────────────────────────────────────────────────────────
+
+def test_path_and_card_token_estimates():
+    from backend.agent_runtime.cmp.compactor import (
+        card_token_estimate, path_token_estimate)
+
+    entries = [
+        {'type': 'user', 'ts': 1100, 'content': 'buatkan laporan invoice ' * 40},
+        {'type': 'tool_call', 'ts': 1200, 'function': 'bash',
+         'params': {'script': 'ls -la ' * 30}},
+        {'type': 'tool_output', 'ts': 1300, 'content': 'X' * 4000},
+        {'type': 'final', 'ts': 1400, 'content': 'laporan selesai'},
+    ]
+    path = {'id': 'A1', 'segments': [[1000, None]],
+            'title': 'Laporan invoice', 'goal': 'buat laporan',
+            'outcome': 'selesai', 'key_facts': ['fakta a', 'fakta b'],
+            'artifacts': ['/out/report.pdf']}
+
+    transcript_tokens = path_token_estimate(FakeChatlog(entries), path)
+    card_tokens = card_token_estimate(path)
+
+    # transcript (tool dumps + prose) dwarfs the compact card
+    assert transcript_tokens > 500
+    assert 0 < card_tokens < 100
+    assert transcript_tokens > card_tokens * 5
+
+    # empty path → 0, never raises
+    assert path_token_estimate(FakeChatlog([]), {'id': 'x', 'segments': []}) == 0
+    assert card_token_estimate({'id': 'x'}) == 0
+
+
+def test_path_llm_token_estimate_reflects_compacted_view():
+    """Actual (llm view) must sit far below the raw estimate when a path
+    carries an oversized tool output: reconstruction compacts what the raw
+    chatlog stores in full."""
+    from backend.agent_runtime.cmp.compactor import (path_llm_token_estimate,
+                                                     path_token_estimate)
+    from models.chatlog import chatlog_manager
+    log = chatlog_manager.get('cmp_compactor_est_agent', 'sess-est')
+    log.append({'type': 'user', 'ts': 1100, 'content': 'jalankan explorer',
+                'session_id': 's'})
+    log.append({'type': 'tool_call', 'ts': 1200, 'function': 'Explore',
+                'params': {'query': 'x'}, 'id': 'c1', 'session_id': 's'})
+    log.append({'type': 'tool_output', 'ts': 1300, 'session_id': 's',
+                'content': 'hasil scan: baris temuan panjang\n' * 8000,
+                'tool_call_id': 'c1', 'function': 'Explore'})
+    log.append({'type': 'final', 'ts': 1400, 'content': 'selesai',
+                'session_id': 's'})
+    path = {'id': 'A1', 'segments': [[1000, None]]}
+    raw = path_token_estimate(log, path)
+    actual = path_llm_token_estimate(log, path)
+    assert 0 < actual < raw / 5      # the compaction gap is visible
+    # a chatlog without segment support degrades to 0, never raises
+    assert path_llm_token_estimate(FakeChatlog([]), path) == 0

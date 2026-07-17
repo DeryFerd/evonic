@@ -51,6 +51,41 @@ _LOGS_DIR = os.path.join(_BASE_DIR, 'logs')
 _logger = logging.getLogger(__name__)
 
 
+def _append_attachment_context(content: str, attachment_infos, attachment_info,
+                               agent: dict, has_describe_image: bool) -> str:
+    """Append context notes for plural attachments with a legacy singular fallback."""
+    if not isinstance(attachment_infos, list):
+        attachment_infos = []
+    attachment_infos = [info for info in attachment_infos if isinstance(info, dict)]
+    if not attachment_infos and isinstance(attachment_info, dict):
+        attachment_infos = [attachment_info]
+
+    notes = []
+    for index, info in enumerate(attachment_infos, 1):
+        fp = info.get('file_path', '')
+        if fp and not os.path.isabs(fp):
+            fp = os.path.abspath(os.path.join(_BASE_DIR, fp))
+        fn = info.get('filename', '')
+        mt = info.get('mime_type', '')
+        sb = int(info.get('size_bytes', 0) or 0)
+        is_img = bool(mt and mt.startswith('image/'))
+        is_audio = bool(mt and mt.startswith('audio/'))
+        if sb >= 1048576:
+            sz = f"{sb / 1048576:.1f} MB"
+        elif sb >= 1024:
+            sz = f"{sb / 1024:.1f} KB"
+        else:
+            sz = f"{sb} B"
+        label = f"Attachment #{index}" if len(attachment_infos) > 1 else "Attachment"
+        note = f"\n\n[{label}: {fn} ({mt}, {sz})]\nFile path: {fp}"
+        if is_img and has_describe_image:
+            note += "\nUse the `describe_image` tool to view and analyze this image."
+        if is_audio and agent.get('audio_enabled'):
+            note += "\nUse the `transcribe_audio` tool to listen to this audio."
+        notes.append(note)
+    return content.rstrip() + ''.join(notes) if notes else content
+
+
 # --- Configuration constants ---
 CLEANUP_INTERVAL_SECONDS = 300       # Interval between idle session cleanup sweeps (5 minutes)
 CLEANUP_TTL_SECONDS = 3600          # TTL for session state entries before cleanup (1 hour)
@@ -99,7 +134,8 @@ def _should_wrap_user_message(agent: dict) -> bool:
 
 def _apply_wrapper_prefix(messages: list, enabled: bool,
                           is_stale: bool = False,
-                          stale_threshold: int = 25200) -> None:
+                          stale_threshold: int = 25200,
+                          loaded_skills_count: int = 0) -> None:
     """Apply message wrapper prefix to user messages in-place.
 
     Wraps: (a) the LAST (current) user message when it has >= 4 words,
@@ -109,11 +145,14 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
     When is_stale is True, appends a staleness-awareness note to the wrapper
     prefix prompting the agent to assess whether conversation history is
     still relevant.
+
+    When loaded_skills_count > 0, replaces point 3 with a dynamic reminder
+    to check loaded skills before responding.
     """
     if not enabled or not messages:
         return
 
-    # Build effective wrapper prefix — may include staleness notice
+    # Build effective wrapper prefix — may include staleness notice or skill reminder
     effective_prefix = WRAPPER_PREFIX
     if is_stale:
         hours = max(1, stale_threshold // 3600)
@@ -125,6 +164,22 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
             f"context.\n\n"
         )
         effective_prefix = WRAPPER_PREFIX + staleness_note
+
+    # Dynamic point 3: if agent has loaded skills, occasionally remind it to check/unload them
+    # 1:3 probability — injects ~25% of the time to avoid redundancy
+    if loaded_skills_count and loaded_skills_count > 0:
+        import random
+        if random.random() < 0.25:
+            options = [
+                f"[SKILL — {loaded_skills_count} loaded] Use a relevant one if this fits. Otherwise unload it — it's no longer needed.",
+                f"[SKILL — {loaded_skills_count} loaded] Check if any loaded skill applies to this request. If not, unload it before replying.",
+                f"[SKILL — {loaded_skills_count} loaded] Got skills loaded. Use one if relevant, or unload it if it's stale. Then reply naturally.",
+                f"[SKILL — {loaded_skills_count} loaded] Loaded skills ready. Pick the right one or unload the irrelevant ones. Then respond.",
+            ]
+            effective_prefix = WRAPPER_PREFIX + f"\n\n{random.choice(options)}"
+    else:
+        if is_stale:
+            effective_prefix = WRAPPER_PREFIX + staleness_note
 
     for i, msg in enumerate(messages):
         if msg.get('role') == 'user':
@@ -1597,13 +1652,16 @@ class AgentRuntime:
                 _logger.exception("CMP early boundary hook failed — full-history turn")
                 _cmp_filter_state = None
 
-        # Build messages for LLM (summary-aware)
-        # Try prefetched context from the previous turn's background warmup
-        # (only when disable_turn_prefetch is not set). A CMP switch/branch
-        # this turn invalidates the hit: it was assembled for the OLD path.
+        # Build messages for LLM (summary-aware). A prefetch is valid only if
+        # it was assembled under the current summary watermark; summarization
+        # can advance asynchronously after the background warmup completes.
+        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
+        summary_watermark = (summary_record.get('last_message_ts')
+                             if summary_record else None)
         _prefetch = None
         if not agent.get('disable_turn_prefetch', 0) and not _cmp_switched_this_turn:
-            _prefetch = self._prefetcher.try_get(ctx.session_id)
+            _prefetch = self._prefetcher.try_get(
+                ctx.session_id, summary_watermark=summary_watermark)
         if _prefetch and _prefetch.agent_id == agent_id:
             system_prompt = _prefetch.system_prompt
             tools = _prefetch.tools
@@ -1660,35 +1718,17 @@ class AgentRuntime:
             # Always pop _image_url/_audio_url but NEVER feed them to the LLM.
             msg.pop('_image_url', None)
             msg.pop('_audio_url', None)
-            # Append attachment_info note so agents see file path metadata.
+            # Append authoritative structured metadata, including the numeric ID
+            # required by read_attachment. This also repairs legacy message text
+            # that omitted the ID when restored from JSONL.
             _att = msg.pop('attachment_info', None) or msg.get('attachment_info')
             if _att and isinstance(_att, dict):
-                fp = _att.get('file_path', '')
-                # Resolve relative paths (e.g. data/attachments/...) to absolute so
-                # agents can access the file from any working directory.
-                if fp and not os.path.isabs(fp):
-                    fp = os.path.abspath(os.path.join(_BASE_DIR, fp))
-                fn = _att.get('filename', '')
-                mt = _att.get('mime_type', '')
-                sb = int(_att.get('size_bytes', 0) or 0)
-                is_img = bool(mt and mt.startswith('image/'))
-                is_audio = bool(mt and mt.startswith('audio/'))
-                if sb >= 1048576:
-                    sz = f"{sb / 1048576:.1f} MB"
-                elif sb >= 1024:
-                    sz = f"{sb / 1024:.1f} KB"
-                else:
-                    sz = f"{sb} B"
-                note = (
-                    f"\n\n[Attachment: {fn} ({mt}, {sz})]"
-                    f"\nFile path: {fp}"
+                _ctx.append_attachment_note(
+                    msg,
+                    _att,
+                    has_describe_image=_has_describe_image,
+                    audio_enabled=bool(agent.get('audio_enabled')),
                 )
-                if is_img and _has_describe_image:
-                    note += "\nUse the `describe_image` tool to view and analyze this image."
-                if is_audio and agent.get('audio_enabled'):
-                    note += "\nUse the `transcribe_audio` tool to listen to this audio."
-                content = msg.get('content', '') or ''
-                msg['content'] = content.rstrip() + note
             video = msg.pop('_video_url', None) if agent.get('video_enabled') else msg.pop('_video_url', None) and None
             if not video:
                 return msg
@@ -1702,7 +1742,6 @@ class AgentRuntime:
                 parts.insert(0, {"type": "text", "text": "What is in this media?"})
             return {**msg, 'content': parts}
 
-        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
         chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
 
         # Compute whether describe_image is assigned so the _apply_multimodal
@@ -1737,6 +1776,9 @@ class AgentRuntime:
                     _vid = _cur_meta.get('video_url')
                     if _vid:
                         _cur_msg['_video_url'] = _vid
+                    _atts = _cur_meta.get('attachment_infos')
+                    if isinstance(_atts, list):
+                        _cur_msg['attachment_infos'] = _atts
                     _att = _cur_meta.get('attachment_info')
                     if _att:
                         _cur_msg['attachment_info'] = _att
@@ -1755,7 +1797,7 @@ class AgentRuntime:
                 _logger.exception("CMP history filter failed — using full history")
                 _jsonl_entries = None
             if _jsonl_entries is None:
-                _jsonl_entries = chatlog.get_entries_for_llm(
+                _jsonl_entries = chatlog.get_entries_for_llm_trail(
                     after_ts=summary_record.get('last_message_ts') if summary_record else None,
                 )
             # NOTE: The second condition handles an edge case where _jsonl_entries is empty
@@ -1934,8 +1976,13 @@ class AgentRuntime:
             # Resolve workspace: workplace config takes priority over agent.workspace.
             # For tunnel workplaces, never fall back to the agent's /workspace path —
             # Evonet runs on the remote device and has its own working directory.
+            # EXPLORERS: their workspace is set by explorer.build_config to the
+            # user-requested absolute path (the 'path' parameter of Explore).
+            # Use it directly — the workplace_id is only for SSH backend routing.
             _workplace_id = agent.get('workplace_id') or None
-            if _workplace_id:
+            if agent.get('is_explorer'):
+                _workspace = agent.get('workspace') or None
+            elif _workplace_id:
                 try:
                     import json as _json
                     _workplace = db.get_workplace(_workplace_id)
@@ -2139,7 +2186,8 @@ class AgentRuntime:
 
         # Apply preference wrapper prefix to user messages if enabled
         _apply_wrapper_prefix(messages, _should_wrap_user_message(agent),
-                              is_stale=is_stale, stale_threshold=stale_threshold)
+                              is_stale=is_stale, stale_threshold=stale_threshold,
+                              loaded_skills_count=len(self._session_skill_tools.get(ctx.session_id, {})))
 
         # Sub-agents run delegated tasks with plan/approval disabled (see force-execute
         # above). Tell the LLM explicitly so it doesn't emit a plan and stop.

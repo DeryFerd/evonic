@@ -1,10 +1,20 @@
 """Tests for the CMP per-turn orchestrator (on_turn_boundary) and its
 coexistence with the ATG re-arm."""
 
-from unittest.mock import MagicMock, patch
+import pytest
+from unittest.mock import patch
 
 from backend.agent_runtime.cmp import on_turn_boundary, store
 from backend.agent_state import AgentState
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """The single-pass turn op is a real LLM call — fail it fast so any
+    unmocked detect() falls back mechanically (no network in tests)."""
+    monkeypatch.setattr('backend.agent_runtime.cmp.detector._call_turn_llm',
+                        lambda *a, **k: None)
+
 
 AGENT = {'id': 'a1', 'enable_cmp': 1, 'enable_agent_state': 1}
 LONG_NEW_TASK = ('please build a completely new scraper project under /tmp/scraper '
@@ -18,6 +28,9 @@ class FakeChatlog:
     def get_last_entry(self, types=None):
         return {'type': 'user', 'ts': self.user_ts}
 
+    def tail(self, limit=24, to_ts=None):
+        return []
+
     def get_entries_between_ts(self, a, b):
         return []
 
@@ -25,10 +38,11 @@ class FakeChatlog:
         return []
 
 
-def _detect(decision, target=None, layer='L3'):
+def _detect(decision, target=None, layer='LLM', new_path=None, card_delta=None):
     return patch('backend.agent_runtime.cmp.detector.detect',
                  return_value={'decision': decision, 'target': target,
-                               'layer': layer})
+                               'layer': layer, 'new_path': new_path,
+                               'card_delta': card_delta})
 
 
 # ── Gates / init ─────────────────────────────────────────────────────────────
@@ -53,6 +67,29 @@ def test_first_turn_initializes_p1_from_current_work():
     assert ms.atg['status'] == 'executing'
 
 
+def test_first_turn_names_p1_from_the_turn_envelope():
+    """No ongoing work to adopt → the single-pass call (init mode) names A1;
+    the raw message stays only as mechanical fallback."""
+    ms = AgentState(mode='execute')
+    with _detect('continue', new_path={'title': 'Laporan Mingguan',
+                                       'action': 'create report'}) as det:
+        result = on_turn_boundary(AGENT, ms, FakeChatlog(),
+                                  'buatkan laporan mingguan Perusahaan A dong')
+    assert result['decision'] == 'init'
+    assert det.call_args[1]['initializing'] is True
+    p1 = ms.cmp['paths']['A1']
+    assert p1['title'] == 'Laporan Mingguan'
+    assert p1['action'] == 'create report'
+
+
+def test_first_turn_mechanical_title_when_naming_unavailable():
+    ms = AgentState(mode='execute')
+    result = on_turn_boundary(AGENT, ms, FakeChatlog(),
+                              'buatkan laporan mingguan Perusahaan A dong')
+    assert result['decision'] == 'init'
+    assert ms.cmp['paths']['A1']['title'] == 'buatkan laporan mingguan Perusahaan A dong'
+
+
 # ── Decisions drive path ops ─────────────────────────────────────────────────
 
 def _session_with_two_paths():
@@ -63,29 +100,50 @@ def _session_with_two_paths():
     return ms
 
 
-def test_continue_only_ticks_hysteresis():
+def test_continue_keeps_fresh_paths_preserved():
     ms = _session_with_two_paths()
     with _detect('continue'):
         result = on_turn_boundary(AGENT, ms, FakeChatlog(), 'lanjut saja')
     assert result['decision'] == 'continue'
     assert ms.cmp['active_id'] == 'A2'
-    assert ms.cmp['paths']['A1']['dormant_turns'] == 1
+    assert ms.cmp['paths']['A1']['status'] == 'preserved'  # no time passed
 
 
 def test_return_switches_and_finalizes_card():
     ms = _session_with_two_paths()
     ms.plan_file = 'plan/server.md'
     with _detect('return', 'A1'), \
-         patch('backend.agent_runtime.cmp.compactor.generate_card',
-               return_value={'title': 'website', 'goal': 'g', 'outcome': 'o',
-                             'key_facts': [], 'artifacts': []}) as gen:
+         patch('backend.agent_runtime.cmp.compactor.finalize_active_card') as fin:
         result = on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=9000),
                                   'balik ke website yang tadi ya')
     assert result['decision'] == 'return'
     assert ms.cmp['active_id'] == 'A1'
-    gen.assert_called_once()  # outgoing card finalized before the switch
+    fin.assert_called_once()  # outgoing card finalized before the switch
     # P2 snapshotted with its plan file
     assert ms.cmp['paths']['A2']['plan_file'] == 'plan/server.md'
+
+
+def test_card_delta_applied_to_active_path():
+    ms = _session_with_two_paths()
+    delta = {'outcome': 'nginx configured', 'new_facts': ['listens on 8080'],
+             'new_artifacts': ['/etc/nginx/nginx.conf']}
+    with _detect('continue', card_delta=delta):
+        on_turn_boundary(AGENT, ms, FakeChatlog(), 'lanjutkan config servernya ya')
+    p2 = ms.cmp['paths']['A2']
+    assert p2['outcome'] == 'nginx configured'
+    assert 'listens on 8080' in p2['key_facts']
+    assert '/etc/nginx/nginx.conf' in p2['artifacts']
+
+
+def test_card_delta_lands_on_outgoing_path_before_switch():
+    """The delta describes the just-completed turn on the still-active path —
+    it must be applied before the switch suspends that path."""
+    ms = _session_with_two_paths()
+    with _detect('return', 'A1', card_delta={'outcome': 'server config selesai'}):
+        on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=9000),
+                         'balik ke website yang tadi ya')
+    assert ms.cmp['active_id'] == 'A1'
+    assert ms.cmp['paths']['A2']['outcome'] == 'server config selesai'
 
 
 def test_dep_branch_creates_dependent_plan_mode_path():
@@ -101,11 +159,50 @@ def test_dep_branch_creates_dependent_plan_mode_path():
     assert ms.mode == 'plan' and ms.atg is None and ms.plan_file is None
 
 
+def test_dep_branch_on_the_active_path_creates_its_child():
+    """A new sub-question growing out of the active work branches as its
+    DESCENDANT (live regression: asking for the rector's name while an
+    'info about university X' path was active got routed continue; the
+    rubric now sends it dep_branch on the active path — this pins the
+    mechanics of that route)."""
+    ms = _session_with_two_paths()          # active = A2
+    with _detect('dep_branch', 'A2',
+                 new_path={'title': 'Rektor Universitas Maju',
+                           'action': 'find info'}):
+        result = on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=9000),
+                                  'siapa sih rektornya sekarang?')
+    new_id = result['target']
+    assert ms.cmp['paths'][new_id]['depends_on'] == ['A2']
+    assert ms.cmp['active_id'] == new_id
+    assert ms.cmp['paths']['A2']['status'] == 'preserved'
+    assert ms.cmp['paths'][new_id]['title'] == 'Rektor Universitas Maju'
+
+
 def test_indep_branch_creates_independent_path():
     ms = _session_with_two_paths()
     with _detect('indep_branch'):
         result = on_turn_boundary(AGENT, ms, FakeChatlog(), LONG_NEW_TASK)
     assert ms.cmp['paths'][result['target']]['depends_on'] == []
+
+
+def test_branch_paths_named_from_the_turn_envelope():
+    """New paths are named in-context by the same single-pass call — and the
+    name is applied exactly once (immutable afterwards)."""
+    ms = _session_with_two_paths()
+    with _detect('indep_branch',
+                 new_path={'title': 'Blog robin.blog.com', 'action': 'create article'}):
+        result = on_turn_boundary(AGENT, ms, FakeChatlog(),
+                                  'buatkan tulisan blog untuk robin.blog.com dong')
+    record = ms.cmp['paths'][result['target']]
+    assert record['title'] == 'Blog robin.blog.com'
+    assert record['action'] == 'create article'
+
+
+def test_branch_without_envelope_name_keeps_mechanical_title():
+    ms = _session_with_two_paths()
+    with _detect('indep_branch'):
+        result = on_turn_boundary(AGENT, ms, FakeChatlog(), LONG_NEW_TASK)
+    assert ms.cmp['paths'][result['target']]['title'] == LONG_NEW_TASK[:60]
 
 
 def test_path_op_failure_degrades_to_continue():
@@ -116,12 +213,28 @@ def test_path_op_failure_degrades_to_continue():
     assert ms.cmp['active_id'] == 'A2'  # untouched
 
 
-def test_hysteresis_archives_at_k():
-    ms = _session_with_two_paths()
+def test_lifecycle_archives_then_prunes_on_turn_boundaries():
+    """Count-based preserved cap: when > MAX_PRESERVED, oldest archived
+    on turn boundary; archived > 3 days → pruned."""
+    ms = _session_with_two_paths()         # A1 preserved @2000, A2 active @2000
+    # Build up 4 preserved to push A1 over the cap:
+    store.create_path(ms.cmp, ms, 'third', now_ts=2500)   # A2→preserved, A3 active
+    store.create_path(ms.cmp, ms, 'fourth', now_ts=2900)  # A3→preserved, A4 active
+    store.create_path(ms.cmp, ms, 'fifth', now_ts=3000)   # A4→preserved, A5 active
+    # preserved: A1(2000), A2(2500), A3(2900), A4(3000) = 4 > 3
+
     with _detect('continue'):
-        for _ in range(store.CMP_DORMANT_TURNS_K):
-            on_turn_boundary(AGENT, ms, FakeChatlog(), 'continue this work please')
+        on_turn_boundary(AGENT, ms, FakeChatlog(user_ts=3100),
+                         'lanjutkan kerjaan server config ini ya')
     assert ms.cmp['paths']['A1']['status'] == 'archived'
+
+    # Wait 3+ days for prune
+    t_prune = 3100 + store.ARCHIVED_TTL_MS + 1
+    with _detect('continue'):
+        on_turn_boundary(AGENT, ms,
+                         FakeChatlog(user_ts=t_prune),
+                         'lanjutkan lagi kerjaan server config ini ya')
+    assert 'A1' not in ms.cmp['paths']
 
 
 # ── Coexistence with ATG-only re-arm (runtime routing) ───────────────────────

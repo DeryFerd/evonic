@@ -14,7 +14,14 @@ import time
 
 CMP_VERSION = 1
 MAX_PATHS = 20
-CMP_DORMANT_TURNS_K = 3
+
+# Count-based preserved cap + wall-clock archived decay (evaluated at turn
+# boundaries): each state strictly reduces a path's context cost — active
+# (full card), preserved (snippet, max MAX_PRESERVED), archived (map-node
+# title only), pruned (record removed).
+MAX_PRESERVED = 3                          # per-cap, oldest preserved archived
+ARCHIVED_TTL_MS = 3 * 24 * 3600 * 1000    # archived  > 3 days → pruned
+RESTORE_MAX_HOPS = 3                       # lineage auto-restore depth
 
 # Card field caps (interface-preserving but bounded)
 TITLE_MAX = 60
@@ -24,7 +31,7 @@ KEY_FACTS_MAX = 6
 KEY_FACT_CHARS = 200
 ARTIFACTS_MAX = 8
 
-VALID_STATUSES = {"active", "dormant", "archived"}
+VALID_STATUSES = {"active", "preserved", "archived"}
 
 # AgentState fields snapshotted per path (the single-slot per-task state)
 SNAPSHOT_FIELDS = ("mode", "plan_file", "auto_trivial", "atg")
@@ -50,6 +57,65 @@ def clamp_card_fields(card: dict) -> dict:
     card["artifacts"] = [str(a)[:KEY_FACT_CHARS]
                          for a in (card.get("artifacts") or [])[:ARTIFACTS_MAX]]
     return card
+
+
+# Card fields the delta op may touch. Everything else on a path record —
+# id, title, action, depends_on, segments, status, snapshots — is immutable
+# to the LLM (title/action/depends_on are set once at creation; the map's
+# node labels and edges never change afterwards).
+_DELTA_APPEND_FIELDS = (
+    ("new_facts", "key_facts", KEY_FACTS_MAX),
+    ("new_artifacts", "artifacts", ARTIFACTS_MAX),
+)
+
+
+def apply_card_delta(path: dict, delta: dict) -> None:
+    """Deterministic, append-only card update from a single-pass turn op
+    (evomem-writer style: the LLM emits a delta, this applies it under the
+    graph's immutability invariants). `outcome` replaces; facts/artifacts
+    append with exact dedupe, capped keep-newest. Never touches node
+    identity (id/title/action/depends_on) or lifecycle fields."""
+    if not isinstance(path, dict) or not isinstance(delta, dict):
+        return
+    outcome = str(delta.get("outcome") or "").strip()
+    if outcome:
+        path["outcome"] = outcome[:OUTCOME_MAX]
+    for delta_key, field, cap in _DELTA_APPEND_FIELDS:
+        new_items = delta.get(delta_key)
+        if not isinstance(new_items, list):
+            continue
+        items = [str(v)[:KEY_FACT_CHARS] for v in (path.get(field) or [])]
+        for item in new_items:
+            text = str(item).strip()[:KEY_FACT_CHARS]
+            if text and text not in items:
+                items.append(text)
+        path[field] = items[-cap:]
+
+
+def path_status(path: dict) -> str:
+    """Normalized lifecycle status. 'dormant' is the legacy (pre-lifecycle)
+    name of 'preserved' — reader-side migration; writers only emit the new
+    vocabulary, so persisted sessions converge without a migration pass."""
+    status = (path or {}).get("status")
+    return "preserved" if status == "dormant" else (status or "preserved")
+
+
+def _set_status(path: dict, status: str, now_ts: int) -> None:
+    """All status writes go through here so `state_since` (the lifecycle
+    clock used for count-based ordering and the archive TTL) can never
+    drift from the status."""
+    path["status"] = status
+    path["state_since"] = now_ts
+
+
+def _state_since(path: dict) -> int:
+    # legacy records predate state_since; last_active is the best proxy
+    return path.get("state_since") or path.get("last_active") or 0
+
+
+def _is_depended_on(cmp: dict, pid: str) -> bool:
+    return any(pid in (p.get("depends_on") or [])
+               for p in cmp["paths"].values() if p.get("id") != pid)
 
 
 def _id_sort_key(pid: str):
@@ -129,7 +195,7 @@ def _new_path_record(pid: str, title: str, goal: str, now_ts: int,
         "depends_on": list(depends_on or []),
         "segments": [[now_ts - 1, None]],
         "last_active": now_ts,
-        "dormant_turns": 0,
+        "state_since": now_ts,
         "card_stale": True,
         # per-task AgentState snapshot; None while the path is active
         # (the live values are on ms) — filled on switch-away.
@@ -179,6 +245,7 @@ def create_path(cmp: dict, ms, title: str, goal: str = "",
     ms.atg = None
 
     cmp["stats"]["branches"] = cmp["stats"].get("branches", 0) + 1
+    restore_lineage(cmp, pid, now_ts)
     enforce_caps(cmp)
     return record
 
@@ -212,14 +279,14 @@ def switch_to(cmp: dict, ms, target_id: str, now_ts: int = None) -> dict:
     target["auto_trivial"] = False
     target["atg"] = None
 
-    target["status"] = "active"
-    target["dormant_turns"] = 0
+    _set_status(target, "active", now_ts)  # reactivation resets the clock
     target["last_active"] = now_ts
     target["card_stale"] = True  # new content will accumulate while active
     target["segments"].append([now_ts - 1, None])
     cmp["active_id"] = target_id
 
     cmp["stats"]["switches"] = cmp["stats"].get("switches", 0) + 1
+    restore_lineage(cmp, target_id, now_ts)
     return target
 
 
@@ -231,8 +298,7 @@ def _suspend_active(cmp: dict, ms, now_ts: int) -> dict:
     path["plan_file"] = ms.plan_file
     path["auto_trivial"] = ms.auto_trivial
     path["atg"] = ms.atg
-    path["status"] = "dormant"
-    path["dormant_turns"] = 0
+    _set_status(path, "preserved", now_ts)
     path["last_active"] = now_ts
     # card_stale untouched: the compactor finalizes the card right before
     # suspension and clears the flag; activation re-marks it (new content).
@@ -247,45 +313,86 @@ def _close_open_segment(path: dict, now_ts: int) -> None:
         segments[-1][1] = max(now_ts - 1, segments[-1][0])
 
 
-def tick_hysteresis(cmp: dict) -> list:
-    """Increment dormant counters; dormant paths reaching K become archived.
-    Returns the list of newly archived path ids."""
-    archived = []
-    for path in cmp["paths"].values():
-        if path["status"] == "dormant":
-            path["dormant_turns"] = path.get("dormant_turns", 0) + 1
-            if path["dormant_turns"] >= CMP_DORMANT_TURNS_K:
-                path["status"] = "archived"
-                archived.append(path["id"])
-    if archived:
-        enforce_caps(cmp)
-    return archived
+def restore_lineage(cmp: dict, active_id: str, now_ts: int) -> list:
+    """Archived dependency ancestors within RESTORE_MAX_HOPS of the active
+    path are promoted back to preserved: operating deep in a branch regains
+    the lineage's lightweight summaries without restoring the whole graph.
+    Returns the promoted path ids."""
+    promoted = []
+    for pid in dependency_ancestors(cmp, active_id,
+                                    max_depth=RESTORE_MAX_HOPS,
+                                    max_count=len(cmp["paths"])):
+        path = cmp["paths"][pid]
+        if path_status(path) == "archived":
+            _set_status(path, "preserved", now_ts)
+            promoted.append(pid)
+    return promoted
+
+
+def tick_lifecycle(cmp: dict, now_ts: int = None) -> dict:
+    """Lifecycle decay evaluated at turn boundaries.
+
+    preserved count cap (MAX_PRESERVED): when more than MAX_PRESERVED paths
+    are in the preserved state, the oldest ones (by state_since) are archived
+    — unless the path is in the active path's restore lineage (≤ RESTORE_MAX_HOPS),
+    which never decays out from under the current work.
+    archived > ARCHIVED_TTL_MS → pruned (record removed) — unless a living
+    path still depends_on it (pruning a referenced parent would re-root the
+    child's established edge; dead subtrees decay bottom-up instead).
+    Returns {'archived': [...], 'pruned': [...]}.
+    """
+    now_ts = now_ts if now_ts is not None else _now_ms()
+    restore_lineage(cmp, cmp["active_id"], now_ts)
+    protected = set(dependency_ancestors(cmp, cmp["active_id"],
+                                         max_depth=RESTORE_MAX_HOPS,
+                                         max_count=len(cmp["paths"])))
+    archived, pruned = [], []
+
+    # --- preserved count cap: archive oldest over MAX_PRESERVED ----------
+    preserved_unprotected = [
+        (pid, p) for pid, p in cmp["paths"].items()
+        if path_status(p) == "preserved" and pid not in protected
+    ]
+    preserved_unprotected.sort(key=lambda t: _state_since(t[1]))
+
+    overflow = len(preserved_unprotected) - MAX_PRESERVED
+    for pid, path in preserved_unprotected[:overflow]:
+        _set_status(path, "archived", now_ts)
+        path["atg"] = None  # heavy snapshot never survives archiving
+        archived.append(pid)
+
+    # --- archived TTL → prune --------------------------------------------
+    for pid, path in cmp["paths"].items():
+        if (path_status(path) == "archived"
+                and now_ts - _state_since(path) > ARCHIVED_TTL_MS
+                and not _is_depended_on(cmp, pid)):
+            pruned.append(pid)
+    for pid in pruned:
+        del cmp["paths"][pid]
+    return {"archived": archived, "pruned": pruned}
 
 
 def enforce_caps(cmp: dict) -> None:
-    """Prune oldest archived paths beyond MAX_PATHS to stub records
-    (map node + transcript ref survive; atg snapshot dropped)."""
-    # Archived paths always drop their atg snapshot (facts live in the card).
+    """Backstop: archived paths drop their atg snapshot (facts live in the
+    card), and beyond MAX_PATHS the oldest archived paths are fully removed
+    (prune semantics, including the depends_on reference protection)."""
     for path in cmp["paths"].values():
-        if path["status"] == "archived" and path.get("atg") is not None:
+        if path_status(path) == "archived" and path.get("atg") is not None:
             path["atg"] = None
 
-    if len(cmp["paths"]) <= MAX_PATHS:
+    to_prune = len(cmp["paths"]) - MAX_PATHS
+    if to_prune <= 0:
         return
     archived = sorted(
-        (p for p in cmp["paths"].values() if p["status"] == "archived"),
+        (p for p in cmp["paths"].values() if path_status(p) == "archived"),
         key=lambda p: p.get("last_active", 0))
-    to_prune = len(cmp["paths"]) - MAX_PATHS
-    for path in archived[:to_prune]:
-        stub = {k: path[k] for k in
-                ("id", "title", "status", "outcome", "segments", "depends_on")}
-        stub.update({"goal": "", "action": path.get("action", ""),
-                     "key_facts": [], "artifacts": [],
-                     "last_active": path.get("last_active", 0),
-                     "dormant_turns": 0, "card_stale": False,
-                     "mode": None, "plan_file": None,
-                     "auto_trivial": False, "atg": None})
-        cmp["paths"][path["id"]] = stub
+    for path in archived:
+        if to_prune <= 0:
+            break
+        if _is_depended_on(cmp, path["id"]):
+            continue
+        del cmp["paths"][path["id"]]
+        to_prune -= 1
 
 
 def dependency_ancestors(cmp: dict, path_id: str, max_depth: int = 2,

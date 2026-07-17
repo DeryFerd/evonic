@@ -85,11 +85,22 @@ def test_dependency_ancestors_stay_compact():
     assert '- A2 blog' in section
 
 
-def test_archived_paths_still_render_snippet():
+def test_archived_paths_render_title_only():
+    """Archived = the next rung down in context cost: the snippet (outcome/
+    goal summary) is offloaded too, leaving only the title line."""
     ms = _session()
     ms.cmp['paths']['A1']['status'] = 'archived'
     section = render_cmp_section(ms.cmp)
+    assert 'Archived paths (title only' in section
     assert '- A1 Perusahaan A [archived]' in section
+    assert 'laporan mingguan selesai' not in section   # outcome offloaded
+
+
+def test_legacy_dormant_status_renders_as_preserved_snippet():
+    ms = _session()
+    ms.cmp['paths']['A1']['status'] = 'dormant'        # pre-lifecycle data
+    section = render_cmp_section(ms.cmp)
+    assert '- A1 Perusahaan A [preserved] — laporan mingguan selesai' in section
 
 
 def test_root_label_is_dynamic_but_id_stays_stable():
@@ -127,3 +138,33 @@ def test_render_cap():
 def test_empty_cmp_renders_nothing():
     assert render_cmp_section(None) == ''
     assert render_cmp_section({}) == ''
+
+
+def test_map_is_append_only_modulo_active_marker():
+    """The user-facing invariant: once a node and its edge are on the map,
+    they never change — successive renders may only append lines and move
+    the `*` marker. Holds by construction (immutable id/title/action/deps)."""
+    def _stable_lines(mermaid):
+        return {line.replace(' *"]', '"]') for line in mermaid.splitlines()}
+
+    ms = AgentState(mode='execute')
+    ms.cmp = store.new_cmp(ms, title='Perusahaan A', now_ts=1000)
+    ms.cmp['paths']['A1']['action'] = 'create report'
+    snapshots = [render_map(ms.cmp)]
+
+    a2 = store.create_path(ms.cmp, ms, 'blog', now_ts=2000)
+    a2['action'] = 'create article'
+    snapshots.append(render_map(ms.cmp))
+
+    b1 = store.create_path(ms.cmp, ms, 'client X', depends_on=['A1'], now_ts=3000)
+    b1['action'] = 'create invoice'
+    snapshots.append(render_map(ms.cmp))
+
+    # per-turn card deltas + switches never disturb established lines
+    store.apply_card_delta(b1, {'outcome': 'invoice terkirim',
+                                'new_facts': ['nomor INV-042']})
+    store.switch_to(ms.cmp, ms, 'A1', now_ts=4000)
+    snapshots.append(render_map(ms.cmp))
+
+    for earlier, later in zip(snapshots, snapshots[1:]):
+        assert _stable_lines(earlier) <= _stable_lines(later)

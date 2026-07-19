@@ -20,7 +20,7 @@
       "label": "Access Token",
       "type": "secret",
       "default": "",
-      "description": "Cloudflare Access JWT token for API authentication."
+      "description": "Cloudflare Access JWT (from CF_Authorization cookie after browser login, or a service-token-derived JWT). Sent as the cf-access-jwt-assertion header to authenticate against the Worker."
     }
   ]
 }

@@ -41,7 +41,32 @@ Two variables must be set in the skill settings UI:
 | Variable | Type | Description |
 |---|---|---|
 | `WORKER_URL` | string | Base URL of the deployed Agentic Inbox Worker (e.g. `https://inbox.evonic.dev`) |
-| `ACCESS_TOKEN` | secret | Cloudflare Access JWT token for API authentication |
+| `ACCESS_TOKEN` | secret | Cloudflare Access JWT (from `CF_Authorization` cookie after browser login). Sent as `cf-access-jwt-assertion` header. |
+
+## Authentication
+
+The Agentic Inbox Worker uses **Cloudflare Access JWT** for authentication. The Worker expects the `cf-access-jwt-assertion` HTTP header. You have two options:
+
+### Option A — Browser JWT (quick, token expires ~24h)
+
+1. Set Worker secrets `POLICY_AUD` and `TEAM_DOMAIN` (from Cloudflare Access setup)
+2. Visit your Worker URL in a browser, authenticate via Cloudflare Access
+3. Open DevTools → Application → Cookies → copy `CF_Authorization` value
+4. Set it as `ACCESS_TOKEN` in the skill config
+
+### Option B — Service Token (recommended for production)
+
+Modify the Worker's `app.ts` auth middleware to also accept `Authorization: Bearer <secret>`. This gives you a permanent token:
+
+```ts
+// After the existing JWT check in app.ts, add:
+const bearer = c.req.header("Authorization")?.replace("Bearer ", "");
+if (bearer && bearer === c.env.API_KEY) {
+    return next();
+}
+```
+
+Then set `API_KEY` as a Worker secret and add `Authorization: Bearer` support to the skill's `_client.py`.
 
 ## Agent Usage
 

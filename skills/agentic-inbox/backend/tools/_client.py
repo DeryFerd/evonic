@@ -38,7 +38,7 @@ class InboxClient:
         url = f"{self._base}{path}"
         data = None
         headers = {
-            "Authorization": f"Bearer {self._token}",
+            "cf-access-jwt-assertion": self._token,
             "Accept": "application/json",
         }
 

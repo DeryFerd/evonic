@@ -317,22 +317,27 @@ class AgentChatDB:
                 conn.commit()
                 return slug
             except sqlite3.IntegrityError:
-                # Race condition: another request inserted the same slug concurrently
-                if channel_id:
-                    cursor.execute("""
-                        SELECT id FROM chat_sessions
-                        WHERE agent_id = ? AND channel_id = ? AND external_user_id = ?
-                    """, (agent_id, channel_id, external_user_id))
-                else:
-                    cursor.execute("""
-                        SELECT id FROM chat_sessions
-                        WHERE agent_id = ? AND channel_id IS NULL AND external_user_id = ?
-                    """, (agent_id, external_user_id))
+                # The INSERT hit the primary key: a session with this slug
+                # already exists. The slug is derived from agent_id +
+                # external_user_id only (channel-agnostic), so the SAME
+                # user+agent seen under a DIFFERENT channel_id collides here —
+                # the shared-channel case where a channel was recreated or
+                # re-paired and got a new channel_id, plus the concurrent-insert
+                # race. Recover by the actual colliding key (id = slug) and
+                # point the session at the current channel so the next lookup
+                # finds it directly. (Previously this re-queried by the new
+                # channel_id, found nothing, and crashed on row['id'] = None.)
+                cursor.execute("SELECT id FROM chat_sessions WHERE id = ?", (slug,))
                 row = cursor.fetchone()
-                old_id = row['id']
-                if old_id != slug:
-                    _migrate_session_id(cursor, old_id, slug)
-                    conn.commit()
+                if not row:
+                    # Not a slug collision after all — re-raise the real error
+                    # instead of masking it with a None subscript.
+                    raise
+                cursor.execute(
+                    "UPDATE chat_sessions SET channel_id = ?, archived = 0, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (channel_id, slug))
+                conn.commit()
                 return slug
 
     def get_session_messages(self, session_id: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -422,6 +427,10 @@ class AgentChatDB:
             conn.commit()
 
     def get_agent_state(self) -> Optional[str]:
+        # A cached handle can outlive its DB file (an ephemeral sub-agent whose
+        # /tmp chat dir was rmtree'd on destroy). No file → no state.
+        if not os.path.exists(self.db_path):
+            return None
         with self._connect() as conn:
             # Try global key first
             row = conn.execute(
@@ -458,6 +467,8 @@ class AgentChatDB:
         global agent_state (__agent__): copies mode/tasks/plan_file/states/auto_trivial
         to session_state while leaving focus/focus_reason in agent_state.
         """
+        if not os.path.exists(self.db_path):
+            return None  # DB removed (e.g. destroyed ephemeral sub-agent)
         with self._connect() as conn:
             # Try session-specific state first
             row = conn.execute(

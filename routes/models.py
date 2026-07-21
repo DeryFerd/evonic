@@ -1,4 +1,3 @@
-import uuid
 from typing import Any, Dict, List
 
 import requests
@@ -31,7 +30,7 @@ def api_list_models():
     return jsonify({"models": _sanitize_models(models)})
 
 
-@models_bp.route("/api/models/<model_id>", methods=["GET"])
+@models_bp.route("/api/models/<path:model_id>", methods=["GET"])
 def api_get_model(model_id):
     """Get a single model."""
     model = db.get_model_by_id(model_id)
@@ -62,33 +61,36 @@ def api_create_model():
     if data["type"] not in ("remote", "local"):
         return jsonify({"success": False, "error": "type must be remote or local"}), 400
 
-    # Validate provider
-    valid_providers = ("openrouter", "togetherai", "ollama", "ollama_cloud", "opencode_zen", "opencode_go", "deepseek", "llama.cpp", "custom")
-    if data["provider"] not in valid_providers:
+    # Validate provider exists in DB
+    provider = db.get_provider(data["provider"])
+    if not provider:
         return jsonify(
-            {"success": False, "error": f"provider must be one of {valid_providers}"}
+            {"success": False, "error": f"Unknown provider: {data['provider']}. Create it first via Settings > Providers."}
         ), 400
 
-    model_id = data.get("id") or str(uuid.uuid4())
-    new_id = db.create_model(
-        {
-            "id": model_id,
-            "name": data["name"],
-            "type": data["type"],
-            "provider": data["provider"],
-            "base_url": data.get("base_url"),
-            "api_key": data.get("api_key"),
-            "model_name": data["model_name"],
-            "max_tokens": data.get("max_tokens", 32768),
-            "timeout": data.get("timeout", 60),
-            "thinking": data.get("thinking", 0),
-            "thinking_budget": data.get("thinking_budget", 0),
-            "temperature": data.get("temperature"),
-            "enabled": data.get("enabled", 1),
-            "is_default": data.get("is_default", 0),
-            "model_max_concurrent": data.get("model_max_concurrent", 1),
-        }
-    )
+    try:
+        new_id = db.create_model(
+            {
+                "id": data.get("id"),
+                "name": data["name"],
+                "type": data["type"],
+                "provider": data["provider"],
+                "base_url": data.get("base_url"),
+                "api_key": data.get("api_key"),
+                "model_name": data["model_name"],
+                "max_tokens": data.get("max_tokens", 32768),
+                "timeout": data.get("timeout", 60),
+                "thinking": data.get("thinking", 0),
+                "thinking_budget": data.get("thinking_budget", 0),
+                "temperature": data.get("temperature"),
+                "enabled": data.get("enabled", 1),
+                "is_default": data.get("is_default", 0),
+                "model_max_concurrent": data.get("model_max_concurrent", 3),
+                "context_window": data.get("context_window", 0),
+            }
+        )
+    except ValueError as e:
+        return jsonify({"success": False, "error": str(e)}), 409
 
     # If this is set as default, unset other defaults
     if data.get("is_default"):
@@ -100,12 +102,18 @@ def api_create_model():
     return jsonify({"success": True, "model_id": new_id})
 
 
-@models_bp.route("/api/models/<model_id>", methods=["PUT"])
+@models_bp.route("/api/models/<path:model_id>", methods=["PUT"])
 def api_update_model(model_id):
     """Update a model."""
     data = request.get_json()
     if not data:
         return jsonify({"success": False, "error": "No data provided"}), 400
+
+    # Resolve to the canonical id (accepts legacy ids)
+    model = db.get_model_by_id(model_id)
+    if not model:
+        return jsonify({"success": False, "error": "Model not found"}), 404
+    model_id = model["id"]
 
     # If api_key is sent as empty string, remove it from updates to
     # preserve the existing value. This prevents accidental overwrite
@@ -141,25 +149,24 @@ def api_update_model(model_id):
     return jsonify({"success": True})
 
 
-@models_bp.route("/api/models/<model_id>", methods=["DELETE"])
+@models_bp.route("/api/models/<path:model_id>", methods=["DELETE"])
 def api_delete_model(model_id):
     """Delete a model."""
-    success = db.delete_model(model_id)
-    if not success:
+    model = db.get_model_by_id(model_id)
+    if not model:
         return jsonify({"success": False, "error": "Model not found"}), 404
+    db.delete_model(model["id"])
     return jsonify({"success": True})
 
 
-@models_bp.route("/api/models/<model_id>/clone", methods=["POST"])
+@models_bp.route("/api/models/<path:model_id>/clone", methods=["POST"])
 def api_clone_model(model_id):
     """Clone an existing model with new ID, keeping all config except default flag."""
     source = db.get_model_by_id(model_id)
     if not source:
         return jsonify({"success": False, "error": "Model not found"}), 404
 
-    new_id = str(uuid.uuid4())
     clone_data = {
-        "id": new_id,
         "name": f"Copy of {source['name']}",
         "type": source.get("type"),
         "provider": source.get("provider"),
@@ -176,13 +183,12 @@ def api_clone_model(model_id):
         "model_max_concurrent": source.get("model_max_concurrent", 1),
         "api_format": source.get("api_format", "openai"),
         "vision_supported": source.get("vision_supported", 0),
-        "attachments_supported": source.get("attachments_supported", 0),
     }
-    db.create_model(clone_data)
+    new_id = db.create_model(clone_data)
     return jsonify({"success": True, "model_id": new_id})
 
 
-@models_bp.route("/api/models/<model_id>/set-default", methods=["POST"])
+@models_bp.route("/api/models/<path:model_id>/set-default", methods=["POST"])
 def api_set_default_model(model_id):
     """Set a model as global default."""
     model = db.get_model_by_id(model_id)
@@ -191,13 +197,13 @@ def api_set_default_model(model_id):
 
     with db._connect() as conn:
         conn.execute("UPDATE llm_models SET is_default = 0")
-        conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
+        conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model["id"],))
         conn.commit()
 
     return jsonify({"success": True})
 
 
-@models_bp.route("/api/models/<model_id>/test", methods=["POST"])
+@models_bp.route("/api/models/<path:model_id>/test", methods=["POST"])
 def api_test_model(model_id):
     """Test connection to model endpoint."""
     model = db.get_model_by_id(model_id)
@@ -205,13 +211,26 @@ def api_test_model(model_id):
         return jsonify({"error": "Model not found"}), 404
 
     try:
+        model = db.resolve_model_config(model)
+        api_format = model.get("api_format", "openai")
+        provider_id = model.get("provider", "")
+
+        if api_format == "codex":
+            from backend.provider.oauth_codex import get_valid_token
+            token = get_valid_token(db, provider_id)
+            if not token:
+                return jsonify({"success": False, "error": "Not connected. Complete OAuth flow first."})
+            from backend.provider.codex_client import CodexClient
+            base_url = model.get("base_url") or "https://chatgpt.com/backend-api/codex"
+            client = CodexClient(token, base_url)
+            result = client.test_connection()
+            return jsonify(result)
+
         # Try to reach the base URL
         base_url = model.get("base_url")
         if not base_url:
             return jsonify({"success": False, "error": "No base_url configured"}), 400
 
-        # Choose the correct endpoint based on API format
-        api_format = model.get("api_format", "openai")
         if api_format == "ollama":
             models_url = f"{base_url}/tags"
         else:

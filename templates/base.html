@@ -24,7 +24,7 @@
         }
     })();
     </script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=3">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tailwind.css') }}?v=8">
     <script src="{{ url_for('static', filename='js/ui-toggle.js') }}?v=1" defer></script>
     <!-- jQuery stays synchronous: inline body scripts call $() at parse time -->
     <script src="{{ url_for('static', filename='js/jquery-3.7.1.min.js') }}?v=1"></script>
@@ -44,10 +44,30 @@
     <script src="{{ url_for('static', filename='js/ui-utils.js') }}?v=1" defer></script>
     <script src="{{ url_for('static', filename='js/realtime.js') }}?v=1" defer></script>
     <script src="{{ url_for('static', filename='js/approval-modal.js') }}?v=2" defer></script>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18">
+    <script src="{{ url_for('static', filename='js/katex.min.js') }}?v=1" defer></script>
+    <script>
+    // Global KaTeX math renderer for markdown content.
+    // Used by inline scripts on agent_detail, sessions, history, etc.
+    function renderMathGlobal(html) {
+        if (typeof katex === 'undefined' || !html) return html || '';
+        try {
+            var codeBlocks = [];
+            var safe = html.replace(/<pre\b[^>]*>[\s\S]*?<\/pre>/gi, function (m) { codeBlocks.push(m); return '\x00CODE' + (codeBlocks.length - 1) + '\x00'; });
+            safe = safe.replace(/<code\b[^>]*>[\s\S]*?<\/code>/gi, function (m) { codeBlocks.push(m); return '\x00CODE' + (codeBlocks.length - 1) + '\x00'; });
+            safe = safe.replace(/\$\$([\s\S]*?)\$\$/g, function (m, f) { try { return katex.renderToString(f, {displayMode:true,throwOnError:false}); } catch(e) { return m; } });
+            safe = safe.replace(/(?<!\$)\$(?!\$)([\s\S]*?)(?<!\$)\$(?!\$)/g, function (m, f) { try { return katex.renderToString(f, {displayMode:false,throwOnError:false}); } catch(e) { return m; } });
+            safe = safe.replace(/\x00CODE(\d+)\x00/g, function (m, idx) { return codeBlocks[parseInt(idx,10)] || m; });
+            return safe;
+        } catch (e) {
+            return html;
+        }
+    }
+    </script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=21">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/recap-prose.css') }}?v=1">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/hljs-chat.css') }}?v=1">
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/agent-sidebar.css') }}?v=13">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/agent-sidebar.css') }}?v=14">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/katex.min.css') }}?v=1">
     <script>
     // CSRF double-submit: attach X-CSRF-Token header to all mutating same-origin requests
     (function() {
@@ -95,7 +115,7 @@
 <body>
     <header>
         <div class="header-inner">
-	    <div class="header-left-side flex w-auto m-auto gap-4">
+	    <div class="header-left-side flex w-auto gap-4">
 
             <button id="sidebar-toggle-btn" class="sidebar-toggle-btn" onclick="toggleSidebar()" aria-label="Toggle agent sidebar" title="Toggle agent sidebar">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15,18 9,12 15,6"/></svg>
@@ -118,7 +138,7 @@
             <nav>
                 {% if session.get('authenticated') %}
                 <a href="/" class="{{ 'nav-active' if request.path == '/' else '' }}">Dashboard</a>
-                <a href="/agents" class="{{ 'nav-active' if request.path.startswith('/agents') else '' }}">Agents</a>
+                <a href="/agents" class="{{ 'nav-active' if request.path.startswith('/agents') else '' }}">Agents<span id="wa-disconnect-badge" class="hidden ml-1 text-xs px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium" title="WhatsApp channels not connected">0</span></a>
                 <a href="/sessions" class="{{ 'nav-active' if request.path.startswith('/sessions') else '' }}">Sessions</a>
                 <a href="/evaluate" class="{{ 'nav-active' if request.path.startswith('/evaluate') else '' }}">Evaluation</a>
                 {% endif %}
@@ -147,6 +167,18 @@
                 <div id="ev-update-banner-actions" class="flex items-center shrink-0"></div>
             </div>
         </div>
+        <!-- WhatsApp disconnect warning banner (hidden by default) -->
+        <div id="wa-disconnect-banner" class="hidden bg-amber-50 border-b border-amber-200 text-gray-700">
+            <div class="max-w-[1600px] mx-auto px-4 py-2.5 flex items-center justify-between gap-3 text-sm">
+                <div class="flex items-center gap-2 min-w-0">
+                    <svg class="w-4 h-4 flex-shrink-0 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z"/></svg>
+                    <span id="wa-disconnect-banner-text"></span>
+                </div>
+                <button type="button" onclick="document.getElementById('wa-disconnect-banner').classList.add('hidden')" class="flex-shrink-0 p-1 rounded text-gray-500 hover:text-gray-800 hover:bg-amber-100 transition-colors text-lg leading-none" title="Dismiss" aria-label="Dismiss WhatsApp channel alert">&times;</button>
+            </div>
+        </div>
+        <!-- System alert banners (critical background errors) -->
+        <div id="ev-system-alerts"></div>
         <!-- Thin loading bar at the bottom edge of the navbar -->
         <div id="nav-progress-bar"></div>
     </header>
@@ -216,9 +248,75 @@
         </div>
     </div>
     <script src="{{ url_for('static', filename='js/update-banner.js') }}?v=2" defer></script>
+    <script src="{{ url_for('static', filename='js/system-alerts.js') }}?v=1" defer></script>
     <script src="{{ url_for('static', filename='js/agent-sidebar.js') }}?v=4" defer></script>
     <script src="{{ url_for('static', filename='js/evonic.js') }}?v=5" defer></script>
     <!-- Wrapped so the deferred agent-sidebar.js has defined initSidebar by DOMContentLoaded -->
     <script>document.addEventListener('DOMContentLoaded', function () { initSidebar(); });</script>
+    {% if session.get('authenticated') %}
+    <script>
+    // WhatsApp disconnect badge — derived from live bridge status, silent-fail
+    (function () {
+        var STATUS_LABELS = {disconnected: 'WA Disconnected', qr_pending: 'QR Pending'};
+        function esc(s) {
+            var d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+        function updateDisconnectBanner(agents) {
+            var banner = document.getElementById('wa-disconnect-banner');
+            if (!banner) return;
+            if (agents.length === 0) {
+                banner.classList.add('hidden');
+            } else {
+                var items = agents.map(function (a) {
+                    var agentId = String(a.id || '').replace(/^\/+|\/+$/g, '');
+                    var label = '<span class="font-semibold text-gray-800">' + esc(a.name) + '</span>';
+                    if (agentId) {
+                        var href = '/agents/' + encodeURIComponent(agentId);
+                        label = '<a href="' + href + '" class="font-semibold text-amber-700 hover:text-gray-900 underline transition-colors">' + esc(a.name) + '</a>';
+                    }
+                    return label + ' <span class="text-gray-500">(' + esc(STATUS_LABELS[a.status] || a.status) + ')</span>';
+                });
+                document.getElementById('wa-disconnect-banner-text').innerHTML =
+                    '<strong class="font-semibold text-gray-800">WhatsApp channel alert:</strong> ' + items.join(', ');
+                banner.classList.remove('hidden');
+            }
+        }
+        function updateWABadge() {
+            fetch('/api/whatsapp/disconnected-count')
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .then(function (data) {
+                    if (!data) return;
+                    var badge = document.getElementById('wa-disconnect-badge');
+                    window._waDisconnectedAgents = (data && data.agents) ? data.agents : [];
+                    if (badge) {
+                        if (data.count > 0) {
+                            badge.textContent = data.count;
+                            badge.classList.remove('hidden');
+                        } else {
+                            badge.classList.add('hidden');
+                        }
+                    }
+                    updateDisconnectBanner(window._waDisconnectedAgents);
+                })
+                .catch(function () {});
+        }
+        window.updateWABadge = updateWABadge;
+        document.addEventListener('DOMContentLoaded', function () {
+            updateWABadge();
+            setInterval(updateWABadge, 60000); // fallback when SSE is unavailable
+            var tries = 0;
+            (function bindRT() {
+                if (window._evRealtime) {
+                    window._evRealtime.on('status', 'whatsapp_bridge_status', updateWABadge);
+                } else if (++tries < 10) {
+                    setTimeout(bindRT, 1000);
+                }
+            })();
+        });
+    })();
+    </script>
+    {% endif %}
 </body>
 </html>

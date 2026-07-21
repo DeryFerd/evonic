@@ -1,0 +1,23 @@
+{
+  "id": "conv_digital_transform_en_5",
+  "name": "Digital Transformation Strategy (English)",
+  "description": "Test ability to provide complex strategic advice in English",
+  "prompt": "As a technology consultant, how would you advise a traditional company to adapt to digital transformation? Provide concrete examples for the retail sector.",
+  "expected": {
+    "keywords": [
+      "digital transformation",
+      "retail",
+      "technology",
+      "adaptation",
+      "example",
+      "online",
+      "omnichannel"
+    ],
+    "type": "strategic",
+    "language": "en"
+  },
+  "evaluator_id": "keyword",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

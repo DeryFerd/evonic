@@ -164,16 +164,49 @@ def _persist_agent_state_split(ms, agent_id, session_id, db_agent_id=None):
     existing.update(global_data)
     db.upsert_agent_state(json.dumps(existing), agent_id=agent_id)
 
-    # Per-session: everything except focus/focus_reason
-    session_data = {
+    # Per-session: everything except focus/focus_reason. Merge with existing so
+    # extra keys set by other components (e.g. active_workspace) are preserved.
+    existing_session_raw = db.get_session_state(session_id, agent_id=agent_id)
+    try:
+        session_data = json.loads(existing_session_raw) if existing_session_raw else {}
+    except (ValueError, TypeError):
+        session_data = {}
+    if not isinstance(session_data, dict):
+        session_data = {}
+    session_data.update({
         'mode': data.get('mode', 'plan'),
         'tasks': data.get('tasks', []),
         'next_task_id': data.get('next_task_id', 1),
         'plan_file': data.get('plan_file'),
         'states': data.get('states', {}),
         'auto_trivial': data.get('auto_trivial', False),
-    }
+        'atg': data.get('atg'),
+        'cmp': data.get('cmp'),
+    })
     db.upsert_session_state(session_id, json.dumps(session_data), agent_id=agent_id)
+
+
+def _persist_context_usage(session_id, agent_id, usage):
+    """Merge a 'context_usage' key into session_state.
+
+    Feeds the Session State panel's context monitor: usage comes from the
+    provider's reported token counts on the last successful LLM call.
+    Merge-write (like _persist_agent_state_split) so other keys survive.
+    """
+    raw = db.get_session_state(session_id, agent_id=agent_id)
+    try:
+        data = json.loads(raw) if raw else {}
+    except (ValueError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data['context_usage'] = usage
+    db.upsert_session_state(session_id, json.dumps(data), agent_id=agent_id)
+    # Notify the browser so the Session State panel's context bar updates live
+    # (forwarded to SSE as 'state_changed' — see routes/realtime.py _producer_chat).
+    from backend.event_stream import event_stream
+    event_stream.emit('evonic:agent-state-changed',
+                      {'agent_id': agent_id, 'session_id': session_id})
 from backend.tools import tool_registry
 from config import (AGENT_MAX_TOOL_ITERATIONS as MAX_TOOL_ITERATIONS,
                     AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS,
@@ -234,6 +267,19 @@ def run_tool_loop(agent: Dict[str, Any],
     channel_id = agent_context.get('channel_id')
 
     chatlog = chatlog_manager.get(db_agent_id, session_id)
+    # Ordinal of THIS turn (1-based): count prior completed turns before appending
+    # turn_begin for this one. Used for byte-exact LLM-call archiving and the
+    # sub-agent single-turn gate. Computed once per turn (one file scan), not per call.
+    _turn_index = chatlog.count_entries(frozenset({'turn_end'})) + 1
+    # Sub-agent identity for training-archive metadata (computed once per turn).
+    _is_subagent = bool(agent_context.get('is_subagent'))
+    if _is_subagent:
+        _id_parts = agent_id.rsplit('_', 2)
+        _agent_kind = _id_parts[1] if len(_id_parts) == 3 and _id_parts[2].isdigit() else 'sub'
+        _parent_agent_id = db_agent_id
+    else:
+        _agent_kind = 'main'
+        _parent_agent_id = None
     _loop_ts = int(time.time() * 1000)
     chatlog.append({'type': 'turn_begin', 'session_id': session_id, 'ts': _loop_ts})
     event_stream.emit('turn_begin', {'session_id': session_id, 'ts': _loop_ts})
@@ -324,6 +370,7 @@ def run_tool_loop(agent: Dict[str, Any],
     # Helper: build model_config dict from a model DB row
     def _build_model_config(_model: dict) -> dict:
         return {
+            'provider': _model.get('provider'),
             'base_url': _model.get('base_url'),
             'api_key': _model.get('api_key'),
             'model_name': _model.get('model_name'),
@@ -333,6 +380,7 @@ def run_tool_loop(agent: Dict[str, Any],
             'max_tokens': _model.get('max_tokens', 32768),
             'temperature': _model.get('temperature'),
             'vision_supported': bool(_model.get('vision_supported', False)),
+            'api_format': _model.get('api_format', 'openai'),
         }
 
     # Resolve agent's default model for LLM calls
@@ -419,6 +467,14 @@ def run_tool_loop(agent: Dict[str, Any],
 
     # Create LLMClient with resolved model config
     llm = LLMClient(model_config=agent_model_config) if agent_model_config else llm_client
+
+    # ATG: give the compile_task_graph builtin access to the resolved LLM.
+    # Compiler calls acquire llm_lock per call (same discipline as the main call).
+    if agent_context.get('enable_atg'):
+        agent_context['_atg_runtime'] = {
+            'llm': llm, 'llm_lock': llm_lock,
+            'llm_log_path': llm_log_path, 'tools': tools,
+        }
 
     # Resolve thinking budget: only active when explicitly set per-model (thinking_budget > 0).
     # Models with thinking_budget=0 have no cap — intended for large models that benefit
@@ -546,6 +602,64 @@ def run_tool_loop(agent: Dict[str, Any],
     # to avoid redundant DB reads in the loop iterations and tool result scans.
     _agent_ig_config = _get_agent_config_ig(agent_id)
 
+    # ── ATG branch point ──────────────────────────────────────────────────
+    # When the agent has a compiled task graph awaiting execution, run it
+    # first: the executor front-loads the tool work (parallel waves, per-node
+    # state) and hands a summary to this loop, whose next LLM call composes
+    # the final answer. Any failure degrades to the plain loop below —
+    # this block never replaces the loop's exit paths.
+    _atg_ms = agent_context.get('agent_state')
+    if (agent_context.get('enable_atg') and _atg_ms is not None
+            and not getattr(_atg_ms, 'auto_trivial', False)
+            and _atg_ms.mode == 'execute'
+            and isinstance(getattr(_atg_ms, 'atg', None), dict)
+            and _atg_ms.atg.get('status') in ('compiled', 'executing')):
+        _atg_outcome = None
+        try:
+            from backend.agent_runtime import atg as _atg_pkg
+            _atg_outcome = _atg_pkg.run_dag_execution(
+                agent=agent, agent_context=agent_context, ms=_atg_ms,
+                stop_event=stop_event, builtin_exec=builtin_exec,
+                real_exec=real_exec, chatlog=chatlog, tool_trace=tool_trace,
+                timeline=timeline, session_id=session_id,
+                persist_cb=lambda: _persist_agent_state_split(
+                    _atg_ms, agent_id, session_id, db_agent_id))
+        except Exception:
+            _logger.exception("ATG execution crashed — falling back to plain loop")
+        if _atg_outcome is not None:
+            try:
+                _persist_agent_state_split(_atg_ms, agent_id, session_id, db_agent_id)
+            except Exception:
+                _logger.exception("ATG state persist failed")
+            if _atg_outcome.stopped:
+                stop_event.clear()
+                _logger.info("Stop signal received during ATG execution for session %s", session_id)
+                stop_msg = "Agent stopped by user request."
+                _atg_stop_dur = round(time.time() - _loop_start_time, 1)
+                db.add_chat_message(session_id, 'assistant', stop_msg, agent_id=db_agent_id,
+                                    metadata={"timeline": timeline, "stopped": True,
+                                              "thinking_duration": _atg_stop_dur})
+                chatlog.append({'type': 'final', 'session_id': session_id, 'content': stop_msg,
+                                'metadata': {'stopped': True, 'thinking_duration': _atg_stop_dur}})
+                chatlog.append({'type': 'turn_end', 'session_id': session_id,
+                                'thinking_duration': _atg_stop_dur})
+                event_stream.emit('final_answer', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'answer': stop_msg, 'tool_trace': tool_trace, 'timeline': timeline,
+                })
+                return stop_msg, tool_trace, timeline
+            if _atg_outcome.summary_for_llm:
+                # user role with [SYSTEM] prefix (same pattern as force-stop
+                # injection): strict chat templates (e.g. evomodel on llama.cpp)
+                # reject system messages that are not in leading position.
+                messages.append({"role": "user",
+                                 "content": "[SYSTEM] " + _atg_outcome.summary_for_llm})
+            # Stats land in the final assistant message metadata (timeline) so
+            # A/B evaluation and the UI can read per-run ATG figures.
+            timeline.append({"type": "atg_stats", "status": _atg_outcome.status,
+                             **_atg_outcome.stats})
+
     while _iteration < max_tool_iterations:
         _llm_call_count += 1
         # Hard cap on total LLM API calls (safety net for non-tool loops like
@@ -593,7 +707,12 @@ def run_tool_loop(agent: Dict[str, Any],
         # Inject / update mental state system message before each LLM call
         ms = agent_context.get('agent_state')
         if ms is not None:
-            state_msg = {"role": "system", "content": ms.render(agent_id=agent_id)}
+            state_msg = {"role": "system",
+                         "content": ms.render(agent_id=agent_id,
+                                              atg_enabled=bool(agent_context.get('enable_atg')),
+                                              cmp_enabled=bool(agent_context.get('enable_cmp')),
+                                              agent_name=agent_context.get('agent_name')
+                                                         or agent_context.get('name'))}
             state_idx = next(
                 (i for i, m in enumerate(messages)
                  if m.get('role') == 'system' and '## Agent State' in m.get('content', '')),
@@ -740,7 +859,9 @@ def run_tool_loop(agent: Dict[str, Any],
                 # If a fallback model is configured, only retry once then fall through
                 # to fallback logic (line ~573+). Without fallback: retry as usual.
                 if not _has_fallback or timeout_retries < 1:
-                    wait = min(2 ** timeout_retries, 30)
+                    # connection_error = server down; exponential backoff won't
+                    # revive it — keep the wait short so errors surface fast.
+                    wait = 2 if error_type == 'connection_error' else min(2 ** timeout_retries, 30)
                     _logger.warning("%s — auto-retry %d/%d in %ds", error_type, timeout_retries, max_timeout_retries, wait)
                     user_msg = f"Model is busy, retrying... ({timeout_retries}/{max_timeout_retries})"
                     event_stream.emit('llm_retry', {
@@ -906,6 +1027,13 @@ def run_tool_loop(agent: Dict[str, Any],
                 # last-ditch attempt.  Keep system messages + last N
                 # conversation messages.  Better than losing the entire
                 # session context.
+                event_stream.emit('llm_retry', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'retry_count': 0, 'max_retries': 1,
+                    'error_type': 'context_compaction',
+                    'user_message': 'Compaction did not reduce enough. Trying fallback truncation...',
+                })
                 _sys_msgs = [m for m in messages if m.get('role') == 'system']
                 _conv_msgs = [m for m in messages if m.get('role') != 'system']
                 _keep_n = 6
@@ -923,8 +1051,31 @@ def run_tool_loop(agent: Dict[str, Any],
                         "%d -> %d messages", session_id,
                         len(_sys_msgs) + len(_conv_msgs), len(_truncated))
                     continue
-                # Dumb truncation was a no-op (too few messages) — fall through
+                # Dumb truncation was a no-op (too few messages) — retry primary one more time
+                try:
+                    with llm_lock:
+                        result = llm.chat_completion(
+                            messages=messages,
+                            tools=tools if tools else None,
+                            temperature=None,
+                            enable_thinking=_enable_thinking_this_call,
+                            max_tokens=None,
+                            log_file=llm_log_path
+                        )
+                    if result.get('success'):
+                        continue
+                except Exception:
+                    pass
+                # Retry failed — fall through to fallback
 
+            if _compaction_attempted:
+                event_stream.emit('llm_retry', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id, 'channel_id': channel_id,
+                    'retry_count': 0, 'max_retries': 1,
+                    'error_type': 'context_compaction',
+                    'user_message': 'Primary model still unable to process after compaction. Switching to fallback model...',
+                })
             # ── Per-agent model fallback ──────────────────────────────────
             # After all retries to the primary model fail, attempt the
             # agent's configured fallback model (if any) before giving up.
@@ -942,6 +1093,7 @@ def run_tool_loop(agent: Dict[str, Any],
                     'primary_error': error_type,
                     'fallback_model': _fallback_model.get('name'),
                     'restored_from_state': False,
+                    'user_message': 'Primary model failed. Switching to fallback model...',
                 })
                 try:
                     _fallback_config = _build_model_config(_fallback_model)
@@ -1068,6 +1220,70 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
                 return {"text": error_msg, "error": True}, tool_trace, timeline
 
+        # --- Archive byte-exact LLM I/O for training (ground truth) ---
+        # `result` is now finalized (post-fallback, guaranteed success). Persist the
+        # exact request payload the provider received and its raw response (incl.
+        # CoT/reasoning_content and tool_calls). One record per API call/iteration.
+        import config as _config
+        if _config.SESSION_ARCHIVE:
+            try:
+                from models.llm_trace import llm_trace_manager
+                _resp = result.get('response') or {}
+                _req = result.get('request_payload')
+                _fr = None
+                _ch = _resp.get('choices') if isinstance(_resp, dict) else None
+                if _ch:
+                    _fr = _ch[0].get('finish_reason')
+                llm_trace_manager.get(db_agent_id, session_id).append({
+                    'ts': int(time.time() * 1000),
+                    'session_id': session_id,
+                    'agent_id': agent_id,
+                    'agent_kind': _agent_kind,
+                    'parent_agent_id': _parent_agent_id,
+                    'turn_index': _turn_index,
+                    'model': (_req or {}).get('model'),
+                    'request': _req,
+                    'response': _resp,
+                    'usage': {
+                        'prompt_tokens': result.get('prompt_tokens'),
+                        'completion_tokens': result.get('completion_tokens'),
+                        'total_tokens': result.get('total_tokens'),
+                    },
+                    'finish_reason': _fr,
+                    'duration_ms': result.get('duration_ms'),
+                })
+            except Exception:
+                _logger.exception("LLM-trace archive failed (session=%s)", session_id)
+
+        # Context monitor: remember the size of the last successful call so the
+        # Session State panel can show context usage vs the model's window.
+        # When the provider omits usage (e.g. the Codex Responses endpoint
+        # returns none), estimate prompt tokens locally from the exact
+        # messages+tools we sent — otherwise the meter freezes at the last
+        # reading forever (guarded on prompt_tokens > 0).
+        _cu_prompt = result.get('prompt_tokens') or 0
+        _cu_estimated = False
+        if _cu_prompt <= 0:
+            try:
+                from backend.llm_usage_events import estimate_context_tokens
+                _cu_prompt = estimate_context_tokens(messages, tools)
+                _cu_estimated = True
+            except Exception:
+                _cu_prompt = 0
+        if _cu_prompt > 0:
+            try:
+                _cu_completion = result.get('completion_tokens') or 0
+                _persist_context_usage(session_id, agent_id, {
+                    'prompt_tokens': _cu_prompt,
+                    'completion_tokens': _cu_completion,
+                    'total_tokens': result.get('total_tokens') or (_cu_prompt + _cu_completion),
+                    'model': (result.get('request_payload') or {}).get('model'),
+                    'estimated': _cu_estimated,
+                    'ts': int(time.time()),
+                })
+            except Exception:
+                _logger.exception("context-usage persist failed (session=%s)", session_id)
+
         choice = result['response'].get('choices', [{}])[0]
         msg = choice.get('message', {})
         raw_content = msg.get('content', '')
@@ -1120,6 +1336,15 @@ def run_tool_loop(agent: Dict[str, Any],
             # Recover final response embedded after </think> in reasoning_content
             if not content and embedded_final_in_reasoning:
                 content = embedded_final_in_reasoning
+            # Fallback: when content is empty and the model put its entire response
+            # in reasoning_content (e.g. Qwen models via llama.cpp), treat reasoning_text
+            # as the actual response content.
+            # BUT: if reasoning_text contains XML tool calls (Qwen/Gemma4 format),
+            # don't steal it — the CoT parser below handles those (line 1387+).
+            if not content and not embedded_final_in_reasoning and not tool_calls:
+                if '<tool_call>' not in reasoning_text and '<|tool_call>' not in reasoning_text:
+                    content = reasoning_text
+                    reasoning_text = ''
             event_stream.emit('llm_thinking', {
                 'agent_id': agent_id, 'session_id': session_id,
                 'external_user_id': external_user_id, 'channel_id': channel_id,
@@ -1338,6 +1563,24 @@ def run_tool_loop(agent: Dict[str, Any],
             chatlog.append({'type': 'final', 'session_id': session_id, 'content': _display_content,
                             'metadata': _cl_meta})
             chatlog.append({'type': 'turn_end', 'session_id': session_id, 'thinking_duration': _final_dur})
+            # Archive sub-agent session at turn-end — single-turn only. Explorer &
+            # kb-organizer are single-shot, so they archive on completion (no need to
+            # wait for parent /clear). If the sub-agent runs a 2nd turn its turns may
+            # be unrelated, so cancel the tentative turn-1 archive → multi-turn
+            # sub-agents leave nothing.
+            if _is_subagent:
+                import config as _config
+                if _config.SESSION_ARCHIVE:
+                    try:
+                        from models.session_archive import SessionArchiver
+                        if _turn_index == 1:
+                            SessionArchiver.archive_session(
+                                db_agent_id, session_id,
+                                agent_kind=_agent_kind, parent_agent_id=_parent_agent_id)
+                        else:
+                            SessionArchiver.delete_for_session(session_id)
+                    except Exception:
+                        _logger.exception("Sub-agent archive failed (session=%s)", session_id)
             # Persist mental state for next turn
             ms = agent_context.get('agent_state')
             if ms is not None:
@@ -1512,6 +1755,32 @@ def run_tool_loop(agent: Dict[str, Any],
 
         # Phase 3: Process each tool in original order.
         for i, (_tc, fn_name, args, _pt) in enumerate(_tool_records):
+            # --- Stop fast path ---
+            # If /stop landed mid-batch, don't execute the remaining tool calls.
+            # Emit a synthetic "stopped" result for each so the assistant's
+            # tool_calls stay paired with tool responses (provider requires it);
+            # Check B after this loop then ends the turn cleanly.
+            if stop_event.is_set() and i not in _parse_failed:
+                result_str = json.dumps({'error': 'Execution stopped by user'})
+                db.add_chat_message(session_id, 'tool', result_str,
+                                    tool_call_id=_tc['id'], agent_id=db_agent_id)
+                chatlog.append({'type': 'tool_output', 'session_id': session_id,
+                                'content': result_str,
+                                'tool_call_id': _tc['id'], 'error': True,
+                                'function': fn_name})
+                messages.append({"role": "tool", "tool_call_id": _tc['id'],
+                                 "content": result_str})
+                timeline.append({"type": "tool_result", "tool": fn_name,
+                                 "error": True})
+                event_stream.emit('tool_executed', {
+                    'agent_id': agent_id, 'session_id': session_id,
+                    'external_user_id': external_user_id,
+                    'channel_id': channel_id,
+                    'tool_name': fn_name, 'tool_args': {},
+                    'tool_result': {'error': True}, 'has_error': True,
+                })
+                continue
+
             # --- Parse-failure fast path ---
             if i in _parse_failed:
                 result_str = _parse_failed[i]
@@ -1564,6 +1833,24 @@ def run_tool_loop(agent: Dict[str, Any],
                 from backend.agent_runtime.approval import approval_registry
                 APPROVAL_TIMEOUT = 300  # 5 minutes
 
+                # API consumers (AgentAPI plugin) have no human to approve.
+                # Auto-reject immediately to prevent sessions from hanging.
+                if external_user_id and external_user_id.startswith('api:'):
+                    _logger.info(
+                        "approval auto-rejected for API session %s (agent=%s tool=%s)",
+                        session_id, agent_id, fn_name,
+                    )
+                    tool_result = {
+                        'error': 'Tool execution rejected: API consumers cannot approve tool calls.',
+                        'level': 'rejected',
+                        'original_reasons': tool_result.get('reasons', []),
+                    }
+                    # Record the auto-rejection as a completed tool_call result
+                    _tc_result = {_tc['id']: tool_result}
+                    messages.append({'role': 'tool', 'tool_call_id': _tc['id'],
+                                     'content': json.dumps(tool_result)})
+                    continue
+
                 pending = approval_registry.create(
                     session_id=session_id,
                     agent_id=agent_id,
@@ -1572,6 +1859,24 @@ def run_tool_loop(agent: Dict[str, Any],
                     tool_args=args,
                     safety_result=tool_result,
                 )
+
+                # Persist to DB so reconnecting SSE clients can retrieve
+                # the pending approval via _build_snapshot().
+                try:
+                    db.store_pending_tool_approval(
+                        approval_id=pending.approval_id,
+                        session_id=session_id,
+                        agent_id=agent_id,
+                        tool_name=fn_name,
+                        tool_args=args,
+                        approval_info=tool_result.get('approval_info', {}),
+                        reasons=tool_result.get('reasons', []),
+                        score=tool_result.get('score'),
+                        source_agent_id=agent_id,
+                        source_agent_name=agent.get('name', agent_id),
+                    )
+                except Exception:
+                    pass  # Non-critical — snapshot will miss this approval but SSE still works
 
                 event_stream.emit('approval_required', {
                     'agent_id': agent_id, 'session_id': session_id,
@@ -1586,72 +1891,83 @@ def run_tool_loop(agent: Dict[str, Any],
                 })
 
                 # Escalation: ensure a human can see the approval.
-                # For inter-agent sessions, the current session has no human viewer —
-                # always escalate to the agent's own human session or the super agent.
-                # For direct sessions, escalate only if no web/channel listener.
+                # We always fan-out to BOTH web SSE AND messaging channels,
+                # because has_web_listener() is unreliable — it only checks
+                # listener registration, not actual SSE delivery. If SSE
+                # disconnects and reconnects, the approval event may already
+                # be gone from the ring buffer. Web SSE delivers the approval
+                # modal in the browser; messaging channels deliver a fallback
+                # notification via Telegram/WhatsApp.
                 # List of (session_id, external_user_id, channel_id) that received
                 # approval_required — used to fan-out approval_resolved to all of them.
                 _escalation_targets: list = []
-                _is_inter_agent = bool(external_user_id and external_user_id.startswith('__agent__'))
                 try:
                     from backend.channels.registry import channel_manager
                     from backend.agent_runtime.notifier import _resolve_agent_target
-                    if _is_inter_agent:
-                        _needs_escalation = True
-                    else:
-                        _agent_has_channel = any(
-                            ch['id'] in channel_manager._active
-                            for ch in db.get_channels(agent_id)
+
+                    _approval_event_payload = {
+                        'agent_id': agent_id,
+                        'approval_id': pending.approval_id,
+                        'tool_name': fn_name,
+                        'tool_args': args,
+                        'approval_info': tool_result.get('approval_info', {}),
+                        'reasons': tool_result.get('reasons', []),
+                        'score': tool_result.get('score'),
+                        'source_agent_id': agent_id,
+                        'source_agent_name': agent.get('name', agent_id),
+                    }
+
+                    # Web UI: always emit to the agent's most-recent human
+                    # session so the approval modal appears in the browser.
+                    _human_session = db.get_latest_human_session(agent_id)
+                    _human_session_id = _human_session.get('id') if _human_session else None
+                    if _human_session_id:
+                        _web_uid = _human_session.get('external_user_id', '')
+                        _web_cid = _human_session.get('channel_id')
+                        event_stream.emit('approval_required', {
+                            **_approval_event_payload,
+                            'session_id': _human_session_id,
+                            'external_user_id': _web_uid,
+                            'channel_id': _web_cid,
+                        })
+                        _escalation_targets.append((_human_session_id, _web_uid, _web_cid))
+
+                    # Channel (Telegram/WhatsApp): always notify via the super
+                    # agent's messaging channel as a fallback. We no longer gate
+                    # this behind has_web_listener() because the registration
+                    # may exist while the SSE connection is not delivering.
+
+                    # Verify web SSE delivery with heartbeat-aware check.
+                    # has_web_listener() only confirms a callback is registered;
+                    # this confirms the SSE connection is actually sending heartbeats.
+                    _web_sse_active = False
+                    try:
+                        from routes.realtime import has_active_web_sse
+                        _web_sse_active = (
+                            has_active_web_sse(session_id) or
+                            (_human_session_id and has_active_web_sse(_human_session_id))
                         )
-                        _web_is_watching = event_stream.has_web_listener(session_id)
-                        _needs_escalation = not _agent_has_channel and not _web_is_watching
+                    except Exception:
+                        pass  # routes.realtime may not be importable in all contexts
 
-                    if _needs_escalation:
-                        _approval_event_payload = {
-                            'agent_id': agent_id,
-                            'approval_id': pending.approval_id,
-                            'tool_name': fn_name,
-                            'tool_args': args,
-                            'approval_info': tool_result.get('approval_info', {}),
-                            'reasons': tool_result.get('reasons', []),
-                            'score': tool_result.get('score'),
-                            'source_agent_id': agent_id,
-                            'source_agent_name': agent.get('name', agent_id),
-                        }
-
-                        # Web UI: emit to the agent's most-recent human session so the
-                        # approval modal appears in the browser (sessions.html handles this).
-                        _human_session = db.get_latest_human_session(agent_id)
-                        _human_session_id = _human_session.get('id') if _human_session else None
-                        if _human_session_id:
-                            _web_uid = _human_session.get('external_user_id', '')
-                            _web_cid = _human_session.get('channel_id')
+                    if not _web_sse_active:
+                        _logger.info(
+                            "approval %s: web SSE appears inactive for session %s "
+                            "(heartbeat not received within window) — relying on "
+                            "messaging channel fallback",
+                            pending.approval_id, session_id,
+                        )
+                    _super = db.get_super_agent()
+                    if _super and _super['id'] != agent_id:
+                        _su_uid, _su_cid = _resolve_agent_target(_super['id'])
+                        if _su_uid and _su_cid:
                             event_stream.emit('approval_required', {
                                 **_approval_event_payload,
-                                'session_id': _human_session_id,
-                                'external_user_id': _web_uid,
-                                'channel_id': _web_cid,
+                                'session_id': session_id,
+                                'external_user_id': _su_uid,
+                                'channel_id': _su_cid,
                             })
-                            _escalation_targets.append((_human_session_id, _web_uid, _web_cid))
-
-                        # Channel (Telegram / any active channel): always notify for
-                        # inter-agent sessions. For direct sessions, only if no web listener.
-                        _has_human_listener = bool(
-                            _human_session_id and event_stream.has_web_listener(_human_session_id)
-                        )
-                        _try_channel_escalation = _is_inter_agent or not _has_human_listener
-                        if _try_channel_escalation:
-                            _super = db.get_super_agent()
-                            if _super and _super['id'] != agent_id:
-                                _su_uid, _su_cid = _resolve_agent_target(_super['id'])
-                                if _su_uid and _su_cid:
-                                    event_stream.emit('approval_required', {
-                                        **_approval_event_payload,
-                                        'session_id': session_id,
-                                        'external_user_id': _su_uid,
-                                        'channel_id': _su_cid,
-                                    })
-                                    _escalation_targets.append((session_id, _su_uid, _su_cid))
+                            _escalation_targets.append((session_id, _su_uid, _su_cid))
                 except Exception:
                     pass  # Never block approval flow due to escalation failure
 
@@ -1692,6 +2008,10 @@ def run_tool_loop(agent: Dict[str, Any],
                         'timed_out': timed_out,
                     })
                 approval_registry.remove(pending.approval_id)
+                try:
+                    db.delete_pending_tool_approval(pending.approval_id)
+                except Exception:
+                    pass  # Non-critical — stale entry will age out on next create
 
                 if decision == 'approve':
                     # Re-execute bypassing safety check
@@ -1710,6 +2030,10 @@ def run_tool_loop(agent: Dict[str, Any],
                         'original_reasons': pending.safety_result.get('reasons', []),
                     }
 
+            # Track lazy-skill state changes and publish their snapshot only after
+            # tool_executed, preserving chat-stream ordering for the browser.
+            _skill_state_changed = False
+
             # Lazy tool injection: use_skill returned tool defs to inject mid-turn
             if fn_name == 'use_skill' and isinstance(tool_result, dict) and 'inject_tools' in tool_result:
                 injected = tool_result.pop('inject_tools')
@@ -1725,6 +2049,7 @@ def run_tool_loop(agent: Dict[str, Any],
                     session_skill_tools.setdefault(session_id, {})[loaded_sid] = [
                         t for t in tools if t.get('function', {}).get('name', '') in set(injected_fns)
                     ]
+                    _skill_state_changed = True
                     event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
                 # Add injected tool IDs to assigned_tool_ids for authorization guard
                 _assigned = agent_context.get('assigned_tool_ids')
@@ -1742,6 +2067,7 @@ def run_tool_loop(agent: Dict[str, Any],
                 if loaded_sid:
                     _skill_system_mds[loaded_sid] = tool_result['system_md']
                     session_skill_mds.setdefault(session_id, {})[loaded_sid] = tool_result['system_md']
+                    _skill_state_changed = True
                     event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
 
             # Lazy tool removal: unload_skill removes injected tools from context
@@ -1767,6 +2093,7 @@ def run_tool_loop(agent: Dict[str, Any],
                 unload_sid = tool_result.get('id', '')
                 _skill_system_mds.pop(unload_sid, None)
                 session_skill_mds.get(session_id, {}).pop(unload_sid, None)
+                _skill_state_changed = bool(unload_sid)
                 event_stream.emit('evonic:agent-state-changed', {'agent_id': agent_id, 'session_id': session_id})
 
             # ── Layer B: Tool Result Scanner (post-execution injection scan) ──
@@ -1839,6 +2166,27 @@ def run_tool_loop(agent: Dict[str, Any],
                 _rtk_failed = True
                 compressed_str = result_str
 
+            # --- Base64 blob filtering ---
+            # Strips long base64 sequences (images, PDFs, binary data) from ALL
+            # tool outputs before injection into LLM context.  This is a universal
+            # pass that runs regardless of whether a TOML filter matched.
+            # The full base64 data remains in result_str (DB + chatlog + timeline).
+            try:
+                from backend.token_compressor.base64_filter import strip_base64_blobs
+                _before_b64 = len(compressed_str)
+                compressed_str = strip_base64_blobs(compressed_str)
+                _after_b64 = len(compressed_str)
+                if _before_b64 != _after_b64:
+                    _logger.info(
+                        "base64_filter: %r saved %d chars",
+                        fn_name, _before_b64 - _after_b64,
+                    )
+            except Exception:
+                _logger.warning(
+                    "base64_filter failed for %r — skipping",
+                    fn_name, exc_info=True,
+                )
+
             # --- Hard truncation safety net ---
             # Runs even when RTK succeeded but returned uncompressed oversized
             # output (e.g. no filter matched).  This is the final backstop
@@ -1873,11 +2221,32 @@ def run_tool_loop(agent: Dict[str, Any],
                 'tool_result': result_dict, 'has_error': has_error,
             })
 
-            # Persist agent state immediately for state-changing built-in tools
-            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state'):
+            # Persist agent state immediately for state-changing built-in tools, then
+            # push the fresh per-session snapshot. event_stream.emit only mutates its
+            # in-memory buffers here; listener work is delegated to its executor.
+            if fn_name in ('save_plan', 'set_mode', 'update_tasks', 'state',
+                           'compile_task_graph', 'switch_path', 'new_path'):
                 _ms = agent_context.get('agent_state')
                 if _ms is not None:
                     _persist_agent_state_split(_ms, agent_id, session_id, db_agent_id)
+                    event_stream.emit('state:changed', {
+                        'agent_id': agent_id,
+                        'session_id': session_id,
+                        'mode': _ms.mode,
+                        'plan_file': _ms.plan_file,
+                        'tasks': list(_ms.tasks),
+                    })
+
+            if _skill_state_changed:
+                loaded_skills = sorted(
+                    set(session_skill_tools.get(session_id, {})) |
+                    set(session_skill_mds.get(session_id, {}))
+                )
+                event_stream.emit('state:changed', {
+                    'agent_id': agent_id,
+                    'session_id': session_id,
+                    'loaded_skills': loaded_skills,
+                })
 
             # Record in trace (for animated bubbles)
             tool_trace.append({"tool": fn_name, "args": args, "result": result_dict})

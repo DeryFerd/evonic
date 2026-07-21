@@ -1,0 +1,22 @@
+{
+  "id": "kb_update_place_1",
+  "name": "Update existing place",
+  "description": "New info about an already-known subject must be an update, not a duplicate.",
+  "prompt": "EXISTING documents:\n[jakarta] Jakarta :: Capital of Indonesia; User's home city.\n\nSOURCE:\nUser membuka kantor cabang baru perusahaannya di Jakarta tahun ini.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "update": [
+        {
+          "title": "Jakarta",
+          "type": "place",
+          "slug": "jakarta"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

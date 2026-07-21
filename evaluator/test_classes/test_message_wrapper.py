@@ -159,7 +159,7 @@ class TestApplyWrapperPrefix:
         """Wrapper prefix is always in English regardless of user language."""
         assert 'Preference check' in WRAPPER_PREFIX
         assert 'remember()' in WRAPPER_PREFIX
-        assert 'notes.md' in WRAPPER_PREFIX
+        assert 'notes.md' not in WRAPPER_PREFIX
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +251,7 @@ class TestBuildStaticPrompt:
         assert 'Message Wrapper Protocol' in result
         assert 'Scan the message for any new preference' in result
         assert 'remember()' in result
-        assert 'notes.md' in result
+        assert 'SYSTEM.md' in result
 
     def test_super_agent_also_gets_protocol(self):
         """Super agents also get the protocol section."""

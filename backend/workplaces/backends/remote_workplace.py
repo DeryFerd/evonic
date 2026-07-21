@@ -53,9 +53,9 @@ class RemoteWorkplaceBackend(ExecutionBackend):
             return f"cd '{escaped}' && "
         return ''
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
         prefixed = self._cwd_prefix() + script if self._workspace else script
-        return self._ssh.run_bash(prefixed, timeout, env)
+        return self._ssh.run_bash(prefixed, timeout, env, on_output=on_output)
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
         # Ensure evonic helpers are available on the remote (lazy upload on first call)

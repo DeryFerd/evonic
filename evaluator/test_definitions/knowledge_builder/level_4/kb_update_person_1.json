@@ -1,0 +1,22 @@
+{
+  "id": "kb_update_person_1",
+  "name": "Update existing person",
+  "description": "A new fact about a known person updates that doc by slug.",
+  "prompt": "EXISTING documents:\n[budi] Budi :: Backend engineer at Nuwaira.\n\nSOURCE:\nBudi baru saja dipromosikan menjadi engineering lead di Nuwaira.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "update": [
+        {
+          "title": "Budi",
+          "type": "person",
+          "slug": "budi"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

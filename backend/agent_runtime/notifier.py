@@ -37,8 +37,9 @@ def notify_agent(agent_id: str, tag: str, message: str,
         external_user_id: Explicit routing — the user ID for the target session.
                           If omitted, auto-resolved from the agent's most recent session.
         channel_id: Explicit routing — the channel UUID. If omitted, auto-resolved.
-        session_id: If provided, use this session directly (bypasses routing
-                    resolution). Takes precedence over external_user_id/channel_id.
+        session_id: If provided, target this existing session after validating
+                    that it belongs to the target agent. Takes precedence over
+                    external_user_id/channel_id.
         dedup: If True, skip sending if an identical message already exists in
                the last `dedup_window` messages of the session. Default True.
         dedup_window: Number of recent messages to check for duplicates. Default 5.
@@ -51,7 +52,9 @@ def notify_agent(agent_id: str, tag: str, message: str,
         dict with keys:
           - success (bool)
           - session_id (str or None)
-          - reason (str or None): "deduplicated", "no_route", "error", or None on success
+          - reason (str or None): failure reason, or None on success
+          - route (str): "direct", "web_fallback", or "system_fallback"
+          - fallback_reason (str or None): why a fallback route was selected
     """
     full_message = f"[{tag}] {message}"
 
@@ -65,51 +68,87 @@ def notify_agent(agent_id: str, tag: str, message: str,
     except Exception:
         pass
 
-    # Resolve routing only when session_id is not provided
-    if session_id:
-        pass  # Use the provided session_id directly below
-    else:
-        if not external_user_id:
-            resolved_uid, resolved_cid = _resolve_agent_target(_db_agent_id, channel_type)
-            if not resolved_uid:
-                # Only apply fallback if no explicit routing was provided
-                if external_user_id is None:
-                    _logger.warning(
-                        "notify_agent: no active channel session for agent '%s' "
-                        "(channel_type=%s), falling back to web session.",
-                        agent_id, channel_type,
-                    )
-                    external_user_id = f"__system__{agent_id}"
-                    channel_id = None
-            else:
-                external_user_id = resolved_uid
-                channel_id = channel_id or resolved_cid
-
-    _logger.info(
-        "notify_agent: agent=%s tag=%s trigger_llm=%s external_user_id=%s "
-        "channel_id=%s session_id=%s dedup=%s.",
-        agent_id, tag, trigger_llm, external_user_id or 'auto',
-        channel_id or 'none', session_id or 'auto', dedup,
-    )
+    fallback_reason = None
+    route_kind = 'direct'
 
     try:
         if session_id:
-            # Validate session exists and extract its external_user_id / channel_id
-            # Uses get_session_with_details for cross-agent lookup (per-agent DBs)
+            # Session IDs are global lookup keys, so validate ownership at this
+            # central boundary before using any routing data from the session.
             session_info = db.get_session_with_details(session_id)
             if not session_info:
                 _logger.warning(
                     "notify_agent: provided session_id '%s' not found for agent '%s'.",
                     session_id, agent_id,
                 )
-                return {"success": False, "session_id": None, "reason": "error"}
+                return {"success": False, "session_id": None, "reason": "session_not_found"}
+            if session_info.get('agent_id') != agent_id:
+                _logger.warning(
+                    "notify_agent: rejected session '%s' owned by '%s' for target agent '%s'.",
+                    session_id, session_info.get('agent_id') or 'unknown', agent_id,
+                )
+                return {"success": False, "session_id": None, "reason": "session_owner_mismatch"}
+
             external_user_id = session_info.get('external_user_id')
             channel_id = session_info.get('channel_id')
             target_session_id = session_id
+
+            if channel_id and not _is_channel_route_available(channel_id, agent_id):
+                fallback_reason = 'inactive_channel'
+                fallback = _resolve_web_fallback(agent_id, exclude_session_id=session_id)
+                if not fallback:
+                    _logger.warning(
+                        "notify_agent: inactive channel '%s' for session '%s' and agent '%s'; "
+                        "no safe web fallback is available.",
+                        channel_id, session_id, agent_id,
+                    )
+                    return {
+                        "success": False,
+                        "session_id": None,
+                        "reason": "inactive_channel_no_fallback",
+                    }
+                target_session_id = fallback['id']
+                external_user_id = fallback['external_user_id']
+                channel_id = None
+                route_kind = 'web_fallback'
         else:
-            target_session_id = db.get_or_create_session(
-                agent_id, external_user_id, channel_id,
-                db_agent_id=_db_agent_id)
+            explicit_route = external_user_id is not None or channel_id is not None
+            if not external_user_id:
+                resolved_uid, resolved_cid = _resolve_agent_target(_db_agent_id, channel_type)
+                if resolved_uid:
+                    external_user_id = resolved_uid
+                    channel_id = channel_id or resolved_cid
+                elif not explicit_route:
+                    # Preserve system-notification behavior when the caller did
+                    # not request a particular human/external route.
+                    external_user_id = f"__system__{agent_id}"
+                    channel_id = None
+                    route_kind = 'system_fallback'
+
+            if channel_id and not _is_channel_route_available(channel_id, agent_id):
+                fallback_reason = 'inactive_channel'
+                fallback = _resolve_web_fallback(agent_id)
+                if not fallback:
+                    _logger.warning(
+                        "notify_agent: requested channel '%s' for agent '%s' is inactive; "
+                        "no safe web fallback is available.",
+                        channel_id, agent_id,
+                    )
+                    return {
+                        "success": False,
+                        "session_id": None,
+                        "reason": "inactive_channel_no_fallback",
+                    }
+                target_session_id = fallback['id']
+                external_user_id = fallback['external_user_id']
+                channel_id = None
+                route_kind = 'web_fallback'
+            else:
+                if not external_user_id:
+                    return {"success": False, "session_id": None, "reason": "no_route"}
+                target_session_id = db.get_or_create_session(
+                    agent_id, external_user_id, channel_id,
+                    db_agent_id=_db_agent_id)
     except Exception as e:
         _logger.error(
             "notify_agent: failed to get/create session for agent '%s' "
@@ -119,8 +158,9 @@ def notify_agent(agent_id: str, tag: str, message: str,
         return {"success": False, "session_id": None, "reason": "error"}
 
     _logger.info(
-        "notify_agent: resolved target_session_id='%s' for agent='%s'.",
-        target_session_id, agent_id,
+        "notify_agent: resolved target_session_id='%s' for agent='%s' "
+        "(route=%s, fallback_reason=%s).",
+        target_session_id, agent_id, route_kind, fallback_reason or 'none',
     )
 
     # Deduplication check
@@ -130,7 +170,13 @@ def notify_agent(agent_id: str, tag: str, message: str,
             "in session '%s'.",
             tag, agent_id, target_session_id,
         )
-        return {"success": False, "session_id": target_session_id, "reason": "deduplicated"}
+        return {
+            "success": False,
+            "session_id": target_session_id,
+            "reason": "deduplicated",
+            "route": route_kind,
+            "fallback_reason": fallback_reason,
+        }
 
     try:
         if trigger_llm:
@@ -166,7 +212,42 @@ def notify_agent(agent_id: str, tag: str, message: str,
         )
         return {"success": False, "session_id": target_session_id, "reason": "error"}
 
-    return {"success": True, "session_id": target_session_id, "reason": None}
+    return {
+        "success": True,
+        "session_id": target_session_id,
+        "reason": None,
+        "route": route_kind,
+        "fallback_reason": fallback_reason,
+    }
+
+
+def _resolve_web_fallback(agent_id: str, exclude_session_id: str = None):
+    """Return an existing channel-less human web session owned by agent_id."""
+    fallback = db.get_web_fallback_session(
+        agent_id, exclude_session_id=exclude_session_id)
+    if not fallback:
+        return None
+
+    external_user_id = fallback.get('external_user_id') or ''
+    is_internal = external_user_id.startswith(
+        ('__agent__', '__system__', '__scheduler__'))
+    if (fallback.get('agent_id') == agent_id
+            and not fallback.get('channel_id')
+            and not is_internal):
+        return fallback
+    return None
+
+
+def _is_channel_route_available(channel_id: str, agent_id: str = None) -> bool:
+    """Return whether an owned persisted channel is enabled and running."""
+    channel = db.get_channel(channel_id)
+    if not channel or not channel.get('enabled'):
+        return False
+    if agent_id and channel.get('agent_id') != agent_id:
+        return False
+
+    from backend.channels.registry import channel_manager
+    return channel_manager.is_running(channel_id)
 
 
 def _resolve_agent_target(agent_id: str, channel_type: str = None):
@@ -182,31 +263,27 @@ def _resolve_agent_target(agent_id: str, channel_type: str = None):
     try:
         import sqlite3
         from models.db import AgentChatDB
-        from backend.channels.registry import channel_manager
 
         channels = db.get_channels(agent_id)
         active_channel = None
 
-        # Check primary channel first
+        # Check primary channel first.
         primary_cid = db.get_primary_channel_id(agent_id)
-        if primary_cid and primary_cid in channel_manager._active:
+        if primary_cid and _is_channel_route_available(primary_cid, agent_id):
             for ch in channels:
                 if ch['id'] == primary_cid:
                     active_channel = ch
                     break
 
         if not active_channel:
-            # Fallback: find any active channel
+            # Fallback: find any enabled channel with a live runtime instance.
             for ch in channels:
                 ch_type = ch.get('type', '').lower()
-                if channel_type:
-                    if ch_type == channel_type.lower() and ch['id'] in channel_manager._active:
-                        active_channel = ch
-                        break
-                else:
-                    if ch['id'] in channel_manager._active:
-                        active_channel = ch
-                        break
+                if channel_type and ch_type != channel_type.lower():
+                    continue
+                if _is_channel_route_available(ch['id'], agent_id):
+                    active_channel = ch
+                    break
 
         if not active_channel:
             return None, None

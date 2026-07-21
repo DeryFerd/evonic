@@ -265,9 +265,20 @@ def api_list_tools():
     from evaluator.test_manager import test_manager
     from backend.skills_manager import skills_manager
     from backend.tools import tool_registry
+    from backend.tools.agent_messaging import get_agent_messaging_tool_defs
     # Built-in tools always appear first
     tools = tool_registry.get_builtin_tool_defs()
     tools += test_manager.list_tools()
+    # Append agent messaging tools (auto-loaded when agent_messaging_enabled)
+    for tool_def in get_agent_messaging_tool_defs():
+        func = tool_def.get('function', {})
+        tools.append({
+            'id': func.get('name', ''),
+            'name': func.get('name', ''),
+            'description': func.get('description', ''),
+            'function': func,
+            '_auto_loaded': True,
+        })
     # Append ALL skill tool definitions (no dedup — namespaced IDs disambiguate)
     for skill_def in skills_manager.get_all_skill_tool_defs():
         func = skill_def.get('function', {})
@@ -277,6 +288,17 @@ def api_list_tools():
             'description': func.get('description', ''),
             'function': func,
             '_skill_id': skill_def.get('_skill_id', ''),
+        })
+    # Append plugin tool definitions (namespaced: plugin:plugin_id:fn_name)
+    from backend.plugin_manager import plugin_manager
+    for plugin_def in plugin_manager.get_all_plugin_tool_defs():
+        func = plugin_def.get('function', {})
+        tools.append({
+            'id': plugin_def.get('id', ''),
+            'name': func.get('name', ''),
+            'description': func.get('description', ''),
+            'function': func,
+            '_plugin_id': plugin_def.get('_plugin_id', ''),
         })
     return jsonify({'tools': tools})
 
@@ -299,6 +321,21 @@ def api_get_tool(tool_id):
                     'function': func,
                     '_skill_id': skill_def.get('_skill_id', ''),
                     'no_mock': skill_def.get('no_mock', False),
+                }
+                break
+    if not tool and tool_id.startswith('plugin:'):
+        # Look up plugin tool from plugin_manager
+        from backend.plugin_manager import plugin_manager
+        for plugin_def in plugin_manager.get_all_plugin_tool_defs():
+            if plugin_def.get('id') == tool_id:
+                func = plugin_def.get('function', {})
+                tool = {
+                    'id': plugin_def.get('id', ''),
+                    'name': func.get('name', ''),
+                    'description': func.get('description', ''),
+                    'function': func,
+                    '_plugin_id': plugin_def.get('_plugin_id', ''),
+                    'no_mock': plugin_def.get('no_mock', False),
                 }
                 break
     if not tool:
@@ -364,6 +401,18 @@ def api_get_tool_backend(tool_id):
             return jsonify({'error': 'Invalid skill tool ID'}), 400
         _, skill_id, fn_name = parts
         backend_path = skills_manager.find_tool_backend_path(fn_name, skill_id=skill_id)
+        if backend_path and os.path.isfile(backend_path):
+            with open(backend_path, 'r', encoding='utf-8') as f:
+                return jsonify({'code': f.read(), 'exists': True})
+        return jsonify({'code': '', 'exists': False})
+
+    if tool_id.startswith('plugin:'):
+        from backend.plugin_manager import plugin_manager
+        parts = tool_id.split(':', 2)
+        if len(parts) != 3:
+            return jsonify({'error': 'Invalid plugin tool ID'}), 400
+        _, plugin_id, fn_name = parts
+        backend_path, _pid = plugin_manager.find_plugin_tool_backend(fn_name, plugin_id=plugin_id)
         if backend_path and os.path.isfile(backend_path):
             with open(backend_path, 'r', encoding='utf-8') as f:
                 return jsonify({'code': f.read(), 'exists': True})
@@ -692,6 +741,7 @@ def api_task_classifier():
             model = db.get_model_by_id(model_id)
             if not model:
                 return jsonify({'success': False, 'error': 'Model not found'}), 404
+            model_id = model['id']  # canonicalize legacy ids
         db.set_setting('task_classifier_enabled', enabled)
         db.set_setting('task_classifier_model_id', model_id)
         old_enabled = db.get_setting('task_classifier_enabled', default_enabled)
@@ -710,6 +760,28 @@ def api_task_classifier():
         'enabled': enabled == '1',
         'model_id': model_id or None,
     })
+
+
+@settings_bp.route('/api/settings/cmp-model', methods=['GET', 'PUT'])
+def api_cmp_model():
+    """Get or set the model used by CMP (Context Memory Path): path-change
+    boundary detection and path card summarization. Empty = fall back to
+    the Task Classifier model, then the default model."""
+    from models.db import db
+    if request.method == 'PUT':
+        data = request.get_json() or {}
+        model_id = data.get('model_id', '') or ''
+        if model_id:
+            model = db.get_model_by_id(model_id)
+            if not model:
+                return jsonify({'success': False, 'error': 'Model not found'}), 404
+            model_id = model['id']  # canonicalize legacy ids
+        old_model_id = db.get_setting('cmp_model_id', '')
+        db.set_setting('cmp_model_id', model_id)
+        if old_model_id != model_id:
+            _audit_setting_change('cmp_model_id', old_model_id, model_id)
+        return jsonify({'success': True, 'model_id': model_id or None})
+    return jsonify({'model_id': db.get_setting('cmp_model_id', '') or None})
 
 
 # ---- Default Model operations ----
@@ -740,9 +812,9 @@ def api_set_default_model():
         old_id = old_model.get('id', '') if old_model else ''
         with db._connect() as conn:
             conn.execute("UPDATE llm_models SET is_default = 0")
-            conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
+            conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model['id'],))
             conn.commit()
-        _audit_setting_change('default_model', old_id, model_id)
+        _audit_setting_change('default_model', old_id, model['id'])
         return jsonify({'success': True, 'model': _sanitize_model(db.get_default_model())})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -768,6 +840,7 @@ def api_get_general_settings():
         'agent_sidebar_limit': int(db.get_setting('agent_sidebar_limit', str(config.AGENT_SIDEBAR_LIMIT))),
         'theme': db.get_setting('theme', 'system'),
         'vision_model_id': db.get_setting('vision_model_id', ''),
+        'kb_organizer_model_id': db.get_setting('kb_organizer_model_id', ''),
     })
 
 
@@ -917,9 +990,9 @@ def api_batch_save():
             if model:
                 with db._connect() as conn:
                     conn.execute("UPDATE llm_models SET is_default = 0")
-                    conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model_id,))
+                    conn.execute("UPDATE llm_models SET is_default = 1 WHERE id = ?", (model['id'],))
                     conn.commit()
-                results['default_model_id'] = model_id
+                results['default_model_id'] = model['id']
             else:
                 errors.append('default_model_id: Model not found')
 
@@ -929,8 +1002,8 @@ def api_batch_save():
         if vision_model_id:
             model = db.get_model_by_id(vision_model_id)
             if model and model.get('vision_supported'):
-                db.set_setting('vision_model_id', vision_model_id)
-                results['vision_model_id'] = vision_model_id
+                db.set_setting('vision_model_id', model['id'])
+                results['vision_model_id'] = model['id']
             elif model:
                 errors.append('vision_model_id: Model does not support vision')
             else:
@@ -939,6 +1012,21 @@ def api_batch_save():
             # Allow clearing the setting
             db.set_setting('vision_model_id', '')
             results['vision_model_id'] = ''
+
+    # KB Organizer Model — global default for the KB organizer background sub-agent
+    if 'kb_organizer_model_id' in settings:
+        kb_organizer_model_id = settings['kb_organizer_model_id']
+        if kb_organizer_model_id:
+            model = db.get_model_by_id(kb_organizer_model_id)
+            if model:
+                db.set_setting('kb_organizer_model_id', model['id'])
+                results['kb_organizer_model_id'] = model['id']
+            else:
+                errors.append('kb_organizer_model_id: Model not found')
+        else:
+            # Allow clearing the setting (falls back to env / agent default)
+            db.set_setting('kb_organizer_model_id', '')
+            results['kb_organizer_model_id'] = ''
 
     if errors:
         return jsonify({
@@ -1052,3 +1140,197 @@ def api_user_audit(user_id):
     logs = db.get_audit_log(user_id=user_id)
     return jsonify({'user_id': user_id, 'audit_logs': logs})
 
+
+
+# ==================== Shared Channels (System Settings → Shared Channel) ====================
+# Shared channels serve multiple agents from one connection (agent_id IS NULL);
+# inbound senders are routed per-user/group via config.routes and unknown
+# senders land in shared_channel_inbox for capture-and-assign.
+
+def _shared_channel_or_404(channel_id):
+    channel = db.get_channel(channel_id)
+    if not channel or channel.get('agent_id') is not None:
+        return None
+    return channel
+
+
+@settings_bp.route('/api/shared-channels', methods=['GET'])
+def api_list_shared_channels():
+    from backend.channels.registry import channel_manager
+    channels = db.get_shared_channels()
+    for ch in channels:
+        ch['running'] = channel_manager.is_running(ch['id'])
+        ch['bridge_status'] = None
+        ch['inbox_count'] = len(db.get_inbox(ch['id']))
+        if ch['running']:
+            instance = channel_manager.get_channel_instance(ch['id'])
+            if instance:
+                try:
+                    ch['bridge_status'] = instance.get_bridge_status().get('status')
+                except Exception:
+                    pass
+    return jsonify({'channels': channels})
+
+
+@settings_bp.route('/api/shared-channels', methods=['POST'])
+def api_create_shared_channel():
+    from backend.channels.registry import channel_manager
+    data = request.get_json() or {}
+    name = (data.get('name') or 'Shared WhatsApp').strip()
+    # UNIQUE(agent_id, name) treats NULLs as distinct — enforce app-side
+    if any(c.get('name') == name for c in db.get_shared_channels()):
+        return jsonify({'error': f"Shared channel '{name}' already exists"}), 409
+    chan_id = db.create_channel({
+        'agent_id': None,
+        'type': 'whatsapp_shared',
+        'name': name,
+        'config': {'mode': 'open', 'routes': {}},
+    })
+    try:
+        channel_manager.start_channel(chan_id)
+    except Exception as e:
+        _logger.error("Auto-start failed for shared channel %s: %s", chan_id, e)
+    channel = db.get_channel(chan_id)
+    channel['running'] = channel_manager.is_running(chan_id)
+    audit.log_setting_change(user_id='admin', key='shared_channel.create',
+                             old_value='', new_value=name, ip=request.remote_addr or '')
+    return jsonify({'success': True, 'channel': channel})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>', methods=['PUT'])
+def api_update_shared_channel(channel_id):
+    from backend.channels.registry import channel_manager
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    data = request.get_json() or {}
+    db.update_channel(channel_id, {k: v for k, v in data.items() if k in ('name', 'enabled')})
+    if 'enabled' in data:
+        try:
+            if data['enabled']:
+                channel_manager.start_channel(channel_id)
+            else:
+                channel_manager.stop_channel(channel_id)
+        except Exception as e:
+            _logger.error("Toggle failed for shared channel %s: %s", channel_id, e)
+    return jsonify({'success': True, 'running': channel_manager.is_running(channel_id)})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>', methods=['DELETE'])
+def api_delete_shared_channel(channel_id):
+    from backend.channels.registry import channel_manager
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    try:
+        channel_manager.stop_channel(channel_id)
+    except Exception:
+        pass
+    db.delete_channel(channel_id)
+    audit.log_setting_change(user_id='admin', key='shared_channel.delete',
+                             old_value=channel.get('name') or channel_id, new_value='',
+                             ip=request.remote_addr or '')
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/qr', methods=['GET'])
+def api_shared_channel_qr(channel_id):
+    from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
+    instance = channel_manager.get_channel_instance(channel_id)
+    if not isinstance(instance, WhatsAppChannel):
+        return jsonify({'error': 'Shared channel not running'}), 404
+    return jsonify(instance.get_qr())
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/bridge-status', methods=['GET'])
+def api_shared_channel_bridge_status(channel_id):
+    from backend.channels.registry import channel_manager
+    from backend.channels.whatsapp import WhatsAppChannel
+    instance = channel_manager.get_channel_instance(channel_id)
+    if not isinstance(instance, WhatsAppChannel):
+        return jsonify({'status': 'not_running'})
+    return jsonify(instance.get_bridge_status())
+
+
+def _add_shared_route(channel, user_id, agent_id, display_name='', alt_user_id=''):
+    """Write route entries (and optional annotation) into the channel config.
+    Routes both identifier namespaces when the alternate is known."""
+    config = channel.get('config') or {}
+    routes = config.get('routes') or {}
+    routes[user_id] = agent_id
+    if alt_user_id:
+        routes[alt_user_id] = agent_id
+    config['routes'] = routes
+    if display_name:
+        names = config.get('user_names') or {}
+        names[user_id] = display_name
+        if alt_user_id:
+            names[alt_user_id] = display_name
+        config['user_names'] = names
+    db.update_channel(channel['id'], {'config': config})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/routes', methods=['POST'])
+def api_add_shared_route(channel_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    data = request.get_json() or {}
+    user_id = re.sub(r'[+\s-]', '', str(data.get('user_id') or ''))
+    agent_id = data.get('agent_id') or ''
+    if not user_id or not user_id.isdigit():
+        return jsonify({'error': 'user_id must be digits (phone number or group ID)'}), 400
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    _add_shared_route(channel, user_id, agent_id, data.get('name') or '')
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/routes/<user_id>', methods=['DELETE'])
+def api_delete_shared_route(channel_id, user_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    config = channel.get('config') or {}
+    routes = config.get('routes') or {}
+    if user_id not in routes:
+        return jsonify({'error': 'Route not found'}), 404
+    del routes[user_id]
+    config['routes'] = routes
+    db.update_channel(channel_id, {'config': config})
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox', methods=['GET'])
+def api_shared_channel_inbox(channel_id):
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    return jsonify({'inbox': db.get_inbox(channel_id)})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox/<entry_id>/assign', methods=['POST'])
+def api_assign_inbox_entry(channel_id, entry_id):
+    channel = _shared_channel_or_404(channel_id)
+    if not channel:
+        return jsonify({'error': 'Shared channel not found'}), 404
+    entry = db.get_inbox_entry(entry_id)
+    if not entry or entry.get('channel_id') != channel_id:
+        return jsonify({'error': 'Inbox entry not found'}), 404
+    data = request.get_json() or {}
+    agent_id = data.get('agent_id') or ''
+    if not db.get_agent(agent_id):
+        return jsonify({'error': 'Agent not found'}), 404
+    display_name = data.get('name') or entry.get('push_name') or ''
+    _add_shared_route(channel, entry['external_user_id'], agent_id,
+                      display_name, entry.get('alt_user_id') or '')
+    db.delete_inbox_entry(entry_id)
+    return jsonify({'success': True})
+
+
+@settings_bp.route('/api/shared-channels/<channel_id>/inbox/<entry_id>', methods=['DELETE'])
+def api_dismiss_inbox_entry(channel_id, entry_id):
+    if not _shared_channel_or_404(channel_id):
+        return jsonify({'error': 'Shared channel not found'}), 404
+    if not db.delete_inbox_entry(entry_id):
+        return jsonify({'error': 'Inbox entry not found'}), 404
+    return jsonify({'success': True})

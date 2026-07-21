@@ -71,9 +71,21 @@ class Scheduler:
                 CronTrigger(hour=3, minute=0),
                 id='builtin:attachments_cleanup',
                 replace_existing=True,
+                misfire_grace_time=3600,
             )
         except Exception as e:  # pragma: no cover - defensive guard
             log.warning("Failed to register attachments cleanup job: %s", e)
+        # Built-in: SEFTON nightly agentic tidy for all sefton-mode agents.
+        try:
+            self._scheduler.add_job(
+                self._sefton_tidy_all,
+                CronTrigger(hour=3, minute=0),
+                id='builtin:sefton_tidy',
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+        except Exception as e:  # pragma: no cover
+            log.warning("Failed to register sefton tidy job: %s", e)
         log.info("Started with %d jobs", len(self._scheduler.get_jobs()))
 
     def _cleanup_expired_attachments(self):
@@ -88,6 +100,48 @@ class Scheduler:
                 )
         except Exception as e:
             log.error("Attachments cleanup failed: %s", e, exc_info=True)
+
+    def _sefton_tidy_all(self):
+        """Nightly SEFTON tidy: run KB Janitor for sefton-mode agents active in last 24h."""
+        try:
+            from datetime import datetime, timedelta, timezone
+            from models.db import db
+            from backend.agent_runtime.memory_manager import (
+                resolve_kb_organizer_mode, sefton_tidy_agent,
+            )
+            agents = db.get_agents()
+            sefton_agents = [a for a in agents
+                             if resolve_kb_organizer_mode(a) == 'sefton']
+            if not sefton_agents:
+                return
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+            log.info("SEFTON tidy: %d sefton agent(s), cutoff %s",
+                     len(sefton_agents), cutoff.isoformat())
+
+            for agent in sefton_agents:
+                last_active = agent.get('last_active_at')
+                if not last_active:
+                    log.info("SEFTON tidy [%s]: skipped (never active)", agent['id'])
+                    continue
+                if isinstance(last_active, str):
+                    last_active_dt = datetime.fromisoformat(
+                        last_active.replace('Z', '+00:00'))
+                else:
+                    last_active_dt = last_active
+                if last_active_dt.tzinfo is None:
+                    last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                if last_active_dt < cutoff:
+                    log.info("SEFTON tidy [%s]: skipped (last active %s)",
+                             agent['id'], last_active_dt.isoformat())
+                    continue
+                try:
+                    result = sefton_tidy_agent(agent['id'])
+                    log.info("SEFTON tidy [%s]: %s", agent['id'], result)
+                except Exception as e:
+                    log.error("SEFTON tidy [%s] failed: %s", agent['id'], e)
+        except Exception as e:
+            log.error("SEFTON tidy failed: %s", e, exc_info=True)
 
     def shutdown(self):
         """Gracefully shut down the scheduler."""

@@ -1,0 +1,16 @@
+{
+  "id": "kb_skip_chatter_1",
+  "name": "Skip ephemeral chatter",
+  "description": "Pure pleasantries have nothing durable; the answer is no docs.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser menyapa, menanyakan kabar, kami bertukar salam, lalu User mengucapkan terima kasih dan pamit.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [],
+      "update": []
+    }
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

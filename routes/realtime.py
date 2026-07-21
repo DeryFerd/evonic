@@ -39,7 +39,7 @@ realtime_bp = Blueprint('realtime', __name__)
 
 RING_SIZES = {
     'chat': 256,
-    'approval': 8,
+    'approvals': 8,
     'status': 32,
     'update': 16,
     'workplace': 16,
@@ -47,7 +47,7 @@ RING_SIZES = {
 
 RING_STRATEGIES = {
     'chat': 'drop_oldest',
-    'approval': 'drop_newest',   # last known state matters
+    'approvals': 'drop_oldest',   # on overflow keep the newest approval, never drop it
     'status': 'drop_oldest',
     'update': 'drop_oldest',
     'workplace': 'drop_oldest',
@@ -56,7 +56,7 @@ RING_STRATEGIES = {
 CHANNEL_PRIORITY = {
     'update': 0,     # highest — small, rare, must be fast
     'status': 0,
-    'approval': 1,   # user-facing modal
+    'approvals': 1,   # user-facing modal
     'chat': 2,       # high throughput, tolerable delay
     'workplace': 2,  # high throughput, tolerable delay
 }
@@ -209,6 +209,27 @@ class CircuitBreaker:
 _connections: dict = {}  # key: connection_id -> RealtimeConnection
 _conn_lock = threading.Lock()
 
+# Heartbeat-aware web SSE delivery check: maximum age (seconds) of the
+# last heartbeat before a connection is considered disconnected.
+WEB_SSE_HEARTBEAT_MAX_AGE = 45  # 3 × HEARTBEAT_INTERVAL
+
+
+def has_active_web_sse(session_id: str) -> bool:
+    """Return True if any SSE connection for *session_id* has had a
+    heartbeat within WEB_SSE_HEARTBEAT_MAX_AGE seconds.
+
+    This is more reliable than has_web_listener() which only checks
+    listener registration, not actual delivery.
+    """
+    now = time.monotonic()
+    with _conn_lock:
+        for conn in _connections.values():
+            if conn.chat_session_id == session_id:
+                if (conn.last_heartbeat_time > 0 and
+                        (now - conn.last_heartbeat_time) < WEB_SSE_HEARTBEAT_MAX_AGE):
+                    return True
+    return False
+
 
 class RealtimeConnection:
     """Per-connection state for the unified SSE stream."""
@@ -232,6 +253,12 @@ class RealtimeConnection:
         # Per-channel pause buffers
         self._pause_buffers: dict[str, BoundedRing] = {}
         self.last_write_ok = True
+        # Reference to per-channel rings (set by api_realtime_stream)
+        # so api_realtime_resume can flush pause buffers back into them.
+        self.rings: dict[str, BoundedRing] | None = None
+        # Last heartbeat timestamp (monotonic). Updated by the generator.
+        # Used by has_active_web_listener() to verify delivery.
+        self.last_heartbeat_time: float = 0.0
 
     def stop(self):
         self._stop_event.set()
@@ -255,6 +282,14 @@ class RealtimeConnection:
 # SSE formatting helpers
 # ---------------------------------------------------------------------------
 
+def _json_default(obj):
+    """Custom JSON default handler: convert non-serializable types to strings."""
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    log.warning("_format_sse_event: non-serializable type %s in SSE data", type(obj).__name__)
+    return str(obj)
+
+
 def _format_sse_event(event_name: str, data: dict, seq_id: str = None,
                        global_seq: int = None) -> str:
     """Format a single SSE event with optional id and event fields."""
@@ -265,7 +300,7 @@ def _format_sse_event(event_name: str, data: dict, seq_id: str = None,
         lines.append(f"id: {global_seq}")
     if event_name:
         lines.append(f"event: {event_name}")
-    lines.append(f"data: {json.dumps(data, separators=(',', ':'))}")
+    lines.append(f"data: {json.dumps(data, separators=(',', ':'), default=_json_default)}")
     return "\n".join(lines) + "\n\n"
 
 
@@ -317,10 +352,10 @@ def _build_snapshot(channels: set, agent_id: str = None,
         except Exception as e:
             log.warning("realtime snapshot: failed to get agent statuses: %s", e)
 
-    if 'approval' in channels:
+    if 'approvals' in channels or session_id:
         from models.db import db
         try:
-            pending = db.get_pending_approvals()
+            pending = db.get_pending_tool_approvals()
             for app in (pending or []):
                 events.append(('approval_required', {
                     'approval_id': app.get('id', ''),
@@ -353,7 +388,7 @@ def _build_snapshot(channels: set, agent_id: str = None,
 
 def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
                      stop_event: threading.Event):
-    """Producer: listen to agent_busy_changed and turn_complete events."""
+    """Producer: listen to agent_busy_changed, turn_complete, whatsapp_bridge_status and panel_updated events."""
     from backend.event_stream import event_stream
 
     def busy_handler(data):
@@ -375,8 +410,22 @@ def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
             'external_user_id': data.get('external_user_id', ''),
         }))
 
+    def wa_bridge_handler(data):
+        ring.put(('whatsapp_bridge_status', {
+            'agent_id': data.get('agent_id', ''),
+            'channel_id': data.get('channel_id', ''),
+            'status': data.get('status', ''),
+        }))
+
+    def panel_handler(data):
+        ring.put(('panel_updated', {
+            'agent_id': data.get('agent_id', ''),
+        }))
+
     event_stream.on('agent_busy_changed', busy_handler)
     event_stream.on('turn_complete', turn_handler)
+    event_stream.on('whatsapp_bridge_status', wa_bridge_handler)
+    event_stream.on('panel_updated', panel_handler)
 
     try:
         while not stop_event.is_set():
@@ -384,6 +433,8 @@ def _producer_status(ring: BoundedRing, breaker: CircuitBreaker,
     finally:
         event_stream.off('agent_busy_changed', busy_handler)
         event_stream.off('turn_complete', turn_handler)
+        event_stream.off('whatsapp_bridge_status', wa_bridge_handler)
+        event_stream.off('panel_updated', panel_handler)
 
 
 def _producer_approval(ring: BoundedRing, breaker: CircuitBreaker,
@@ -451,6 +502,7 @@ def _producer_chat(ring: BoundedRing, breaker: CircuitBreaker,
             'thinking_duration': d.get('thinking_duration'),
             'response': d.get('response', ''),
             'slash_command': d.get('slash_command', False),
+            'attachment_info': d.get('attachment_info'),
         }),
         'approval_required': ('approval_required', lambda d: {
             'approval_id': d.get('approval_id', ''),
@@ -486,6 +538,10 @@ def _producer_chat(ring: BoundedRing, breaker: CircuitBreaker,
             'agent_id': d.get('agent_id', ''),
         }),
         'turn_split': ('turn_split', lambda d: {}),
+        'evonic:agent-state-changed': ('state_changed', lambda d: {
+            'agent_id': d.get('agent_id', ''),
+            'session_id': d.get('session_id', ''),
+        }),
     }
 
     def make_handler(evt_name, sse_name, transform):
@@ -615,12 +671,12 @@ def _priority_round_robin(rings: dict, conn: RealtimeConnection) -> list:
             seq, (sse_name, payload) = item
             result.append((ch, seq, sse_name, payload))
 
-    # L1 channels (approval) — 1 event
-    if 'approval' in rings:
-        item = rings['approval'].get()
+    # L1 channels (approvals) — 1 event
+    if 'approvals' in rings:
+        item = rings['approvals'].get()
         if item:
             seq, (sse_name, payload) = item
-            result.append(('approval', seq, sse_name, payload))
+            result.append(('approvals', seq, sse_name, payload))
 
     # L2 channels (chat, workplace) — up to L2_WEIGHT events each
     for ch in ('chat', 'workplace'):
@@ -824,13 +880,17 @@ def api_realtime_stream():
     for ch in all_channels:
         breakers[ch] = CircuitBreaker(ch)
 
+    # Store rings ref on the connection so api_realtime_resume can flush
+    # pause buffers back into the rings after resume.
+    conn.rings = rings
+
     # Start producer threads (task isolation)
     producers = {}
     stop_event = conn._stop_event  # shared stop signal
 
     _PRODUCERS = {
         'status': (_producer_status, {}),
-        'approval': (_producer_approval, {}),
+        'approvals': (_producer_approval, {}),
         'update': (_producer_update, {}),
     }
 
@@ -925,6 +985,7 @@ def api_realtime_stream():
                     try:
                         yield "event: heartbeat\ndata: {}\n\n"
                         heartbeat_failures = 0
+                        conn.last_heartbeat_time = now
                     except (BrokenPipeError, OSError):
                         heartbeat_failures += 1
                         if heartbeat_failures >= HEARTBEAT_MAX_FAILURES:
@@ -1029,7 +1090,7 @@ def api_realtime_stream():
                 if breakers.get(ch_name) and breakers[ch_name].is_disabled():
                     pass  # Already disabled
 
-            log.info("realtime %s: connection closed", conn_id[:20])
+            log.debug("realtime %s: connection closed", conn_id[:20])
 
     return Response(
         generate(),
@@ -1096,18 +1157,17 @@ def api_realtime_resume():
         for conn in list(_connections.values()):
             if conn.chat_session_id == session_id:
                 conn.resume()
-                # Flush pause buffers through the main SSE stream
-                # by draining them back into the rings
-                for ch in ('chat', 'workplace'):
-                    buf = conn._pause_buffers.get(ch)
-                    if buf:
-                        for _seq, item in buf.get_all():
-                            # Re-insert into main ring
-                            from backend.event_stream import event_stream
-                            # We don't have easy access to the rings from here,
-                            # but the next priority_round_robin will pick them up
-                            # if we just mark as resumed.
-                            pass
+                # Flush pause buffers — drain events that accumulated
+                # while paused and re-insert them into the per-channel
+                # rings so the generator yields them on the next pass.
+                if conn.rings:
+                    for ch in ('chat', 'workplace'):
+                        buf = conn._pause_buffers.get(ch)
+                        if buf:
+                            ring = conn.rings.get(ch)
+                            if ring:
+                                for _seq, item in buf.get_all():
+                                    ring.put(item)
     return Response(json.dumps({'ok': True}), mimetype='application/json')
 
 

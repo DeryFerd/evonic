@@ -715,8 +715,9 @@ the handler logic in `handler.py`.
 
 # ─── Skill Management ──────────────────────────────────────────────────────────
 
-# Built-in/core skills that cannot be removed via CLI
-_SKILL_CORE_IDS = {"hello_world"}
+# Built-in/core skills that cannot be removed via CLI. Mirrors the backend's
+# CORE_SKILL_IDS (which is the real enforcement point for CLI + API + UI).
+from backend.skills_manager import CORE_SKILL_IDS as _SKILL_CORE_IDS
 
 
 def _get_skills_manager():
@@ -916,6 +917,95 @@ def skill_rm(skill_id):
         sys.exit(1)
 
     print(f"Skill uninstalled: {skill_id}")
+
+
+def skill_export(skill_id, output=None, verbose=False):
+    """Export a skill identified by its ID into a structured zip archive.
+
+    Collects all files under the skill's directory (manifest, tools, source
+    code, assets, etc.), excluding build artifacts (``__pycache__``), and
+    packages them into a zip file with a ``<skill_id>/`` prefix so the
+    archive can be re-installed via ``evonic skill add``.
+
+    Args:
+        skill_id: The skill ID to export.
+        output: Optional output path for the zip file. Defaults to
+                ``./<skill_id>.zip`` in the current working directory.
+        verbose: If True, prints every file as it is added to the archive.
+    """
+    import zipfile
+
+    if not skill_id:
+        print("Error: skill_id is required.")
+        print("Usage: evonic skill export <skill_id> [-o <path>] [-v]")
+        sys.exit(1)
+
+    sm = _get_skills_manager()
+    skill = sm.get_skill(skill_id)
+
+    if skill is None:
+        print(f"Error: Skill not found: {skill_id}")
+        sys.exit(1)
+
+    skill_dir = skill.get("_dir")
+    if not skill_dir or not os.path.isdir(skill_dir):
+        print(f"Error: Skill directory not found for '{skill_id}'.")
+        sys.exit(1)
+
+    # Determine output path
+    if output is None:
+        output = os.path.join(os.getcwd(), f"{skill_id}.zip")
+    elif not os.path.isabs(output):
+        output = os.path.join(os.getcwd(), output)
+
+    # Ensure parent directory exists
+    output_dir = os.path.dirname(output)
+    if output_dir and not os.path.isdir(output_dir):
+        print(f"Error: Output directory does not exist: {output_dir}")
+        sys.exit(1)
+
+    # Collect all files under the skill directory, excluding __pycache__
+    file_paths = []
+    for root, dirs, files in os.walk(skill_dir):
+        # Skip __pycache__ directories
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in files:
+            full_path = os.path.join(root, fname)
+            # Preserve relative path inside the archive under skill_id/
+            rel_path = os.path.relpath(full_path, skill_dir)
+            arcname = f"{skill_id}/{rel_path}"
+            file_paths.append((full_path, arcname))
+
+    if not file_paths:
+        print(f"Error: No files found in skill directory for '{skill_id}'.")
+        sys.exit(1)
+
+    # Create the zip archive
+    try:
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+            for full_path, arcname in sorted(file_paths, key=lambda x: x[1]):
+                zf.write(full_path, arcname)
+                if verbose:
+                    print(f"  + {arcname}")
+    except PermissionError:
+        print(f"Error: Permission denied writing to '{output}'.")
+        sys.exit(1)
+    except OSError as e:
+        print(f"Error: Could not create zip file '{output}': {e}")
+        sys.exit(1)
+
+    skill_name = skill.get("name", skill_id)
+    version = skill.get("version", "?")
+    file_count = len(file_paths)
+    print(f"Skill exported: {skill_name} ({skill_id}) v{version}")
+    print(f"Output: {output}")
+    print(f"Files:  {file_count}")
+    print()
+    print("To re-install:")
+    print(f"  evonic skill add {output}")
+    print()
+    print("To extract manually:")
+    print(f"  unzip {output} -d <target-dir>")
 
 
 # ─── Skillset Management ───────────────────────────────────────────────────────────────
@@ -2338,7 +2428,7 @@ def update_server(
     # Nightly channel: track origin/main instead of release tags.
     if nightly:
         print("Fetching origin/main (nightly)...")
-        rc, _, err = _git(["fetch", "origin", "main"])
+        rc, _, err = _git(["fetch", "origin", "main", "--tags"])
         if rc != 0:
             print(f"Git fetch failed: {err}")
             sys.exit(1)
@@ -2504,9 +2594,6 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         "SECRET_KEY",
         "DEBUG",
         "ADMIN_PASSWORD_HASH",
-        "SANDBOX_NETWORK",
-        "LOG_FULL_THINKING",
-        "LOG_FULL_RESPONSE",
     ]
     for var in important_vars:
         val = os.getenv(var)
@@ -2820,6 +2907,49 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Skill check failed: {e}"))
 
+
+    # ── 6b. Sandbox Availability Check ─────────────────────────────────
+    _section("6b. Sandbox Availability Check")
+
+    try:
+        from models.db import db
+        agents = db.get_agents()
+        sandbox_agents = [
+            a for a in agents
+            if a.get("sandbox_enabled") and a.get("enabled")
+        ]
+
+        if not sandbox_agents:
+            results.append(_ok("No agents have sandbox enabled — skipping Docker check"))
+        else:
+            docker_available = False
+            try:
+                result = subprocess.run(
+                    ["docker", "info"],
+                    capture_output=True, text=True, timeout=10
+                )
+                if result.returncode == 0:
+                    docker_available = True
+                    results.append(_ok("Docker is available and responsive"))
+                else:
+                    results.append(_warn(
+                        f"Docker CLI found but daemon returned exit code {result.returncode}"
+                    ))
+            except FileNotFoundError:
+                results.append(_warn("Docker is not installed or not in PATH"))
+            except subprocess.TimeoutExpired:
+                results.append(_warn("Docker daemon timed out — may be unresponsive"))
+            except Exception as e:
+                results.append(_warn(f"Docker check failed: {e}"))
+
+            if not docker_available:
+                names = [f"{a.get('name', a.get('id'))} ({a['id']})" for a in sandbox_agents]
+                results.append(_warn(
+                    f"Docker unavailable but {len(sandbox_agents)} agent(s) have "
+                    f"sandbox enabled: {', '.join(names)}"
+                ))
+    except Exception as e:
+        results.append(_fail(f"Sandbox agent check failed: {e}"))
     # ── 7. LLM Provider Check ────────────────────────────────
     _section("7. LLM Provider Check")
 
@@ -2917,8 +3047,11 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
             elif not artifacts_on and has_list:
                 spurious_list.append((aid, aname))
 
-            if artifacts_on and not has_fetch:
+            needs_fetch = a.get('workplace_id') is not None or a.get('sandbox_enabled', 0) == 1
+            if artifacts_on and needs_fetch and not has_fetch:
                 missing_fetch.append((aid, aname))
+            elif artifacts_on and not needs_fetch and has_fetch:
+                spurious_fetch.append((aid, aname))
             elif not artifacts_on and has_fetch:
                 spurious_fetch.append((aid, aname))
 
@@ -3131,10 +3264,86 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
     except Exception as e:
         results.append(_fail(f"Non-lazy skill tool check failed: {e}"))
 
-    # ── 10. Evomem Memory Engine Check ──
-    _section("10. Evomem Memory Engine Check")
+    # ── 10. Orphaned Tool Assignment Check ───────────────────────────────────
+    _section("10. Orphaned Tool Assignment Check")
 
     try:
+        from models.db import db
+        from backend.tools.registry import ToolRegistry, BUILTIN_TOOL_IDS
+        from backend.skills_manager import SkillsManager
+
+        agents = db.get_agents()
+        _tr = ToolRegistry()
+        _sm = SkillsManager()
+
+        # Build the set of all valid tool IDs
+        valid_tool_ids = set(BUILTIN_TOOL_IDS)
+
+        # Built-in factory tools (auto-injected, but may also appear in agent_tools)
+        for builtin_id in _tr._builtins:
+            # builtin_id is e.g. 'builtin:remember' → function name is 'remember'
+            fn_name = builtin_id.split(":", 1)[-1] if ":" in builtin_id else builtin_id
+            valid_tool_ids.add(fn_name)
+
+        # Regular tools from tools/*.json
+        for td in _tr.get_tool_defs_from_json():
+            tid = td.get("id") or td.get("function", {}).get("name")
+            if tid:
+                valid_tool_ids.add(tid)
+
+        # Skill tools: skill:<skill_id>:<fn_name>
+        for skill in _sm.list_skills():
+            skill_id = skill.get("id", "")
+            if not skill_id:
+                continue
+            skill_dir = os.path.join(ROOT, "skills", skill_id)
+            if not os.path.isdir(skill_dir):
+                continue
+            for td in _sm.get_skill_tool_defs(skill_id):
+                fn_name = td.get("function", {}).get("name", "")
+                if fn_name:
+                    valid_tool_ids.add(f"skill:{skill_id}:{fn_name}")
+
+        orphan_count = 0
+        for a in agents:
+            aid = a.get("id", "?")
+            aname = a.get("name", aid)
+            agent_tools = db.get_agent_tools(aid)
+
+            orphans = [t for t in agent_tools if t not in valid_tool_ids]
+            if orphans:
+                orphan_count += len(orphans)
+                orphan_list = ", ".join(sorted(orphans))
+                results.append(_warn(
+                    f"Agent '{aname}' ({aid}) has {len(orphans)} orphaned tool(s): "
+                    f"{orphan_list}"
+                ))
+
+                if fix:
+                    for tool_id in orphans:
+                        try:
+                            db.remove_agent_tool(aid, tool_id)
+                            fixes_applied.append(
+                                f"Removed orphaned tool '{tool_id}' from agent "
+                                f"'{aname}' ({aid})"
+                            )
+                        except Exception as e:
+                            results.append(_fail(
+                                f"Failed to remove tool '{tool_id}' from '{aid}': {e}"
+                            ))
+
+        if orphan_count == 0:
+            results.append(_ok("No orphaned tool assignments found"))
+
+    except Exception as e:
+        results.append(_fail(f"Orphaned tool check failed: {e}"))
+
+    # ── 11. Evomem Memory Engine Check ──────────────────────────────────────
+    _section("11. Evomem Memory Engine Check")
+
+    try:
+        from cli import evomem_update as _evup
+
         engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
         engine_explicit = "EVONIC_MEMORY_ENGINE" in os.environ
         binary_path = os.environ.get("EVOMEM_BINARY", "shared/bin/evomem")
@@ -3149,41 +3358,238 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                 f"or not executable at {binary_full}"
             ))
 
-        # Fix: auto-download and install the binary before judging the result, so a
-        # single `doctor --fix` run reports the post-install state. Skipped when the
-        # user points EVOMEM_BINARY at a path they manage themselves.
-        if fix and not binary_ok and engine != "fts5" and not custom_binary:
-            from backend.evomem_provision import ensure_evomem
-            result = ensure_evomem()
-            if result["ok"] and result["installed"]:
-                fixes_applied.append(f"Installed evomem {result['version']} to {binary_full}")
-            elif not result["ok"]:
-                _info(f"  {result['msg']}")
-            binary_ok = os.path.isfile(binary_full) and os.access(binary_full, os.X_OK)
+        # Consult GitHub for the latest release (best-effort, networked). Skipped
+        # in quick mode or when EVONIC_SKIP_EVOMEM_UPDATE_CHECK is set.
+        update_check = (
+            engine != "fts5"
+            and not quick
+            and os.environ.get("EVONIC_SKIP_EVOMEM_UPDATE_CHECK", "").strip().lower()
+            not in ("1", "true", "yes")
+        )
+        release = _evup.latest_release() if update_check else None
+
+        def _install_latest(action):
+            """Download + install the latest asset for this host. Returns True on
+            success. `action` is 'Updated'/'Installed' for the status line."""
+            target = _evup.host_target()
+            url = (release.get("assets") or {}).get(target) if release else None
+            if not url:
+                results.append(_warn(
+                    f"No evomem release asset for this platform "
+                    f"({target or 'unsupported'}); update/install manually."
+                ))
+                return False
+            try:
+                _evup.download_and_install(url, binary_full)
+                results.append(_ok(f"{action} evomem to {release['version']}"))
+                fixes_applied.append(f"{action} evomem to {release['version']}")
+                return True
+            except Exception as e:  # noqa: BLE001 — keep existing binary on failure
+                results.append(_warn(f"evomem {action.lower()} failed: {e}; "
+                                     f"existing binary kept."))
+                return False
 
         if engine == "fts5":
             _info("  Memory engine is FTS5 (evomem not used)")
         elif binary_ok:
-            results.append(_ok("Evomem memory engine available"))
-        elif engine_explicit:
-            results.append(_fail(
-                f"EVONIC_MEMORY_ENGINE=evomem is set but binary not found at "
-                f"{binary_full}. Run 'evonic evomem install' or 'evonic doctor --fix' "
-                f"to install it, or set EVONIC_MEMORY_ENGINE=fts5 to use the fallback."
-            ))
+            cur = _evup.current_version(binary_full)
+            if release and cur and _evup.is_outdated(cur, release["version"]):
+                latest = release["version"]
+                if fix:
+                    _install_latest("Updated")
+                else:
+                    results.append(_warn(
+                        f"evomem {cur} installed; {latest} available — run "
+                        f"`evonic doctor --fix` to update."
+                    ))
+            elif release and cur:
+                results.append(_ok(f"Evomem memory engine available (latest: {cur})"))
+            else:
+                results.append(_ok("Evomem memory engine available"))
+                if update_check and release is None:
+                    _info("  (could not check latest evomem version)")
         else:
-            results.append(_warn(
-                f"Evomem is the default memory engine but binary not found at "
-                f"{binary_full}. Run 'evonic evomem install' (or 'evonic doctor --fix') "
-                f"to install it; until then evomem features (think, graph_query) "
-                f"silently fall back to FTS5."
-            ))
+            # Binary missing. Under --fix, try to install the latest first.
+            installed = fix and _install_latest("Installed")
+            if not installed:
+                if engine_explicit:
+                    results.append(_fail(
+                        f"EVONIC_MEMORY_ENGINE=evomem is set but binary not found at "
+                        f"{binary_full}. Set EVONIC_MEMORY_ENGINE=fts5 to use fallback, "
+                        f"or install the evomem binary."
+                    ))
+                else:
+                    results.append(_warn(
+                        f"Evomem is the default memory engine but binary not found at "
+                        f"{binary_full}. Evomem features (think, graph_query) will "
+                        f"silently fall back to FTS5."
+                    ))
+                if fix:
+                    _info(
+                        "  To install evomem: place the static binary at "
+                        "shared/bin/evomem and make it executable (chmod +x)."
+                    )
+                    bin_dir = os.path.dirname(binary_full)
+                    if not os.path.isdir(bin_dir):
+                        os.makedirs(bin_dir, exist_ok=True)
+                        fixes_applied.append(f"Created directory {bin_dir} for evomem binary")
 
     except Exception as e:
         results.append(_fail(f"Evomem check failed: {e}"))
 
-    # ── 11. PromptPurify ML Safety Check ──
-    _section("11. PromptPurify ML Safety Check")
+    # ── 11b. KB Organizer Config Check ────────────────────────
+    _section("11b. KB Organizer Config Check")
+    try:
+        env_path = os.path.join(ROOT, ".env")
+        key = "EVOMEM_KB_ORGANIZER_MIN_INTERVAL_SECONDS"
+        default_val = "1800"  # 30 minutes
+
+        in_file = False
+        if os.path.isfile(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s.startswith(key + "=") or s.startswith("export " + key + "="):
+                        in_file = True
+                        break
+
+        if in_file:
+            results.append(_ok(f"{key} set in .env"))
+        elif fix:
+            _update_env_var(env_path, key, default_val)
+            results.append(_ok(
+                f"Added {key}={default_val} to .env "
+                f"(KB organizer min interval between filing runs — 30 min)"))
+            fixes_applied.append(f"Added {key}={default_val} to .env")
+        else:
+            results.append(_warn(
+                f"{key} not in .env (KB organizer min interval between filing runs; "
+                f"defaults to {default_val}s). Run `evonic doctor --fix` to add it."))
+    except Exception as e:
+        results.append(_fail(f"KB organizer config check failed: {e}"))
+
+    # ── 11c. Memory Engine + KB Organizer Compatibility ───
+    _section("11c. Memory Engine / KB Organizer Compatibility")
+    try:
+        from models.db import db as _db
+
+        global_engine = os.environ.get("EVONIC_MEMORY_ENGINE", "evomem").strip().lower()
+        global_kb_mode = os.environ.get("EVOMEM_KB_ORGANIZER", "sefton").strip().lower()
+
+        _evomem_required_modes = {"agentic", "sefton"}
+
+        _kb_mode_aliases = {
+            "on": "agentic", "1": "agentic", "yes": "agentic", "true": "agentic",
+            "nonagentic": "non-agentic", "legacy": "non-agentic",
+            "off": "off", "no": "off", "0": "off", "false": "off", "none": "off",
+        }
+        norm_global_kb = _kb_mode_aliases.get(global_kb_mode, global_kb_mode)
+
+        if global_engine == "fts5" and norm_global_kb in _evomem_required_modes:
+            results.append(_warn(
+                f"EVONIC_MEMORY_ENGINE=fts5 but EVOMEM_KB_ORGANIZER={global_kb_mode} "
+                f"— '{norm_global_kb}' mode requires evomem. Agents without a per-agent "
+                f"override will skip KB filing."
+            ))
+        else:
+            results.append(_ok(
+                f"Global defaults compatible "
+                f"(engine={global_engine}, kb_organizer={norm_global_kb})"
+            ))
+
+        agents = _db.get_agents() or []
+        bad_agents = []
+        for ag in agents:
+            ag_engine = (ag.get("memory_engine") or "").strip().lower() or global_engine
+            ag_kb = (ag.get("kb_organizer_mode") or "").strip().lower()
+            ag_kb_norm = _kb_mode_aliases.get(ag_kb, ag_kb) if ag_kb else norm_global_kb
+            if ag_engine == "fts5" and ag_kb_norm in _evomem_required_modes:
+                bad_agents.append((ag.get("name") or ag.get("id", "?"), ag_kb_norm))
+
+        if bad_agents:
+            for name, mode in bad_agents:
+                results.append(_warn(
+                    f"Agent '{name}': memory_engine=fts5 but "
+                    f"kb_organizer_mode={mode} (requires evomem)"
+                ))
+        elif agents:
+            results.append(_ok(
+                f"All {len(agents)} agent(s) have compatible engine/organizer settings"
+            ))
+    except Exception as e:
+        results.append(_fail(f"Engine/organizer compatibility check failed: {e}"))
+
+    # ── 11d. System Settings Consistency Check ──
+    _section("11d. System Settings Consistency Check")
+
+    import config as _cfg
+
+    _EXPECTED_SETTINGS = {
+        "theme": "system",
+        "vision_model_id": "",
+        "kb_organizer_model_id": "",
+        "task_classifier_enabled": "0",
+        "agent_timeout_retries": str(getattr(_cfg, "AGENT_TIMEOUT_RETRIES", 2)),
+        "llm_max_retries": "5",
+        "max_concurrent_llm_per_agent": "1",
+        "max_concurrent_llm_per_model": "0",
+        "max_concurrent_llm_global": "1",
+        "agent_queue_workers": str(getattr(_cfg, "AGENT_QUEUE_WORKERS", 5)),
+        "max_tool_iterations": str(getattr(_cfg, "AGENT_MAX_TOOL_ITERATIONS", 100)),
+        "agent_sidebar_limit": str(getattr(_cfg, "AGENT_SIDEBAR_LIMIT", 10)),
+        "public_history": "0",
+        "long_running_guard_enabled": (
+            "1" if getattr(_cfg, "LONG_RUNNING_GUARD_ENABLED", True) else "0"
+        ),
+        "message_wrapper_enabled": "1",
+        "events_dispatch_enabled": "1",
+    }
+
+    try:
+        from models.db import db as _ctl_db
+        missing = []
+        present = 0
+        for key, default_val in _EXPECTED_SETTINGS.items():
+            val = _ctl_db.get_setting(key)
+            if val is None:
+                missing.append((key, default_val))
+            else:
+                present += 1
+
+        if missing:
+            keys_str = ", ".join(k for k, _ in missing)
+            results.append(_warn(
+                f"{len(missing)} system setting(s) not initialized: {keys_str}"
+            ))
+            if fix:
+                fixed_count = 0
+                for key, default_val in missing:
+                    try:
+                        _ctl_db.set_setting(key, default_val)
+                        fixed_count += 1
+                    except Exception:
+                        pass
+                if fixed_count:
+                    fixes_applied.append(
+                        f"Seeded {fixed_count} missing system setting(s) with defaults"
+                    )
+                    results.append(_ok(
+                        f"Seeded {fixed_count} missing system setting(s)"
+                    ))
+            else:
+                _info(
+                    "  Run `evonic doctor --fix` to seed missing settings with "
+                    "defaults."
+                )
+        else:
+            results.append(_ok(
+                f"All {present} system settings present and accounted for"
+            ))
+    except Exception as e:
+        results.append(_fail(f"System settings check failed: {e}"))
+
+    # ── 12. PromptPurify ML Safety Check ──
+    _section("12. PromptPurify ML Safety Check")
 
     try:
         from models.db import db
@@ -3290,8 +3696,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"PromptPurify ML check failed: {e}"))
 
 
-    # ── 12. Asset Build Check ───────────────────────────────────────────────
-    _section("12. Asset Build Check")
+    # ── 13. Asset Build Check ───────────────────────────────────────────────
+    _section("13. Asset Build Check")
 
     try:
         asset_checks = [
@@ -3390,8 +3796,8 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
         results.append(_fail(f"Asset build check failed: {e}"))
 
 
-    # ── 13. Database Schema / Query Health Check ──────────────
-    _section("13. Database Schema / Query Health Check")
+    # ── 14. Database Schema / Query Health Check ──────────────
+    _section("14. Database Schema / Query Health Check")
     try:
         import sqlite3 as _sqlite3
         from models.db import db as _schema_db
@@ -3419,6 +3825,240 @@ def doctor_command(quick=False, fix=False, with_llm_provider=False):
                   "(commonly a rename/drop that left a query un-updated).")
     except Exception as e:
         results.append(_fail(f"Database schema check failed: {e}"))
+
+
+    # ── 15. Core Explore Skills Check ─────────────────────────
+    _section("15. Core Explore Skills Check")
+    try:
+        from backend.skills_manager import SkillsManager, CORE_SKILL_IDS
+
+        sm = SkillsManager()
+        for sid in sorted(CORE_SKILL_IDS):
+            manifest_path = os.path.join(ROOT, "skills", sid, "skill.json")
+            if not os.path.isfile(manifest_path):
+                results.append(_fail(
+                    f"Core skill '{sid}' is missing — the Explore agent requires it. "
+                    f"Reinstall it under skills/{sid}/."
+                ))
+            elif not sm.is_skill_enabled(sid):
+                results.append(_fail(
+                    f"Core skill '{sid}' is installed but disabled — the Explore agent "
+                    f"requires it. Re-enable it (it cannot normally be disabled)."
+                ))
+            else:
+                results.append(_ok(f"Core skill '{sid}' present and enabled"))
+    except Exception as e:
+        results.append(_fail(f"Core skill check failed: {e}"))
+
+
+    # ── 16. Skill/Plugin Requirements Check ───────────────────
+    _section("16. Skill/Plugin Requirements Check")
+    try:
+        import logging as _logging
+        from cli import requirements_check as _rc
+
+        # gather_requirements() imports the plugin manager, which emits noisy
+        # apscheduler INFO logs on first import — quiet them for a clean report.
+        _aps = _logging.getLogger("apscheduler")
+        _aps_level = _aps.level
+        _aps.setLevel(_logging.WARNING)
+        try:
+            records = _rc.gather_requirements()
+        finally:
+            _aps.setLevel(_aps_level)
+
+        if not records:
+            _info("  No additional skill/plugin requirements declared")
+        for rec in records:
+            binary = rec["binary"]
+            name = binary["name"]
+            src = f"{rec['source_type']} '{rec['source_id']}'"
+            res = _rc.check_binary(binary)
+
+            if res["status"] == "ok":
+                ver = f" {res['current']}" if res["current"] else ""
+                results.append(_ok(f"{name}{ver} — required by {src}"))
+                continue
+
+            if res["status"] == "outdated":
+                problem = (f"{name} {res['current']} installed; {res['required']}+ "
+                           f"required by {src}")
+            elif res["status"] == "unknown":
+                problem = (f"{name} found but its version could not be determined "
+                           f"({res['required']}+ required by {src})")
+            else:  # missing
+                problem = f"{name} not found on PATH — required by {src}"
+
+            has_script = bool(binary.get("fix_script"))
+            if fix and has_script:
+                # Stream the fix_script's real-time stdout/stderr in a left-rail
+                # gutter — a clean header, a dim "│" margin per line, and a
+                # closing tick. A gutter (vs. a closed box) stays aligned even
+                # when long lines wrap.
+                print(f"  {_DIM}╭─{_RESET} {_BOLD}{name}{_RESET} {_DIM}install · {rec['source_id']}/{binary['fix_script']}{_RESET}")
+                # Truncate each streamed line to the terminal width so long lines
+                # (URLs, paths) stay on one row instead of wrapping and breaking
+                # the rail. Prefix "  │ " is 4 visible columns.
+                _rail_w = max(20, shutil.get_terminal_size((100, 24)).columns - 4)
+
+                def _rail(ln):
+                    if len(ln) > _rail_w:
+                        ln = ln[:_rail_w - 1] + "…"
+                    print(f"  {_DIM}│{_RESET} {ln}")
+
+                outcome = _rc.run_fix_script(binary, rec["dir"], on_output=_rail)
+                recheck = _rc.check_binary(binary)
+                # Close the rail with the outcome — the rail terminator doubles
+                # as the result line, so there's no duplicate status line.
+                if outcome.get("ran") and recheck["status"] == "ok":
+                    ver = f" {recheck['current']}" if recheck["current"] else ""
+                    print(f"  {_DIM}╰─{_RESET} {_G}✓{_RESET} Installed {name}{ver} "
+                          f"(required by {src})")
+                    results.append("pass")
+                    fixes_applied.append(f"Installed {name} for {src}")
+                else:
+                    detail = outcome.get("error") or "see output above"
+                    print(f"  {_DIM}╰─{_RESET} {_Y}⚠{_RESET} {problem}; "
+                          f"fix_script did not resolve it ({detail})")
+                    results.append("warn")
+            else:
+                results.append(_warn(problem))
+                if has_script:
+                    _info(f"  Run `evonic doctor --fix` to install {name} automatically.")
+                else:
+                    _info(f"  Install {name} manually (no fix_script declared by {src}).")
+    except Exception as e:
+        results.append(_fail(f"Requirements check failed: {e}"))
+
+
+    # ── 17. Channel Integrations Check ────────────────────────
+    _section("17. Channel Integrations Check")
+    try:
+        from models.db import db as _chan_db
+
+        # Map channel type -> (import module, pip package) for dependency checks.
+        _channel_deps = {
+            'telegram': ('telegram', 'python-telegram-bot'),
+            'discord': ('discord', 'discord.py'),
+        }
+        configured_types = set()
+        for agent in _chan_db.get_agents():
+            for ch in _chan_db.get_channels(agent['id']):
+                if ch.get('enabled'):
+                    configured_types.add(ch.get('type'))
+
+        if not configured_types:
+            _info("  No channels configured — skipping")
+        else:
+            for ctype in sorted(configured_types):
+                dep = _channel_deps.get(ctype)
+                if not dep:
+                    _info(f"  {ctype}: no dependency check available")
+                    continue
+                module_name, pkg_name = dep
+                try:
+                    mod = importlib.import_module(module_name)
+                    ver = getattr(mod, "__version__", "?")
+                    results.append(_ok(f"{ctype} library available ({pkg_name}=={ver})"))
+                except ImportError:
+                    results.append(_fail(
+                        f"{ctype} channel enabled but {pkg_name} not installed "
+                        f"— run: pip install {pkg_name}"
+                    ))
+            if 'discord' in configured_types:
+                _info("  Discord requires the Message Content Intent "
+                      "(Bot → Privileged Gateway Intents in the Developer Portal).")
+    except Exception as e:
+        results.append(_warn(f"Channel integrations check failed: {e}"))
+
+    # ── 17b. WhatsApp Bridge Check ────────────────────────────
+    _section("17b. WhatsApp Bridge Check")
+    try:
+        from models.db import db as _wa_db
+
+        _wa_channels = []
+        for agent in _wa_db.get_agents():
+            for ch in _wa_db.get_channels(agent['id']):
+                if ch.get('type') in ('whatsapp', 'whatsapp_shared') and ch.get('enabled'):
+                    _wa_channels.append((agent, ch))
+
+        if not _wa_channels:
+            _info("  No enabled WhatsApp channels — skipping")
+        else:
+            # node runtime
+            node_path = shutil.which('node')
+            if node_path:
+                try:
+                    node_ver = subprocess.check_output(
+                        ['node', '--version'], text=True, timeout=10).strip()
+                    results.append(_ok(f"node available ({node_ver})"))
+                except Exception:
+                    results.append(_ok("node available"))
+            else:
+                results.append(_fail("node not found in PATH — WhatsApp bridge cannot start"))
+
+            # bridge npm dependencies
+            _bridge_dir = os.path.join(ROOT, 'backend', 'channels', 'whatsapp-bridge')
+            if os.path.isdir(os.path.join(_bridge_dir, 'node_modules')):
+                results.append(_ok("whatsapp-bridge npm dependencies installed"))
+            else:
+                results.append(_warn(
+                    "whatsapp-bridge node_modules missing — will npm install on first start"))
+
+            import requests as _wa_requests
+            for agent, ch in _wa_channels:
+                label = f"{agent.get('name') or agent['id']} ({str(ch['id'])[:8]})"
+                cfg = ch.get('config') if isinstance(ch.get('config'), dict) else {}
+                port = int(cfg.get('bridge_port', 3001))
+
+                # Session / pairing state
+                creds_file = os.path.join(
+                    ROOT, 'data', 'whatsapp-sessions', ch['id'], 'creds.json')
+                if os.path.isfile(creds_file):
+                    try:
+                        with open(creds_file) as f:
+                            _creds = json.load(f)
+                        if (_creds.get('me') or {}).get('lid'):
+                            results.append(_ok(f"{label}: session paired (LID present)"))
+                        else:
+                            results.append(_warn(
+                                f"{label}: session paired but creds lack LID — group "
+                                f"@mentions may not be detected; re-scan QR to refresh"))
+                    except Exception:
+                        results.append(_warn(f"{label}: creds.json unreadable"))
+                else:
+                    results.append(_warn(f"{label}: no session — QR scan required"))
+
+                # Live bridge probe (works cross-process — bridge listens on 127.0.0.1)
+                try:
+                    _st = _wa_requests.get(
+                        f"http://127.0.0.1:{port}/status", timeout=3).json().get('status')
+                    if _st == 'connected':
+                        results.append(_ok(f"{label}: bridge connected (port {port})"))
+                    elif _st == 'qr_pending':
+                        results.append(_warn(
+                            f"{label}: bridge waiting for QR scan (port {port}) — "
+                            f"open the agent page and scan"))
+                    else:
+                        results.append(_warn(
+                            f"{label}: bridge running but disconnected (port {port})"))
+                except Exception:
+                    results.append(_warn(
+                        f"{label}: bridge not reachable on port {port} "
+                        f"(server not running, or channel failed to start)"))
+
+                # Group reachability in restricted mode
+                if cfg.get('mode') == 'restricted':
+                    _allowed = cfg.get('allowed_users') or []
+                    _has_group = any(
+                        '-' in str(u) or str(u).startswith('120')
+                        for u in _allowed)
+                    if not _has_group:
+                        results.append(_warn(
+                            f"{label}: restricted mode with no group ID in allowed_users "
+                            f"— group messages will be dropped silently"))
+    except Exception as e:
+        results.append(_warn(f"WhatsApp bridge check failed: {e}"))
 
 
     _section("Summary")
@@ -3730,8 +4370,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
             if os.path.isfile(match):
                 dst = os.path.join(staging_dir, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(match, dst)
-                collected.append((rel, match, dst))
+                try:
+                    shutil.copy2(match, dst)
+                    collected.append((rel, match, dst))
+                except (OSError, FileNotFoundError) as e:
+                    if not quiet:
+                        print(f"  Warning: Skipping {rel}: {e}")
     elif is_glob and os.path.isdir(abs_pattern):
         # Directory: walk recursively
         for dirpath, dirnames, filenames in os.walk(abs_pattern):
@@ -3746,8 +4390,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
                     continue
                 dst = os.path.join(staging_dir, rel)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copy2(src, dst)
-                collected.append((rel, src, dst))
+                try:
+                    shutil.copy2(src, dst)
+                    collected.append((rel, src, dst))
+                except (OSError, FileNotFoundError) as e:
+                    if not quiet:
+                        print(f"  Warning: Skipping {rel}: {e}")
     elif os.path.isfile(abs_pattern):
         # Single file
         rel = rel_pattern
@@ -3756,8 +4404,12 @@ def _collect_files_for_source(rel_pattern, is_glob, staging_dir, quiet=False):
         dst = os.path.join(staging_dir, rel)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         # DB files get special treatment via _snapshot_db
-        shutil.copy2(abs_pattern, dst)
-        collected.append((rel, abs_pattern, dst))
+        try:
+            shutil.copy2(abs_pattern, dst)
+            collected.append((rel, abs_pattern, dst))
+        except (OSError, FileNotFoundError) as e:
+            if not quiet:
+                print(f"  Warning: Skipping {rel}: {e}")
 
     return collected
 

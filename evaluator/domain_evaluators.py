@@ -11,6 +11,7 @@ from .strategies.keyword import KeywordEvaluator
 from .strategies.sql_executor import SQLExecutorEvaluator
 from .strategies.tool_call import ToolCallEvaluator
 from .strategies.icd_code import IcdCodeEvaluator
+from .strategies.knowledge_builder import KnowledgeBuilderEvaluator
 
 
 # Domain → Evaluator mapping
@@ -22,6 +23,7 @@ DOMAIN_EVALUATORS: Dict[str, Type[BaseEvaluator]] = {
     "tool_calling": ToolCallEvaluator,
     "health": TwoPassEvaluator,  # Health domain - uses two-pass for numeric/text extraction
     "icd_coding": IcdCodeEvaluator,
+    "knowledge_builder": KnowledgeBuilderEvaluator,  # Deterministic author-docs JSON validator
 }
 
 # Evaluator type name → class mapping for config overrides
@@ -31,6 +33,7 @@ EVALUATOR_TYPES = {
     "sql_executor": SQLExecutorEvaluator,
     "tool_call": ToolCallEvaluator,
     "icd_code_judge": IcdCodeEvaluator,
+    "knowledge_builder": KnowledgeBuilderEvaluator,
 }
 
 

@@ -1,0 +1,35 @@
+{
+  "id": "kb_create_event_1",
+  "name": "Create event with links",
+  "description": "An event mentioning a place and host should link them inline.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser menghadiri konferensi AI Summit di Jakarta yang diselenggarakan oleh Nusantara Tech.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "AI Summit",
+          "type": [
+            "event",
+            "note"
+          ]
+        },
+        {
+          "title": "Jakarta",
+          "type": "place"
+        },
+        {
+          "title": "Nusantara Tech",
+          "type": [
+            "organization",
+            "company"
+          ]
+        }
+      ]
+    },
+    "require_links": true
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

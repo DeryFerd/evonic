@@ -2,7 +2,8 @@
 
 import os
 import tempfile
-from flask import Blueprint, render_template, jsonify, request, redirect, url_for
+import zipfile
+from flask import Blueprint, render_template, jsonify, request, redirect, url_for, send_file, after_this_request
 from backend.skills_manager import skills_manager
 from backend.skillsets import list_skillsets, get_skillset, resolve_skillset, apply_skillset, update_skillset
 from backend.audit_logger import audit
@@ -194,6 +195,55 @@ def api_delete_skill(skill_id):
         return jsonify(result), 400
     audit.log_skill(user_id='admin', skill_id=skill_id, action='uninstall', ip=request.remote_addr or '')
     return jsonify(result)
+
+
+@skills_bp.route('/api/skills/<skill_id>/export')
+def api_export_skill(skill_id):
+    """Export a skill as a zip file, matching the CLI `evonic skill export <ID>` behavior."""
+    skill = skills_manager.get_skill(skill_id)
+    if not skill:
+        return jsonify({'error': 'Skill not found'}), 404
+
+    skill_dir = skill.get('_dir')
+    if not skill_dir or not os.path.isdir(skill_dir):
+        return jsonify({'error': 'Skill directory not found'}), 404
+
+    # Create zip archive in a temp file
+    tmp = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, dirs, files in os.walk(skill_dir):
+                dirs[:] = [d for d in dirs if d != '__pycache__']
+                for fname in files:
+                    full_path = os.path.join(root, fname)
+                    rel_path = os.path.relpath(full_path, skill_dir)
+                    arcname = f'{skill_id}/{rel_path}'
+                    zf.write(full_path, arcname)
+
+        @after_this_request
+        def cleanup(response):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            return response
+
+        version = skill.get('version', '0.1.0')
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=f'{skill_id}-evonic-plugin-v{version}.zip',
+            mimetype='application/zip',
+        )
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return jsonify({'error': 'Failed to create export archive'}), 500
 
 
 # ==================== Skillset Routes ====================

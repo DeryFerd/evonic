@@ -1,5 +1,6 @@
 """Backend implementation for the write_file tool — writes full content to a file."""
 
+import logging
 import os
 
 try:
@@ -7,12 +8,13 @@ try:
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+logger = logging.getLogger(__name__)
+
 from backend.tools._workspace import resolve_workspace_path
 try:
     from backend.tools.lib.safety_pipeline import should_skip_safety
 except ImportError:
-    import logging
-    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for write_file tool")
+    logger.warning("safety_pipeline unavailable — safety checks disabled for write_file tool")
     should_skip_safety = lambda agent: True
 _STR_REPLACE_STEPS = """1. First, call read_file() to see the current content.
 2. Then call {tool} with old_str set to the exact lines you want to change (copy them from read_file's output).
@@ -116,8 +118,28 @@ def write_file(
             'edit_recipe': recipe,
         }
 
-    # Create parent directories
+    # Name-collision check: warn when creating a file that has a sibling
+    # file or directory with the same stem name. Non-blocking — the write
+    # still proceeds, but the agent gets a nudge to reconsider.
     parent = os.path.dirname(abs_path)
+    stem = os.path.splitext(os.path.basename(abs_path))[0]
+    sibling_dir = os.path.join(parent, stem)
+    sibling_md = os.path.join(parent, f"{stem}.md")
+    collision_warning = None
+    if os.path.isdir(sibling_dir):
+        collision_warning = (
+            f"Sibling directory '{stem}' already exists at this level. "
+            f"Did you mean to update an existing file inside that directory "
+            f"using str_replace/patch instead of creating a new file?"
+        )
+    elif os.path.exists(sibling_md):
+        collision_warning = (
+            f"Sibling file '{stem}.md' already exists at this level. "
+            f"Did you mean to update the existing file using str_replace/patch "
+            f"instead of creating a new directory entry?"
+        )
+
+    # Create parent directories
     if parent:
         if not os.path.exists(parent):
             if create_dirs:
@@ -147,11 +169,14 @@ def write_file(
     except Exception as e:
         return {'error': f"Error writing file: {e}"}
 
-    return {
+    result = {
         'result': 'success',
         'bytes_written': len(encoded),
         'created': not already_exists,
     }
+    if collision_warning:
+        result['warning'] = collision_warning
+    return result
 
 
 def execute(agent, args: dict) -> dict:
@@ -242,6 +267,14 @@ def execute(agent, args: dict) -> dict:
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
+        # KB files require mandatory frontmatter — reject before writing so the
+        # agent sees the error and self-corrects.
+        if '/kb/' in local_path and local_path.endswith('.md'):
+            from backend.agent_runtime.context import validate_kb_frontmatter
+            err = validate_kb_frontmatter(content)
+            if err:
+                return {'error': f"{err} KB files require frontmatter with title, "
+                                 f"description, and type (note|session|group)."}
         result = write_file(local_path, content, overwrite=overwrite, create_dirs=create_dirs, edit_suggestion=edit_suggestion)
         if '/kb/' in local_path and result.get('result') == 'success':
             try:
@@ -305,12 +338,13 @@ def execute(agent, args: dict) -> dict:
     if nudge:
         return {'error': nudge, 'isError': True}
 
-    # When sandbox is enabled or the agent has a workplace, route file I/O
-    # through the execution backend (Docker container, SSH remote, etc.)
-    # instead of the host filesystem.
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.) instead of the host filesystem.
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
-    if sandbox_enabled or has_workplace:
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
         from backend.tools.lib.exec_backend import registry
         session_id = (agent or {}).get('session_id') or 'default'
         backend = registry.get_backend(session_id, agent)

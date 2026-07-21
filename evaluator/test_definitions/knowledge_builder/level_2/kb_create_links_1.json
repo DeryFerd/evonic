@@ -1,0 +1,28 @@
+{
+  "id": "kb_create_links_1",
+  "name": "Create with inline links",
+  "description": "A fact mentioning multiple subjects must weave inline [[links]].",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser bekerja sebagai engineer di Evonic, sebuah perusahaan AI, bersama rekannya Sari yang menjadi product manager.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Sari",
+          "type": "person"
+        },
+        {
+          "title": "Evonic",
+          "type": [
+            "company",
+            "organization"
+          ]
+        }
+      ]
+    },
+    "require_links": true
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

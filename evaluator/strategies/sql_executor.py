@@ -56,8 +56,10 @@ class SQLExecutorEvaluator(BaseEvaluator):
     def evaluate(self, response: str, expected: Any, level: int, prompt: str = "") -> EvaluationResult:
         """Evaluate SQL with execution"""
         
-        # PASS 2: Extract clean SQL (include original question for context)
-        extraction = self.extractor.extract(self.domain, level, response, prompt)
+        # PASS 2: Extract clean SQL (include original question for context).
+        # Always use the "sql" extraction config regardless of the host domain, so
+        # SQL tests work even when filed under another domain (e.g. coding).
+        extraction = self.extractor.extract("sql", level, response, prompt)
         
         if not extraction["success"]:
             return EvaluationResult(

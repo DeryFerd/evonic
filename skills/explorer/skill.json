@@ -8,6 +8,7 @@
   "tools_file": "tools.json",
   "lazy_tools": false,
   "default_enabled": true,
+  "core": true,
   "requires": ["direxplorer"],
   "variables": [
     {
@@ -55,6 +56,13 @@
       "type": "number",
       "default": 300,
       "description": "Maximum seconds to wait when sync mode is enabled. On timeout, Explore() returns an error and the explorer continues running in async mode."
+    },
+    {
+      "name": "inherit_parent_model",
+      "type": "boolean",
+      "default": false,
+      "label": "Use calling agent's model",
+      "description": "When enabled, explorer sub-agents use the same model as the agent that spawned them, instead of the explorer's own model or the global default."
     }
   ]
 }

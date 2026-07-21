@@ -196,7 +196,7 @@ function renderTestDetail(test, domain) {
                                 ${turn.thinking ? `
                                     <div class="px-2 py-1 bg-purple-50 dark:bg-purple-900/20 border-b border-gray-100 dark:border-gray-700">
                                         <span class="text-purple-600 dark:text-purple-400 font-medium">💭 [thinking]</span><br />
-                                        <pre class="text-gray-700 dark:text-gray-300 ml-1 overflow-wrap text-wrap max-h-full overflow-y-auto">${escapeHtml(turn.thinking)}</pre>
+                                        <pre class="text-gray-700 dark:text-gray-300 ml-1 whitespace-pre-wrap break-words overflow-hidden" style="max-height: 16rem;">${escapeHtml(turn.thinking)}</pre>
                                     </div>
                                 ` : ''}
                                 ${turn.tool_calls && turn.tool_calls.length > 0 ? `
@@ -239,7 +239,7 @@ function renderTestDetail(test, domain) {
                                 ${turn.response ? `
                                     <div class="px-2 py-1 bg-amber-50 dark:bg-amber-900/20 font-semibold text-md">
                                         <p class="text-amber-600 dark:text-amber-400">💬 [response]</p>
-                                        <pre class="text-gray-700 dark:text-gray-300 ml-1">${escapeHtml(turn.response)}</pre>
+                                        <pre class="text-gray-700 dark:text-gray-300 ml-1 whitespace-pre-wrap break-words overflow-hidden">${escapeHtml(turn.response)}</pre>
                                     </div>
                                 ` : ''}
                             </div>
@@ -256,7 +256,7 @@ function renderTestDetail(test, domain) {
                     <span class="toggle-icon" id="thinking-toggle">▶</span>
                 </div>
                 <div class="section-content thinking-box" id="thinking-content" style="display: none;">
-                    <pre>${escapeHtml(details.thinking)}</pre>
+                    <pre class="whitespace-pre-wrap break-words overflow-hidden">${escapeHtml(details.thinking)}</pre>
                 </div>
             </div>
         `;

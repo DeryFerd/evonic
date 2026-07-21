@@ -68,6 +68,34 @@ class ApprovalRegistry:
         with self._lock:
             return self._pending.get(approval_id)
 
+    def list_pending(self) -> list:
+        """Return all still-unresolved approvals as plain dicts.
+
+        This is the freshest source of truth for what is actively blocking an
+        agent right now (same registry the /chat/approve endpoint checks). Used
+        by the web UI's polling safety-net so the approval modal is delivered
+        even if the live SSE 'approval_required' event was lost in transit.
+        """
+        with self._lock:
+            items = list(self._pending.values())
+        out = []
+        for pa in items:
+            if pa.decision is not None:
+                continue  # already resolved, awaiting cleanup
+            sr = pa.safety_result or {}
+            out.append({
+                'approval_id': pa.approval_id,
+                'agent_id': pa.agent_id,
+                'session_id': pa.session_id,
+                'tool': pa.tool_name,
+                'args': pa.tool_args,
+                'approval_info': sr.get('approval_info', {}),
+                'reasons': sr.get('reasons', []),
+                'score': sr.get('score'),
+                'created_at': pa.created_at,
+            })
+        return out
+
     def get_by_session(self, session_id: str) -> Optional[PendingApproval]:
         with self._lock:
             approval_id = self._by_session.get(session_id)

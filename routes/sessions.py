@@ -22,13 +22,30 @@ sessions_bp = Blueprint('sessions', __name__)
 
 _IMAGE_MIMES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 
+
+def _human_size(size_bytes: int | None) -> str:
+    """Render a byte count as a human-friendly string."""
+    if size_bytes is None or size_bytes < 0:
+        return '0B'
+    units = ['B', 'KB', 'MB', 'GB']
+    n = float(size_bytes)
+    for unit in units:
+        if n < 1024 or unit == units[-1]:
+            if unit == 'B':
+                return f"{int(n)}{unit}"
+            return f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{int(size_bytes)}B"
+
+
 # Reuse text/pdf detection from read_attachment
 from backend.tools.read_attachment import (
     _is_textish, _is_pdf, _read_pdf_text, _TEXTISH_EXTS,
 )
 
 _ALLOWED_EXTS = (
-    {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.zip'}
+    {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.zip',
+     '.docx', '.xlsx', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.epub'}
     | _TEXTISH_EXTS
 )
 
@@ -60,7 +77,7 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
     safe_name = _sanitize_filename(original_name)
     target_dir = os.path.join('data', 'attachments', agent_id, session_id)
     os.makedirs(target_dir, exist_ok=True)
-    target_path = os.path.join(target_dir, f"{int(time.time())}_{safe_name}")
+    target_path = os.path.join(target_dir, f"{time.time_ns()}_{safe_name}")
     with open(target_path, 'wb') as f:
         f.write(file_bytes)
 
@@ -90,6 +107,20 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
         'file_path': target_path,
     }
 
+    # --- Sync to remote workplace if applicable (Phase 3: proactive sync) ---
+    workplace_path = None
+    try:
+        agent = db.get_agent(agent_id)
+        if agent and (agent.get('workplace_id') or agent.get('sandbox_enabled')):
+            from backend.tools._ensure_workplace_file import ensure_workplace_file
+            workplace_path = ensure_workplace_file(target_path, agent)
+            attachment_info['workplace_path'] = workplace_path
+    except Exception as e:
+        _logger.warning(
+            "Failed to sync attachment to remote workplace for agent %s: %s",
+            agent_id, e
+        )
+
     # --- Image: convert to JPEG base64 for LLM vision ---
     if is_image:
         try:
@@ -114,6 +145,8 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
     if _is_pdf(mime_type, target_path):
         text = _read_pdf_text(target_path, offset=1)
         prefix = f"[Attached file: {original_name}]\n```\n{text}\n```"
+        if workplace_path:
+            prefix = f"[Workplace path: {workplace_path}]\n" + prefix
         return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
     # --- Text/code file: read content ---
@@ -123,10 +156,14 @@ def _process_upload(file_storage, agent_id: str, session_id: str,
         except Exception:
             content = '[Could not decode file content]'
         prefix = f"[Attached file: {original_name}]\n```\n{content}\n```"
+        if workplace_path:
+            prefix = f"[Workplace path: {workplace_path}]\n" + prefix
         return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
     # --- Other binary ---
     prefix = f"[Attached file: {original_name} ({mime_type}, {size_bytes} bytes) — binary file, content not readable]"
+    if workplace_path:
+        prefix += f"\n[Workplace path: {workplace_path}]"
     return {'image_url': None, 'text_prefix': prefix, 'attachment_info': attachment_info}
 
 
@@ -175,12 +212,12 @@ def api_session_reply(session_id):
     # Support both JSON and multipart/form-data
     if request.content_type and request.content_type.startswith('multipart/form-data'):
         text = (request.form.get('text') or '').strip()
-        perspective = (request.form.get('perspective') or 'B').strip()
+        perspective = (request.form.get('perspective') or 'A').strip()
         file = request.files.get('file')
     else:
         data = request.get_json()
         text = (data.get('text') or '').strip()
-        perspective = (data.get('perspective') or 'B').strip()
+        perspective = (data.get('perspective') or 'A').strip()
         file = None
 
     if not text and not file:
@@ -207,8 +244,11 @@ def api_session_reply(session_id):
             return jsonify({'error': 'Session not found'}), 404
         agent_id = session['agent_id']
 
-        # Check file size against agent config
+        # Check if attachments are enabled for this agent
         cfg = db.get_agent_attachment_config(agent_id)
+        if not cfg.get('enabled'):
+            return jsonify({'error': 'File attachments are not enabled for this agent. Enable them in agent settings.'}), 400
+
         max_bytes = cfg.get('max_size_mb', 20) * 1024 * 1024
         file.seek(0, os.SEEK_END)
         fsize = file.tell()
@@ -230,13 +270,19 @@ def api_session_reply(session_id):
         attachment_info = result['attachment_info']
         upload_meta = {'attachment_info': attachment_info}
 
-        # For non-image files, prepend extracted text to user message
-        if result['text_prefix']:
-            text = f"{result['text_prefix']}\n\n{text}" if text else result['text_prefix']
+        # Build [Attached: ... id=N] line so agents can use read_attachment(attachment_id=N)
+        att = result['attachment_info']
+        info_line = (
+            f"[Attached: {att['filename']} "
+            f"({att['mime_type']}, {_human_size(att['size_bytes'])}) "
+            f"id={att['attachment_id']} path={att['file_path']}]"
+        )
 
-        # Fallback display text when no user text provided
-        if not text:
-            text = '[Image]' if attachment_info.get('is_image') else f"[File: {attachment_info['filename']}]"
+        # Prepend info_line to text; for non-image files also prepend extracted content
+        if result['text_prefix']:
+            text = f"{info_line}\n\n{result['text_prefix']}\n\n{text}" if text else f"{info_line}\n\n{result['text_prefix']}"
+        else:
+            text = f"{info_line}\n\n{text}" if text else info_line
 
     if perspective == 'A':
         result = agent_runtime.send_as_user(session_id, text,

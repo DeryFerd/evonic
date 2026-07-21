@@ -1,42 +1,36 @@
 <div class="space-y-4">
     <!-- Header -->
-    <div class="flex items-center justify-between">
-        <div>
-            <h3 class="font-medium text-gray-800 dark:text-gray-100">User Management</h3>
-            <p class="text-sm text-gray-500 mt-0.5">View and manage registered users. Block or unblock users, and view audit trail.</p>
-        </div>
+    <div class="settings-pane-head">
+        <h2 class="settings-pane-title">User Management</h2>
+        <p class="settings-pane-desc">View and manage registered users. Block or unblock users, and view audit trail.</p>
     </div>
 
     <!-- Filter Bar -->
     <div class="flex items-center gap-2 flex-wrap">
-        <label class="text-sm text-gray-500">Filter:</label>
         <select id="users-status-filter" onchange="usersTab.load()"
-                class="border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-1.5 text-sm bg-white dark:bg-gray-700 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-indigo-300">
+                class="setting-select">
             <option value="all">All Users</option>
             <option value="approved">Approved</option>
             <option value="blocked">Blocked</option>
             <option value="pending">Pending</option>
         </select>
-        <span id="users-count" class="text-xs text-gray-400 ml-2"></span>
+        <span id="users-count" class="text-xs text-gray-400 ml-1"></span>
     </div>
 
     <!-- Users Table -->
-    <div class="overflow-x-auto">
+    <div class="setting-group-body overflow-x-auto">
         <table class="w-full text-sm text-left">
-            <thead class="text-xs text-gray-500 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-300">
-                <tr>
-                    <th class="px-4 py-2">Name</th>
-                    <th class="px-4 py-2">User ID</th>
-                    <th class="px-4 py-2 text-center">Status</th>
-                    <th class="px-4 py-2">Blocked At</th>
-                    <th class="px-4 py-2">Blocked By</th>
-                    <th class="px-4 py-2">Block Reason</th>
-                    <th class="px-4 py-2">Last Active</th>
-                    <th class="px-4 py-2 text-right">Actions</th>
+            <thead>
+                <tr class="text-[11px] uppercase tracking-wider text-gray-400 dark:text-gray-500 border-b border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-900/30">
+                    <th class="px-4 py-3 font-semibold">User</th>
+                    <th class="px-4 py-3 font-semibold text-center">Status</th>
+                    <th class="px-4 py-3 font-semibold">Block Details</th>
+                    <th class="px-4 py-3 font-semibold">Last Active</th>
+                    <th class="px-4 py-3 font-semibold text-right">Actions</th>
                 </tr>
             </thead>
             <tbody id="users-table-body">
-                <tr><td colspan="8" class="text-center py-8 text-gray-400">Loading...</td></tr>
+                <tr><td colspan="5" class="text-center py-8 text-gray-400">Loading...</td></tr>
             </tbody>
         </table>
     </div>
@@ -87,7 +81,7 @@
             var url = '/api/settings/users?filter=' + filter + '&limit=' + usersTab.limit + '&offset=' + offset;
 
             document.getElementById('users-table-body').innerHTML =
-                '<tr><td colspan="8" class="text-center py-8 text-gray-400">Loading...</td></tr>';
+                '<tr><td colspan="5" class="text-center py-8 text-gray-400">Loading...</td></tr>';
 
             fetch(url)
                 .then(function(r) { return r.json(); })
@@ -96,7 +90,7 @@
                 })
                 .catch(function(err) {
                     document.getElementById('users-table-body').innerHTML =
-                        '<tr><td colspan="8" class="text-center py-8 text-red-500">Error loading users: ' + err.message + '</td></tr>';
+                        '<tr><td colspan="5" class="text-center py-8 text-red-500">Error loading users: ' + err.message + '</td></tr>';
                 });
         },
 
@@ -110,7 +104,7 @@
             countEl.textContent = '(' + total + ' user' + (total !== 1 ? 's' : '') + ')';
 
             if (users.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center py-8 text-gray-400">No users found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="text-center py-8 text-gray-400">No users found</td></tr>';
                 pagination.classList.add('hidden');
                 return;
             }
@@ -119,21 +113,31 @@
             for (var i = 0; i < users.length; i++) {
                 var u = users[i];
                 var statusBadge = usersTab.statusBadge(u);
-                var blockedAt = u.blocked_at ? usersTab.formatDate(u.blocked_at) : '—';
-                var blockedBy = u.blocked_by || '—';
-                var blockReason = u.blocked_reason || '—';
                 var lastActive = u.last_active_at ? usersTab.formatDate(u.last_active_at) : '—';
-                var auditCount = u.audit_count || 0;
+                var initial = (u.name || u.id || '?').trim().charAt(0).toUpperCase() || '?';
 
-                html += '<tr class="border-b border-gray-100 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-750">';
-                html += '<td class="px-4 py-2 font-medium text-gray-800 dark:text-gray-100">' + usersTab.esc(u.name || '') + '</td>';
-                html += '<td class="px-4 py-2 text-gray-500 dark:text-gray-400 font-mono text-xs">' + usersTab.esc(u.id || '') + '</td>';
-                html += '<td class="px-4 py-2 text-center">' + statusBadge + '</td>';
-                html += '<td class="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs">' + blockedAt + '</td>';
-                html += '<td class="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs">' + usersTab.esc(blockedBy) + '</td>';
-                html += '<td class="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs max-w-[150px] truncate" title="' + usersTab.esc(blockReason) + '">' + usersTab.esc(blockReason) + '</td>';
-                html += '<td class="px-4 py-2 text-gray-500 dark:text-gray-400 text-xs">' + lastActive + '</td>';
-                html += '<td class="px-4 py-2 text-right whitespace-nowrap">';
+                // Consolidated block details: reason + "by X · date"
+                var blockCell = '<span class="text-gray-300 dark:text-gray-600">—</span>';
+                if (u.blocked_at) {
+                    var reason = u.blocked_reason || 'No reason given';
+                    var meta = (u.blocked_by ? 'by ' + usersTab.esc(u.blocked_by) + ' · ' : '') + usersTab.formatDate(u.blocked_at);
+                    blockCell = '<div class="max-w-[220px]">'
+                        + '<div class="text-xs text-gray-700 dark:text-gray-300 truncate" title="' + usersTab.esc(reason) + '">' + usersTab.esc(reason) + '</div>'
+                        + '<div class="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">' + meta + '</div>'
+                        + '</div>';
+                }
+
+                html += '<tr class="border-b border-gray-100 dark:border-gray-700/60 last:border-0 hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors">';
+                html += '<td class="px-4 py-3"><div class="flex items-center gap-3">'
+                    + '<span class="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300 flex items-center justify-center text-xs font-semibold flex-shrink-0">' + usersTab.esc(initial) + '</span>'
+                    + '<div class="min-w-0">'
+                    + '<div class="font-medium text-gray-800 dark:text-gray-100 truncate">' + usersTab.esc(u.name || '') + '</div>'
+                    + '<div class="font-mono text-[11px] text-gray-400 dark:text-gray-500 truncate">' + usersTab.esc(u.id || '') + '</div>'
+                    + '</div></div></td>';
+                html += '<td class="px-4 py-3 text-center">' + statusBadge + '</td>';
+                html += '<td class="px-4 py-3">' + blockCell + '</td>';
+                html += '<td class="px-4 py-3 text-gray-500 dark:text-gray-400 text-xs whitespace-nowrap">' + lastActive + '</td>';
+                html += '<td class="px-4 py-3 text-right whitespace-nowrap">';
                 html += usersTab.actionButtons(u);
                 html += '</td>';
                 html += '</tr>';
@@ -161,11 +165,11 @@
 
         statusBadge: function(u) {
             if (u.is_approved === 2 || u.blocked_at) {
-                return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">🚫 Blocked</span>';
+                return '<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700 border border-red-200 dark:bg-red-900/30 dark:text-red-300 dark:border-red-800"><span class="w-1.5 h-1.5 rounded-full bg-red-500"></span>Blocked</span>';
             } else if (u.is_approved === 1) {
-                return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">✓ Approved</span>';
+                return '<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:border-emerald-800"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>Approved</span>';
             } else {
-                return '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200">⏳ Pending</span>';
+                return '<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:border-amber-800"><span class="w-1.5 h-1.5 rounded-full bg-amber-500"></span>Pending</span>';
             }
         },
 
@@ -174,16 +178,18 @@
             var isBlocked = u.is_approved === 2 || u.blocked_at;
 
             btns += '<button onclick="usersTab.showAudit(\'' + usersTab.escAttr(u.id) + '\')" ' +
-                    'class="text-xs text-indigo-500 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 mr-2" ' +
-                    'title="View audit trail">📋</button>';
+                    'class="inline-flex items-center justify-center w-7 h-7 rounded-md border border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-400 hover:text-indigo-600 hover:border-indigo-300 dark:hover:text-indigo-400 dark:hover:border-indigo-600 transition-colors mr-1.5 align-middle" ' +
+                    'title="View audit trail">' +
+                    '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>' +
+                    '</button>';
 
             if (isBlocked) {
                 btns += '<button onclick="usersTab.unblockUser(\'' + usersTab.escAttr(u.id) + '\')" ' +
-                        'class="text-xs bg-green-500 hover:bg-green-600 text-white px-2 py-0.5 rounded" ' +
+                        'class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md border border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-700 dark:text-emerald-400 dark:hover:bg-emerald-900/30 transition-colors align-middle" ' +
                         'title="Unblock this user">Unblock</button>';
             } else {
                 btns += '<button onclick="usersTab.showBlockModal(\'' + usersTab.escAttr(u.id) + '\', \'' + usersTab.escAttr(u.name || '') + '\')" ' +
-                        'class="text-xs bg-red-500 hover:bg-red-600 text-white px-2 py-0.5 rounded" ' +
+                        'class="inline-flex items-center h-7 text-xs font-medium px-2.5 rounded-md border border-red-300 text-red-600 hover:bg-red-50 dark:border-red-700 dark:text-red-400 dark:hover:bg-red-900/30 transition-colors align-middle" ' +
                         'title="Block this user">Block</button>';
             }
             return btns;

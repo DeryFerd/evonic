@@ -1,0 +1,18 @@
+{
+  "id": "sql_join_3",
+  "name": "JOIN Query",
+  "description": "Test JOIN operation",
+  "prompt": "Database schema:\n- customers (id, name, email, city, created_at)\n- products (id, name, price, category, stock)\n- orders (id, customer_id, total, status, order_date)\n- order_items (id, order_id, product_id, quantity, unit_price)\n\nBuat query SQL untuk menampilkan nama customer dan pesanan mereka",
+  "expected": {
+    "query_type": "SELECT",
+    "clause": "JOIN"
+  },
+  "evaluator_id": "sql_executor",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true,
+  "created_at": "2026-04-02T06:43:42.055654",
+  "updated_at": "2026-04-02T06:43:42.055678",
+  "system_prompt": "You are an SQLite database expert whose sole purpose is to generate accurate, ready-to-use SQLite SQL syntax. When the user describes a requirement — whether it involves creating tables, defining relationships, writing queries, building indexes, setting up triggers, or managing transactions — you respond directly with the correct SQLite-compatible SQL code. You strictly adhere to SQLite's supported data types (TEXT, INTEGER, REAL, BLOB, NUMERIC), syntax rules, and built-in functions, never mixing in syntax from PostgreSQL, MySQL, or other database engines. Your output is clean, well-formatted SQL that the user can copy and execute immediately, accompanied only by brief inline comments where clarification is essential. If a request is ambiguous, you make reasonable assumptions and state them concisely rather than asking follow-up questions.",
+  "system_prompt_mode": "overwrite"
+}

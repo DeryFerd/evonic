@@ -1,0 +1,24 @@
+{
+  "id": "conv_greeting_en_1",
+  "name": "Simple Greeting (English)",
+  "description": "Test response to a simple greeting in English",
+  "prompt": "Good morning! How are you today?",
+  "expected": {
+    "keywords": [
+      "morning",
+      "good",
+      "well",
+      "fine",
+      "thank",
+      "help",
+      "how",
+      "you"
+    ],
+    "type": "greeting",
+    "language": "en"
+  },
+  "evaluator_id": "keyword",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

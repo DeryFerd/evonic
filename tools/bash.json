@@ -4,19 +4,22 @@
   "description": "Execute a bash script in a sandboxed Docker container.",
   "function": {
     "name": "bash",
-    "description": "Execute a bash script in an isolated Docker container. The container is shared with the runpy tool within the same session — files written by Python code are immediately accessible to bash scripts and vice versa. The working directory is /workspace, which is the project root. The container persists across calls so state (environment variables set with export, files in /tmp, installed packages) survives between script executions within the same session.",
+    "description": "Execute a bash script in an isolated Docker container.",
     "parameters": {
       "type": "object",
       "properties": {
         "script": {
           "type": "string",
-          "description": "The bash script to execute. Can be multi-line. Runs via 'bash -s' (stdin). The working directory is /workspace.",
+          "description": "The bash script to execute.",
           "view": "code"
         },
         "action": {
           "type": "string",
-          "enum": ["run", "destroy"],
-          "description": "Action to perform. 'run' (default) executes the script. 'destroy' tears down the container for this session and frees resources (also destroys the shared runpy container)."
+          "enum": [
+            "run",
+            "destroy"
+          ],
+          "description": "'run' to execute, 'destroy' to tear down the container."
         },
         "timeout": {
           "type": "integer",
@@ -30,11 +33,13 @@
           }
         }
       },
-      "required": ["script"]
+      "required": [
+        "script"
+      ]
     }
   },
-  "mock_response": "var args = ARGS;\nvar script = args.script || '';\nvar action = args.action || 'run';\nif (action === 'destroy') {\n  console.log(JSON.stringify({ result: 'container_destroyed', session_id: 'mock-session' }));\n} else if (!script) {\n  console.log(JSON.stringify({ error: \"Missing required argument: 'script'\" }));\n} else {\n  console.log(JSON.stringify({ stdout: '', stderr: '', exit_code: 0, execution_time: 0.05 }));\n}",
-  "mock_response_type": "javascript",
+  "mock_response": "script = args.get('script', '')\naction = args.get('action', 'run')\nfiles = ['app.py', 'auth.py', 'discount.py', 'utils.py', 'models.py', 'requirements.txt']\nif action == 'destroy':\n    result = {'result': 'container_destroyed', 'session_id': 'mock-session'}\nelif not script:\n    result = {'error': \"Missing required argument: 'script'\"}\nelse:\n    s = script.lower()\n    out = ''\n    if 'grep' in s and ('discount' in s or 'diskon' in s or 'calculate_discount' in s):\n        out = './discount.py:1:def calculate_discount(price, percent):\\n./discount.py:4:    return price - (price * percent)\\n./discount.py:6:def apply_bulk_discount(prices, percent):\\n./app.py:3:from discount import calculate_discount'\n    elif 'grep' in s and 'authenticate' in s:\n        out = './auth.py:5:def authenticate(username, password):\\n./app.py:2:from auth import authenticate'\n    elif 'grep' in s and ('format_currency' in s or 'slugify' in s or 'util' in s):\n        out = './utils.py:1:def format_currency(amount):\\n./utils.py:4:def slugify(text):'\n    else:\n        m = re.match(r'\\s*echo\\s+(.*)', script)\n        if m:\n            out = m.group(1).strip().strip('\"').strip(\"'\")\n        elif 'tree' in s or 'find' in s or 'ls' in s or 'cat ' in s or 'pwd' in s or 'dir' in s:\n            out = '\\n'.join(files)\n        else:\n            out = ''\n    result = {'stdout': out, 'stderr': '', 'exit_code': 0, 'execution_time': 0.05}",
+  "mock_response_type": "python",
   "created_at": "2026-04-13T00:00:00.000000",
   "updated_at": "2026-04-13T00:00:00.000000"
 }

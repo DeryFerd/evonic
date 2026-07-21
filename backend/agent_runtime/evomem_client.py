@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import shutil
 import subprocess
 import logging
 
@@ -64,7 +63,7 @@ def _summarize(parsed) -> str:
         if isinstance(parsed.get(key), list):
             return f"{len(parsed[key])} {key}"
     if "links" in parsed:  # stats
-        return f"pages={parsed.get('pages')} links={parsed.get('links')} " \
+        return f"docs={parsed.get('docs')} links={parsed.get('links')} " \
                f"dangling={parsed.get('dangling_links')}"
     if "links_resolved" in parsed:  # sync
         return f"sync added={parsed.get('added')} updated={parsed.get('updated')} " \
@@ -141,158 +140,40 @@ def _run(brain_dir: str, args: list, timeout: int = None,
         return None
 
 
-def _get_brain_dir(agent_id: str) -> str:
-    """Return the evomem directory path for a given agent."""
-    return f"agents/{agent_id}/brain"
+def _get_evomem_dir(agent_id: str) -> str:
+    """Return the evomem knowledge-root directory for a given agent.
 
-
-def _get_kb_dir(agent_id: str) -> str:
-    """Return the KB directory path for a given agent.
-
-    KB files live at agents/<id>/kb/ and are mirrored into the brain's
-    kb/ subdirectory before sync so the evomem binary can scan them.
+    The agent's KB dir *is* the evomem knowledge root: markdown docs in
+    agents/<id>/kb/ are scanned in place (no mirror) and the index lives at
+    agents/<id>/kb/.evomem.db. Docs live at the root or inside user-created
+    workspace folders (each with an index.md); slug = relative path stem.
     """
     return f"agents/{agent_id}/kb"
 
 
-def _mirror_kb_files(agent_id: str) -> dict:
-    """Mirror KB files from agents/<id>/kb/ into brain/kb/ for sync.
-
-    Copies new/changed files, removes stale ones (deleted from kb/ source),
-    and returns a stats dict: {copied, removed, unchanged}.
-
-    Walks the KB source directory recursively so files in subdirectories
-    are mirrored with their relative paths preserved. Only .md files are
-    copied.
-
-    The evomem binary scans all .md files under the brain directory, so
-    mirroring KB files into brain/kb/ makes them visible to the sync engine.
-    Content hash comparison avoids unnecessary writes.
-
-    When the KB source directory does not exist, any stale brain/kb/
-    copies are cleaned up so the next sync soft-deletes the pages.
-    """
-    brain_dir = _get_brain_dir(agent_id)
-    kb_dir = _get_kb_dir(agent_id)
-    brain_kb_dir = os.path.join(brain_dir, "kb")
-
-    stats = {"copied": 0, "removed": 0, "unchanged": 0}
-
-    # ---- No KB source directory: clean up any stale brain/kb/ copies ----
-    if not os.path.isdir(kb_dir):
-        if os.path.isdir(brain_kb_dir):
-            # Walk brain/kb/ bottom-up to remove all .md files and empty dirs
-            for dirpath, _dirnames, filenames in os.walk(brain_kb_dir, topdown=False):
-                for filename in filenames:
-                    if filename.endswith(".md"):
-                        os.remove(os.path.join(dirpath, filename))
-                        stats["removed"] += 1
-                # Remove directory if empty (bottom-up ensures children first)
-                try:
-                    os.rmdir(dirpath)
-                except OSError:
-                    pass
-        return stats
-
-    # ---- Ensure brain/kb/ directory exists ----
-    os.makedirs(brain_kb_dir, exist_ok=True)
-
-    # Collect existing brain/kb/ files as relative paths
-    brain_kb_files: set = set()
-    if os.path.isdir(brain_kb_dir):
-        for dirpath, _dirnames, filenames in os.walk(brain_kb_dir):
-            for filename in filenames:
-                if filename.endswith(".md"):
-                    rel_path = os.path.relpath(
-                        os.path.join(dirpath, filename), brain_kb_dir)
-                    brain_kb_files.add(rel_path)
-
-    # ---- Copy new or changed KB files (recursively) ----
-    kb_files: set = set()
-    for dirpath, _dirnames, filenames in os.walk(kb_dir):
-        for filename in sorted(filenames):
-            if not filename.endswith(".md"):
-                continue
-            src = os.path.join(dirpath, filename)
-            rel_path = os.path.relpath(src, kb_dir)
-            kb_files.add(rel_path)
-            dst = os.path.join(brain_kb_dir, rel_path)
-
-            if os.path.exists(dst):
-                # Compare content to avoid unnecessary writes
-                try:
-                    with open(src, "rb") as f:
-                        src_content = f.read()
-                    with open(dst, "rb") as f:
-                        dst_content = f.read()
-                    if src_content == dst_content:
-                        stats["unchanged"] += 1
-                        continue
-                except OSError:
-                    pass  # fall through to copy
-
-            # Ensure parent directory exists for nested files
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
-            shutil.copy2(src, dst)
-            stats["copied"] += 1
-            vlog("kb_mirror[%s]: copied %s", agent_id, rel_path)
-
-    # ---- Remove stale files (deleted from kb/ source) ----
-    for rel_path in sorted(brain_kb_files - kb_files):
-        os.remove(os.path.join(brain_kb_dir, rel_path))
-        stats["removed"] += 1
-        vlog("kb_mirror[%s]: removed stale %s", agent_id, rel_path)
-
-    # ---- Remove empty subdirectories from brain/kb/ ----
-    if os.path.isdir(brain_kb_dir):
-        for dirpath, _dirnames, _filenames in os.walk(brain_kb_dir, topdown=False):
-            if dirpath == brain_kb_dir:
-                continue  # keep the root kb/ directory
-            try:
-                os.rmdir(dirpath)
-            except OSError:
-                pass  # directory not empty, skip
-
-    if stats["copied"] or stats["removed"]:
-        vlog("kb_mirror[%s]: copied=%d removed=%d unchanged=%d",
-             agent_id, stats["copied"], stats["removed"], stats["unchanged"])
-
-    return stats
-
-
 def _brain_db_exists(brain_dir: str) -> bool:
-    """Check whether the evomem database exists (either .evomem.db or .evobrain.db).
-
-    The evomem binary internally creates .evobrain.db, but the Python code
-    references .evomem.db. This helper checks for both so the brain is
-    considered initialised when either file is present.
-    """
-    return (
-        os.path.isfile(os.path.join(brain_dir, ".evomem.db")) or
-        os.path.isfile(os.path.join(brain_dir, ".evobrain.db"))
-    )
+    """Check whether the evomem database file (.evomem.db) exists."""
+    return os.path.isfile(os.path.join(brain_dir, ".evomem.db"))
 
 
 def init_evomem(agent_id: str) -> bool:
     """Initialize a new evomem directory for the agent. Returns True on success."""
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not is_available():
         return False
     if os.path.isdir(brain_dir) and _brain_db_exists(brain_dir):
         return True
+    # Delete legacy .evobrain.db if it still exists alongside a missing
+    # .evomem.db — the DB filename was renamed and old agents may only have
+    # the legacy file. Removing it forces a fresh init with the new filename.
+    evobrain_db = os.path.join(brain_dir, ".evobrain.db")
+    if os.path.isfile(evobrain_db):
+        os.remove(evobrain_db)
+        vlog("init_evomem[%s]: removed legacy .evobrain.db", agent_id)
     os.makedirs(brain_dir, exist_ok=True)
     # `init` prints a plain-text confirmation even with --json, so verify success
     # by the presence of the database file rather than a parsed JSON result.
     _run(brain_dir, ["init"], expect_json=False)
-
-    # The evomem binary internally creates .evobrain.db, but the Python code
-    # references .evomem.db after commit ead2b69. Create a symlink to bridge
-    # the mismatch without rebuilding the binary or reverting the rename.
-    evobrain_db = os.path.join(brain_dir, ".evobrain.db")
-    evomem_db = os.path.join(brain_dir, ".evomem.db")
-    if os.path.isfile(evobrain_db) and not os.path.isfile(evomem_db):
-        os.symlink(evobrain_db, evomem_db)
-        vlog("created symlink .evomem.db -> .evobrain.db in %s", brain_dir)
 
     return _brain_db_exists(brain_dir)
 
@@ -302,7 +183,7 @@ def capture(agent_id: str, text: str, category: str = "general") -> dict:
 
     Returns dict with {slug, path} or None on failure.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         if not init_evomem(agent_id):
             return None
@@ -319,17 +200,19 @@ def capture(agent_id: str, text: str, category: str = "general") -> dict:
 
 
 def search(agent_id: str, query: str, limit: int = 8,
-           mode: str = "balanced", timeout: int = None) -> dict:
+           mode: str = "balanced", min_score: float = 0.03,
+           timeout: int = None) -> dict:
     """Search the agent's evomem with hybrid retrieval.
 
-    mode is one of 'conservative' | 'balanced' | 'tokenmax'.
+    mode is one of 'conservative' | 'balanced' | 'tokenmax'. Results below
+    min_score are excluded by evomem before token-budget processing.
     Returns the full JSON response (with 'hits' array) or None on failure.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return None
-    return _run(brain_dir, ["search", "--mode", mode, "--limit", str(limit), query],
-                timeout=timeout)
+    return _run(brain_dir, ["search", "--mode", mode, "--limit", str(limit),
+                            "--min-score", str(min_score), query], timeout=timeout)
 
 
 def think(agent_id: str, query: str, mode: str = "balanced",
@@ -338,7 +221,7 @@ def think(agent_id: str, query: str, mode: str = "balanced",
 
     Returns the full JSON response ({facts, gaps, ...}) or None on failure.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return None
     return _run(brain_dir, ["think", "--mode", mode, query], timeout=timeout)
@@ -351,7 +234,7 @@ def graph_query(agent_id: str, start: str, edge: str = None,
     Returns {start, edges:[{src_slug, dst_slug, edge_type, hop}], cached} or
     None on failure. `edge` optionally filters by edge type.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return None
     args = ["graph-query", "--hops", str(hops), start]
@@ -363,38 +246,46 @@ def graph_query(agent_id: str, start: str, edge: str = None,
 def sync(agent_id: str) -> bool:
     """Re-sync markdown files into the database. Returns True on success.
 
-    Before running the evomem binary sync, this mirrors KB files from
-    agents/<id>/kb/ into the brain's kb/ subdirectory so they are picked
-    up by the sync engine with source_dir='kb'.  Stale copies (files
-    deleted from the KB directory) are removed so the sync engine
-    soft-deletes the corresponding pages.
+    The agent's kb/ dir is the evomem knowledge root, so files are scanned in
+    place — no mirror step. Every kb/**/*.md is a doc; the graph is built from
+    the inline [[wiki-links]] in their bodies.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if not os.path.isdir(brain_dir) or not os.path.exists(os.path.join(brain_dir, ".evomem.db")):
-        return False
+        if not init_evomem(agent_id):
+            return False
 
-    # Mirror KB files into brain/kb/ so the binary scans them
-    kb_stats = _mirror_kb_files(agent_id)
+    # Pre-flight: validate recently-changed KB frontmatter (soft-warn). Runs
+    # before sync so the default recency window (mtime >= last_synced_at)
+    # resolves to the pending set. Non-blocking — sync proceeds regardless.
+    try:
+        report = _run(brain_dir, ["validate"])
+        if report and report.get("invalid"):
+            for issue in report.get("issues", []):
+                logger.warning("kb validate[%s]: %s — %s",
+                               agent_id, issue.get("path"), issue.get("message"))
+    except Exception as e:
+        vlog("sync[%s]: kb validate skipped: %s", agent_id, e)
 
-    result = _run(brain_dir, ["sync"]) is not None
-
-    if result and (kb_stats["copied"] or kb_stats["removed"]):
-        vlog("sync[%s]: kb mirror stats copied=%d removed=%d unchanged=%d",
-             agent_id, kb_stats["copied"], kb_stats["removed"], kb_stats["unchanged"])
-
-    return result
+    return _run(brain_dir, ["sync"]) is not None
 
 
 def get_kb_graph_metadata(agent_id: str) -> dict | None:
-    """Query evomem for KB pages with link-graph metadata.
+    """Query evomem for every doc with link-graph metadata.
 
     Returns a dict with:
-      pages: {slug: {slug, title, tags, updated_at, incoming_slugs, outgoing_slugs}}
+      pages: {slug: {slug, title, type, source_dir, tags, updated_at,
+                     incoming_count, incoming_slugs, outgoing_slugs}}
       target_updated_at: {slug: updated_at_str} for all outgoing link targets
     Returns None if the brain DB does not exist.
+
+    Every live doc is included (root docs and workspace-folder docs alike), keyed
+    by slug; ``source_dir`` lets callers group by workspace. Links are matched by
+    resolved ``dst_doc_id`` (not raw slug) so Obsidian title/alias links count.
+    The ``inbox/`` source dir (raw captures) is excluded.
     """
     import sqlite3
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     db_path = os.path.join(brain_dir, ".evomem.db")
     if not os.path.isfile(db_path):
         vlog("get_kb_graph_metadata: brain DB not found at %s", db_path)
@@ -407,11 +298,11 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
         all_outgoing = set()
 
         rows = conn.execute("""
-            SELECT p.slug, p.title, p.tags, p.updated_at,
-                   (SELECT COUNT(*) FROM links WHERE dst_slug = p.slug AND dst_page_id IS NOT NULL) as incoming_count,
-                   (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN pages src ON l.src_page_id = src.id WHERE l.dst_slug = p.slug) as incoming_slugs,
-                   (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN pages dst ON l.dst_page_id = dst.id WHERE l.src_page_id = p.id) as outgoing_slugs
-            FROM pages p WHERE p.source_dir = 'kb' AND p.deleted_at IS NULL
+            SELECT p.slug, p.title, p.tags, p.updated_at, p.source_dir, p.doc_type,
+                   (SELECT COUNT(*) FROM links l WHERE l.dst_doc_id = p.id) as incoming_count,
+                   (SELECT GROUP_CONCAT(src.slug) FROM links l JOIN docs src ON l.src_doc_id = src.id WHERE l.dst_doc_id = p.id AND src.deleted_at IS NULL) as incoming_slugs,
+                   (SELECT GROUP_CONCAT(dst.slug) FROM links l JOIN docs dst ON l.dst_doc_id = dst.id WHERE l.src_doc_id = p.id AND dst.deleted_at IS NULL) as outgoing_slugs
+            FROM docs p WHERE p.deleted_at IS NULL AND p.source_dir != 'inbox'
             ORDER BY p.slug
         """).fetchall()
 
@@ -430,6 +321,8 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
             pages[slug] = {
                 "slug": slug,
                 "title": row["title"],
+                "type": row["doc_type"],
+                "source_dir": row["source_dir"],
                 "tags": tags,
                 "updated_at": row["updated_at"],
                 "incoming_count": row["incoming_count"],
@@ -443,18 +336,76 @@ def get_kb_graph_metadata(agent_id: str) -> dict | None:
         if all_outgoing:
             placeholders = ",".join("?" for _ in all_outgoing)
             target_rows = conn.execute(
-                f"SELECT slug, updated_at FROM pages WHERE slug IN ({placeholders}) AND deleted_at IS NULL",
+                f"SELECT slug, updated_at FROM docs WHERE slug IN ({placeholders}) AND deleted_at IS NULL",
                 list(all_outgoing),
             ).fetchall()
             for tr in target_rows:
                 target_updated_at[tr["slug"]] = tr["updated_at"]
 
         conn.close()
-        vlog("get_kb_graph_metadata: %d KB pages, %d link targets", len(pages), len(target_updated_at))
+        vlog("get_kb_graph_metadata: %d docs, %d link targets", len(pages), len(target_updated_at))
         return {"pages": pages, "target_updated_at": target_updated_at}
 
     except Exception:
         logger.warning("get_kb_graph_metadata failed for agent %s", agent_id, exc_info=True)
+        return None
+
+
+def get_graph_for_viz(agent_id: str) -> dict | None:
+    """Full knowledge graph for the force-directed view.
+
+    Every live doc is a node (root docs and workspace-folder docs alike); the
+    ``type`` carries the rich doc type (place, person, …) for node colouring.
+    Resolved links carry the typed edge_type (located_in, visited, …) and point
+    at the *resolved* target's slug. Returns:
+      {nodes: {slug: {slug, title, type, source_dir, tags}},
+       links: [{source, target, edge_type}],
+       dangling: [{source, target}]}
+    Returns None if the brain DB does not exist. ``inbox/`` is excluded.
+    """
+    import sqlite3
+    db_path = os.path.join(_get_evomem_dir(agent_id), ".evomem.db")
+    if not os.path.isfile(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        nodes = {}
+        for r in conn.execute(
+            "SELECT slug, title, doc_type, source_dir, tags FROM docs "
+            "WHERE deleted_at IS NULL AND source_dir != 'inbox'"
+        ):
+            try:
+                tags = json.loads(r["tags"] or "[]")
+                tags = tags if isinstance(tags, list) else []
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            nodes[r["slug"]] = {
+                "slug": r["slug"], "title": r["title"],
+                "type": r["doc_type"], "source_dir": r["source_dir"], "tags": tags,
+            }
+
+        links, dangling = [], []
+        for r in conn.execute(
+            "SELECT src.slug AS s, l.edge_type AS e, l.dst_slug AS d, "
+            "dst.slug AS dslug, l.dst_doc_id AS dpid, dst.deleted_at AS ddel "
+            "FROM links l JOIN docs src ON l.src_doc_id = src.id "
+            "LEFT JOIN docs dst ON l.dst_doc_id = dst.id "
+            "WHERE src.deleted_at IS NULL"
+        ):
+            if r["s"] not in nodes:
+                continue
+            if r["dpid"] is not None and r["ddel"] is None and r["dslug"] in nodes:
+                links.append({"source": r["s"], "target": r["dslug"],
+                              "edge_type": r["e"]})
+            elif r["dpid"] is None:
+                dangling.append({"source": r["s"], "target": r["d"]})
+
+        conn.close()
+        vlog("get_graph_for_viz: %d nodes, %d links", len(nodes), len(links))
+        return {"nodes": nodes, "links": links, "dangling": dangling}
+    except Exception:
+        logger.warning("get_graph_for_viz failed for agent %s", agent_id, exc_info=True)
         return None
 
 
@@ -464,7 +415,7 @@ def get_evomem_db_mtime(agent_id: str) -> float:
     Used for cache invalidation: when the evomem DB changes (sync runs),
     the system prompt KB listing should be rebuilt.
     """
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     db_path = os.path.join(brain_dir, ".evomem.db")
     try:
         return os.stat(db_path).st_mtime
@@ -473,7 +424,7 @@ def get_evomem_db_mtime(agent_id: str) -> float:
 
 
 def query_kb_graph(agent_id: str, filename: str) -> dict | None:
-    """Query evomem for a single KB page's 1-hop link graph.
+    """Query evomem for a single doc's 1-hop link graph.
 
     Returns a dict with:
       source: {slug, title, tags, updated_at}
@@ -481,24 +432,31 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
       incoming: [{slug, title}]
       outgoing_dangling: [slug]
       same_tag_docs: [{slug, title, tags}]
-    Returns None if the brain DB does not exist or the page is not found.
+    Returns None if the brain DB does not exist or the doc is not found.
+
+    ``filename`` may be a root doc ('notes.md') or a workspace-qualified doc
+    ('xyz/foo.md'); it is normalised to the slug. Incoming links are matched by
+    resolved ``dst_doc_id`` so Obsidian title/alias links are counted.
     """
     import sqlite3
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     db_path = os.path.join(brain_dir, ".evomem.db")
     if not os.path.isfile(db_path):
         vlog("query_kb_graph: brain DB not found at %s", db_path)
         return None
 
+    # Normalise the filename to a slug ('notes.md' -> 'notes', 'xyz/foo.md' -> 'xyz/foo').
+    slug = filename[:-3] if filename.endswith(".md") else filename
+
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Look up the source page
+        # Look up the source doc
         page_row = conn.execute(
-            "SELECT id, slug, title, tags, updated_at FROM pages "
-            "WHERE slug = ? AND source_dir = 'kb' AND deleted_at IS NULL",
-            (filename,),
+            "SELECT id, slug, title, tags, updated_at FROM docs "
+            "WHERE slug = ? AND deleted_at IS NULL",
+            (slug,),
         ).fetchone()
 
         if not page_row:
@@ -521,11 +479,11 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
             "updated_at": page_row["updated_at"],
         }
 
-        # Outgoing resolved links
+        # Outgoing resolved links (to any other doc)
         out_rows = conn.execute(
             "SELECT dst.slug, dst.title, dst.updated_at FROM links l "
-            "JOIN pages dst ON l.dst_page_id = dst.id "
-            "WHERE l.src_page_id = ? AND dst.source_dir = 'kb' AND dst.deleted_at IS NULL "
+            "JOIN docs dst ON l.dst_doc_id = dst.id "
+            "WHERE l.src_doc_id = ? AND dst.deleted_at IS NULL "
             "ORDER BY dst.slug",
             (page_id,),
         ).fetchall()
@@ -537,34 +495,31 @@ def query_kb_graph(agent_id: str, filename: str) -> dict | None:
         # Outgoing dangling links
         dangling_rows = conn.execute(
             "SELECT dst_slug FROM links "
-            "WHERE src_page_id = ? AND dst_page_id IS NULL "
+            "WHERE src_doc_id = ? AND dst_doc_id IS NULL "
             "ORDER BY dst_slug",
             (page_id,),
         ).fetchall()
         outgoing_dangling = [r["dst_slug"] for r in dangling_rows]
 
-        # Incoming links
+        # Incoming links (any doc that resolves a link to this one)
         in_rows = conn.execute(
             "SELECT src.slug, src.title FROM links l "
-            "JOIN pages src ON l.src_page_id = src.id "
-            "WHERE l.dst_slug = ? AND l.dst_page_id IS NOT NULL "
-            "AND src.source_dir = 'kb' AND src.deleted_at IS NULL "
+            "JOIN docs src ON l.src_doc_id = src.id "
+            "WHERE l.dst_doc_id = ? AND src.deleted_at IS NULL "
             "ORDER BY src.slug",
-            (filename,),
+            (page_id,),
         ).fetchall()
         incoming = [{"slug": r["slug"], "title": r["title"]} for r in in_rows]
 
         # Same-tag docs
         same_tag_docs = []
         if source_tags:
-            # Build OR conditions for each tag
-            placeholders = ",".join("?" for _ in source_tags)
             tag_rows = conn.execute(
-                f"SELECT slug, title, tags FROM pages "
-                f"WHERE source_dir = 'kb' AND deleted_at IS NULL AND slug != ? "
+                f"SELECT slug, title, tags FROM docs "
+                f"WHERE deleted_at IS NULL AND slug != ? "
                 f"AND ({' OR '.join('tags LIKE ?' for _ in source_tags)}) "
                 f"ORDER BY slug",
-                [filename] + [f"%{t}%" for t in source_tags],
+                [slug] + [f"%{t}%" for t in source_tags],
             ).fetchall()
             for r in tag_rows:
                 t_raw = r["tags"] or "[]"

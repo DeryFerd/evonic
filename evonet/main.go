@@ -115,7 +115,10 @@ func autoRun() bool {
 		return false
 	}
 	fmt.Printf("Evonet pre-configured binary — connecting to %s...\n", cfg.ServerURL)
-	cmd.RunRun(nil)
+	if err := cmd.RunRun(nil); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
 	return true
 }
 

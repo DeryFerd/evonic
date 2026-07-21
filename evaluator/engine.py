@@ -467,7 +467,7 @@ class EvaluationEngine:
             model_name: Model being evaluated
             selected_domains: List of domain names to test (None = all domains)
         """
-        all_domains = ["conversation", "math", "sql", "tool_calling", "reasoning", "health"]
+        all_domains = ["conversation", "math", "tool_calling", "reasoning", "health"]
         
         # Filter domains if selection provided
         if selected_domains:
@@ -945,12 +945,18 @@ class EvaluationEngine:
                 if node.func.id in ('exec', 'eval', 'compile', '__import__'):
                     return {"error": f"Python mock: {node.func.id}() is not allowed"}
 
+        import datetime as _dt
+        # Pre-warm _strptime lazy import so datetime.strptime works under {'__builtins__': {}}
+        _dt.datetime.strptime('2000-01-01', '%Y-%m-%d')
         namespace = {
             'args': args,
             'math': math,
             'json': json,
             're': __import__('re'),
             'result': None,
+            # Date/time types for mock calculations (e.g., check_price)
+            'datetime': _dt.datetime,
+            'timedelta': _dt.timedelta,
             # Safe builtins that mock code commonly needs
             'sum': sum, 'len': len, 'int': int, 'str': str,
             'list': list, 'dict': dict, 'tuple': tuple, 'set': set,
@@ -961,7 +967,7 @@ class EvaluationEngine:
             'isinstance': isinstance, 'True': True, 'False': False, 'None': None,
         }
         try:
-            exec(py_code, {'__builtins__': {}}, namespace)
+            exec(py_code, {'__builtins__': {'__import__': __import__}}, namespace)
             result = namespace.get('result')
             if result is None:
                 return {"error": "mock did not set result"}
@@ -970,15 +976,52 @@ class EvaluationEngine:
             self._log(f'[PY-MOCK] Exception: {str(e)}')
             return {"error": f"Python mock failed: {str(e)}"}
 
+    # Pool of names for the {{random_name}} placeholder (see _apply_placeholders)
+    _RANDOM_NAMES = [
+        "Andini", "Bagas", "Citra", "Damar", "Elang", "Fitri", "Gilang", "Hana",
+        "Intan", "Joko", "Kirana", "Lestari", "Mahesa", "Nadia", "Oka", "Prita",
+        "Rangga", "Sari", "Tegar", "Wulan",
+    ]
+
+    def _substitute_placeholders(self, obj: Any, mapping: Dict[str, str]) -> Any:
+        """Recursively replace placeholder tokens in every string within obj."""
+        if isinstance(obj, str):
+            for token, value in mapping.items():
+                obj = obj.replace(token, value)
+            return obj
+        if isinstance(obj, dict):
+            return {k: self._substitute_placeholders(v, mapping) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [self._substitute_placeholders(v, mapping) for v in obj]
+        return obj
+
+    def _apply_placeholders(self, test: Dict[str, Any]) -> None:
+        """Substitute dynamic placeholders (e.g. {{random_name}}) across the test in place.
+
+        A single random value is chosen per test run and applied consistently to the
+        prompt, system_prompt and expected — so a randomly-assigned identity can still be
+        verified. Mutates `test` in place (it is a fresh dict from test_manager.list_tests).
+        """
+        import random
+        if "{{random_name}}" not in json.dumps(test, ensure_ascii=False):
+            return
+        mapping = {"{{random_name}}": random.choice(self._RANDOM_NAMES)}
+        for key in ("prompt", "system_prompt", "expected"):
+            if key in test and test[key] is not None:
+                test[key] = self._substitute_placeholders(test[key], mapping)
+        self._log(f'[PLACEHOLDER] random_name -> {mapping["{{random_name}}"]}')
+
     def _run_single_configurable_test(self, test: Dict[str, Any], domain: str,
                                        level: int, model_name: str, run_id: int, run_llm_client=None) -> TestResult:
         """Run a single configurable test"""
         _client = run_llm_client or llm_client
         test_id = test['id']
+        # Resolve dynamic placeholders (e.g. {{random_name}}) before reading fields
+        self._apply_placeholders(test)
         prompt = test['prompt']
         expected = test.get('expected', {})
         weight = test.get('weight', 1.0)
-        
+
         # Initialize variables for tool calling
         loop_result = None
         tools = None
@@ -1287,6 +1330,9 @@ class EvaluationEngine:
                 capture_output=True, text=True, timeout=5
             )
             output = result.stdout.strip()
+            if not output:
+                stderr_info = (result.stderr or "").strip()[:500]
+                return {"error": "JS script produced no output", "stderr": stderr_info}
             return json.loads(output)
         except subprocess.TimeoutExpired:
             return {"error": "timed out"}
@@ -1762,7 +1808,13 @@ class EvaluationEngine:
             )})
 
             try:
-                force_response = _client.chat_completion(force_messages, tools=None, temperature=0.0)
+                # temperature 0.2 (not 0.0): pure greedy decoding loops on this prompt —
+                # a large repetitive context of research results — and without a
+                # max_tokens cap it runs to self.max_tokens doubled by thinking mode
+                # (observed: 40960-token runaways pinning the GPU for ~10 minutes).
+                force_response = _client.chat_completion(
+                    force_messages, tools=None, temperature=0.2, max_tokens=4096
+                )
                 force_info = _client.extract_content_with_thinking(force_response)
                 final_response = force_info.get("content", "").strip()
                 force_duration = force_response.get("duration_ms", 0)
@@ -1950,15 +2002,31 @@ class EvaluationEngine:
 
         test_results = db.get_test_results(run_id)
 
+        # Get run info early so we can scope the matrix to the domains
+        # that were actually selected for this run.
+        run_info = db.get_evaluation_run(run_id)
+
+        # Parse the run's selected domains (None/empty means all domains)
+        selected_domains = None
+        if run_info and run_info.get('selected_domains'):
+            try:
+                selected_domains = json.loads(run_info['selected_domains'])
+            except (json.JSONDecodeError, TypeError):
+                selected_domains = None
+
         # Organize by domain and level
         matrix = {}
-        
+
         # Get domains from test definitions or use legacy
         if self.use_configurable_tests:
             domains = [d['id'] for d in test_manager.list_domains()]
         else:
-            domains = ["conversation", "math", "sql", "tool_calling", "reasoning"]
-        
+            domains = ["conversation", "math", "tool_calling", "reasoning"]
+
+        # Only display domains that were selected for this run
+        if selected_domains:
+            domains = [d for d in domains if d in selected_domains]
+
         for domain in domains:
             matrix[domain] = {}
             for level in range(1, 6):
@@ -1989,8 +2057,7 @@ class EvaluationEngine:
                     "model_name": result.get("model_name")
                 }
 
-        # Get run info for model name
-        run_info = db.get_evaluation_run(run_id)
+        # Get model name from the run info fetched earlier
         model_name = run_info.get("model_name") if run_info else None
         
         # Determine status

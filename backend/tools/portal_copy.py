@@ -1,8 +1,14 @@
 """
-portal_copy — copy files between workspace and portal paths, or between portals.
+portal_copy — copy files between workspace, portal, and attachment paths.
 
 Supports binary files of any size. Files > 10MB are transferred in the background
 with a job_id returned for polling via copy_status.
+
+Source and destination paths can be:
+  - Workspace paths (relative or absolute within the agent's workspace)
+  - Portal paths (/_portal/<vpath>/...)
+  - Attachment paths (/_attachment/<id>) — resolves attachment files from the
+    database so they can be copied to remote workplaces or other locations.
 """
 
 import os
@@ -10,6 +16,7 @@ import threading
 import time
 import uuid
 
+from backend.tools._attachment import is_attachment_path, resolve_attachment_path
 from backend.tools._portal import is_portal_path, resolve_portal_path
 from backend.tools._workspace import resolve_workspace_path
 from backend.tools.lib.transfer_engine import TransferEngine, backend_type_name, _ASYNC_THRESHOLD
@@ -26,6 +33,9 @@ def _resolve_path(agent, path):
     Returns (backend, real_path) on success, or (None, error_message) on failure.
     """
     agent_id = (agent or {}).get('id')
+
+    if is_attachment_path(path):
+        return resolve_attachment_path(agent, path)
 
     if is_portal_path(path):
         return resolve_portal_path(agent_id, path)

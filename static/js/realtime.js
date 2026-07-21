@@ -163,7 +163,7 @@ var RealtimeClient = (function () {
         // Double try/catch isolation: outer catch handles JSON parse errors,
         // inner catch (in _dispatch) handles handler errors.
         var ALL_EVENTS = [
-            'agent_busy_changed', 'agent_turn_complete',
+            'agent_busy_changed', 'agent_turn_complete', 'whatsapp_bridge_status',
             'approval_required', 'approval_resolved',
             'update_status', 'update_done',
             'turn_begin', 'thinking', 'tool_call_started', 'tool_executed',
@@ -278,7 +278,8 @@ var RealtimeClient = (function () {
      */
     RealtimeClient.prototype._eventToChannel = function (evtName) {
         // Status channel events
-        if (evtName === 'agent_busy_changed' || evtName === 'agent_turn_complete') {
+        if (evtName === 'agent_busy_changed' || evtName === 'agent_turn_complete' ||
+            evtName === 'whatsapp_bridge_status') {
             return 'status';
         }
         // Approval channel events

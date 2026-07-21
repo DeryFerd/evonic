@@ -93,6 +93,19 @@ html.dark #plan-modal .recap-prose h5, html.dark #plan-modal .recap-prose h6 { c
 html.dark #plan-modal .recap-prose blockquote { border-left-color: #475569; color: #94a3b8; }
 html.dark #plan-modal .recap-prose code { background: #1e293b; color: #e2e8f0; }
 html.dark #plan-modal .recap-prose pre { background: #1e293b; }
+/* Prevent pre/code overflow in right sidebar panels */
+#agent-state-content pre,
+#agent-state-content code,
+#mobile-agent-state-content pre,
+#mobile-agent-state-content code,
+#SessionStateContent pre,
+#SessionStateContent code,
+#mobile-SessionStateContent pre,
+#mobile-SessionStateContent code {
+    white-space: pre-wrap !important;
+    word-break: break-all;
+    overflow-wrap: break-word;
+}
 </style>
 <div class="sessions-page flex flex-col h-[calc(100vh-3.5rem)]">
 
@@ -171,7 +184,14 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
             <!-- Messages + Summary side by side -->
             <div class="flex flex-1 overflow-hidden">
                 <!-- Messages -->
-                <div class="relative flex-1 min-w-0 flex flex-col overflow-hidden">
+                <div id="chat-drop-zone" class="relative flex-1 min-w-0 flex flex-col overflow-hidden">
+                <!-- Drop overlay -->
+                <div id="chat-drop-overlay" class="hidden absolute inset-0 z-40 flex items-center justify-center pointer-events-none" style="background:rgba(99,102,241,0.08)">
+                    <div class="border-2 border-dashed border-indigo-400 rounded-xl px-8 py-6 flex flex-col items-center gap-2 bg-white/80 dark:bg-gray-800/80">
+                        <svg class="w-8 h-8 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5"/></svg>
+                        <span class="text-sm font-medium text-indigo-600 dark:text-indigo-400">Drop file here</span>
+                    </div>
+                </div>
                 <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 min-w-0">
                     <div id="empty-state" class="flex items-center justify-center h-full text-gray-400 text-sm">
                         Select a session to view conversation
@@ -186,7 +206,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                 </div>
 
                 <!-- Side panels wrapper (Agent State + Session State stacked vertically) -->
-                <div id="side-panels-wrapper" class="hidden lg:flex flex-col border-l dark:border-gray-600 border-gray-200 bg-white dark:bg-gray-800 flex-shrink-0 min-h-0" style="width: 300px;">
+                <div id="side-panels-wrapper" class="hidden lg:flex flex-col border-l dark:border-gray-600 border-gray-200 bg-white dark:bg-gray-800 flex-shrink-0 min-h-0 min-w-0 overflow-hidden" style="width: 300px;">
                     <!-- Agent State Panel -->
                     <div id="agent-state-panel" class="flex-shrink-0">
                         <div id="AgentState" class="flex justify-between items-center px-4 py-3 border-b border-gray-100 dark:border-gray-600">
@@ -195,7 +215,7 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
                             </button>
                         </div>
-                        <div id="agent-state-content" class="overflow-y-auto p-4" style="max-height:200px;">
+                        <div id="agent-state-content" class="overflow-y-auto overflow-x-hidden p-4 break-words" style="max-height:200px;">
                             <p class="text-xs text-gray-400 dark:text-gray-500 italic">No state yet.</p>
                         </div>
                     </div>
@@ -211,7 +231,8 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                                 </button>
                             </div>
                         </div>
-                        <div id="SessionStateContent" class="flex-1 overflow-y-auto p-4">
+                        <div id="SessionStateContent" class="flex-1 overflow-y-auto overflow-x-hidden p-4 break-words">
+                            <div id="SessionContext"></div>
                             <div id="SessionPlan"></div>
                             <div id="SessionSkills"></div>
                             <div id="SessionSummary"><p class="text-xs text-gray-400 italic">No summary yet.</p></div>
@@ -233,6 +254,14 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                         <svg class="w-4 h-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
                     </button>
                 </div>
+                <!-- Editor-mode tip (shown on Shift+Enter) -->
+                <div id="editor-tip" class="hidden mb-2 flex items-center gap-2 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 rounded-lg text-xs text-indigo-700 dark:text-indigo-300">
+                    <svg class="w-4 h-4 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.1V18h6v-1.2c0-.8.4-1.6 1-2.1A7 7 0 0 0 12 2z"/></svg>
+                    <span class="flex-1">Writing something long? <button type="button" onclick="openChatEditorModal()" class="font-medium underline hover:text-indigo-600">Open in editor mode</button></span>
+                    <button type="button" onclick="hideEditorTip()" class="text-indigo-400 hover:text-indigo-600 flex-shrink-0" title="Dismiss">
+                        <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clip-rule="evenodd"/></svg>
+                    </button>
+                </div>
                 <div class="flex gap-2">
                     <input type="file" id="file-input" class="hidden"
                            accept="image/*,.pdf,.txt,.md,.log,.json,.yaml,.yml,.xml,.csv,.tsv,.py,.js,.ts,.tsx,.jsx,.java,.go,.rs,.c,.cpp,.h,.rb,.php,.html,.css,.sql,.sh,.toml,.ini,.zip"
@@ -246,7 +275,61 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                            style="max-height: 150px;"
                            onkeydown="chatInputKeydown(event)"
                            oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
-                    <button type="button" id="reply-btn" onclick="doSendReply()" class="px-4 py-2.5 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition-colors flex-shrink-0">Send</button>
+                    <button type="button" id="reply-btn" onclick="doSendReply()" title="Send" class="p-2.5 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors flex-shrink-0 flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"><svg class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg></button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Drag-and-drop file upload modal -->
+    <div id="chat-drop-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[200] p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-xl w-[66%] max-w-[420px] shadow-xl flex flex-col" style="max-height:85vh">
+            <div class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+                <h3 class="text-gray-800 dark:text-gray-100 font-semibold text-sm">Send File</h3>
+                <button onclick="closeChatDropModal()" class="bg-transparent border-none text-gray-400 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-200">&times;</button>
+            </div>
+            <div class="p-5 overflow-y-auto flex-1">
+                <div class="flex flex-col items-center gap-3 mb-4">
+                    <img id="chat-drop-preview-img" class="hidden rounded-lg object-contain" style="max-width:100%;max-height:min(240px,40vh)" alt="">
+                    <div id="chat-drop-preview-file" class="hidden flex items-center gap-2 px-4 py-3 bg-gray-50 dark:bg-gray-700 rounded-lg w-full">
+                        <svg class="w-8 h-8 text-gray-400 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm-1 2l5 5h-5V4zm-3 9h4v2h-4v-2zm0 3h4v2h-4v-2zm-2-3h1v2H8v-2zm0 3h1v2H8v-2z"/></svg>
+                        <div class="min-w-0 flex-1">
+                            <div id="chat-drop-filename" class="text-sm font-medium text-gray-700 dark:text-gray-200 truncate"></div>
+                            <div id="chat-drop-filesize" class="text-xs text-gray-400"></div>
+                        </div>
+                    </div>
+                </div>
+                <textarea id="chat-drop-message" placeholder="Add a message (optional)..." rows="1"
+                       class="w-full p-2.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10 dark:bg-gray-700 dark:text-gray-100 mb-4 resize-none overflow-hidden" style="max-height:150px"
+                       oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,150)+'px';this.style.overflowY=this.scrollHeight>150?'auto':'hidden'"></textarea>
+                <div class="flex gap-3 justify-end">
+                    <button onclick="closeChatDropModal()" class="px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm text-gray-600 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-700">Cancel</button>
+                    <button onclick="submitChatDropModal()" class="px-4 py-2 bg-indigo-500 text-white rounded-md text-sm hover:bg-indigo-600">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Editor Modal (editor mode for composing long messages) -->
+    <div id="chat-editor-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center z-[150] p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[800px] shadow-xl flex flex-col overflow-hidden" style="max-height: 85vh;">
+            <div class="flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+                <h3 class="text-sm font-semibold text-gray-800 dark:text-gray-200">&#9998; Editor Mode</h3>
+                <button onclick="closeChatEditorModal()" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700" aria-label="Close editor" title="Close (Esc)">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <div class="flex-1 min-h-0 flex flex-col p-5">
+                <textarea id="chat-editor-textarea"
+                    class="flex-1 w-full p-4 text-sm text-gray-800 dark:text-gray-200 bg-gray-50 dark:bg-gray-900 border border-gray-200 dark:border-gray-600 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500 dark:focus:ring-indigo-400 focus:border-transparent transition-colors"
+                    style="min-height: 50vh;"
+                    placeholder="Type your message..."></textarea>
+            </div>
+            <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between flex-shrink-0">
+                <span class="text-xs text-gray-400 dark:text-gray-500">Esc to close</span>
+                <div class="flex gap-2">
+                    <button onclick="closeChatEditorModal()" class="px-4 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors">Close</button>
+                    <button onclick="submitChatEditorModal()" class="px-4 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors">Submit</button>
                 </div>
             </div>
         </div>
@@ -337,7 +420,8 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                 </button>
             </div>
         </div>
-        <div id="mobile-SessionStateContent" class="flex-1 overflow-y-auto p-4">
+        <div id="mobile-SessionStateContent" class="flex-1 overflow-y-auto overflow-x-hidden p-4 break-words">
+            <div id="mobile-SessionContext"></div>
             <div id="mobile-SessionPlan"></div>
             <div id="mobile-SessionSkills"></div>
             <div id="mobile-SessionSummary"><p class="text-xs text-gray-400 italic">No summary yet.</p></div>
@@ -351,19 +435,20 @@ html.dark #plan-modal .recap-prose pre { background: #1e293b; }
                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3.5 h-3.5"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H4.598a.75.75 0 0 0-.75.75v3.634a.75.75 0 0 0 1.5 0v-2.033l.312.311a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm-10.625-2.85a5.5 5.5 0 0 1 9.201-2.465l.312.31H11.767a.75.75 0 0 0 0 1.5h3.634a.75.75 0 0 0 .75-.75V3.535a.75.75 0 0 0-1.5 0v2.033l-.312-.31A7 7 0 0 0 2.627 8.396a.75.75 0 0 0 1.449.39l.611.789Z" clip-rule="evenodd"/></svg>
                 </button>
             </div>
-            <div id="mobile-agent-state-content" class="p-4">
+            <div id="mobile-agent-state-content" class="p-4 overflow-x-hidden break-words">
                 <p class="text-xs text-gray-400 dark:text-gray-500 italic">No state yet.</p>
             </div>
         </div>
     </div>
 </div>
 
-<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=53"></script>
+<script src="{{ url_for('static', filename='js/chat-ui.js') }}?v=59"></script>
 <script src="{{ url_for('static', filename='js/agent-state.js') }}?v=4"></script>
 <script>
 let allSessions = [];
 let currentSessionId = null;
 let currentAgentId = null;
+let currentAttachmentsEnabled = true;
 let lastChatTs = 0;
 let pollTimer = null;
 let sidebarPollTimer = null;
@@ -373,7 +458,7 @@ let _sseCompleted = false;  // true after SSE done fires, prevents duplicate tim
 let _pendingIntermediateResponse = null;  // queued intermediate response, shown when next thinking event starts
 let _pollThinkingId = null;  // active thinking bubble from incremental poll (persists across calls)
 let _pollInFlight = false;  // guard against concurrent pollNewMessages calls
-let _chatPerspective = 'B';  // 'B' (left) or 'A' (right) — controls which side your messages appear on
+let _chatPerspective = 'A';  // 'A' (right) or 'B' (left) — controls which side your messages appear on
 let _sessionsAbort = null;  // AbortController for the in-flight /api/sessions load; supersede on new call
 
 // ==================== Reasoning State (refresh recovery) ====================
@@ -424,10 +509,9 @@ function dispatchSessionEvent(evtName, data, sessionId) {
             _sseThinkingId = chatUI.showThinkingIndicator();
         }
         chatUI.appendTimelineEntry(_sseThinkingId, {type: 'tool_result', tool: data.tool, result: data.result, error: data.error});
-        if (['save_plan', 'set_mode', 'update_tasks', 'state'].includes(data.tool)) {
-            loadAgentState();
-            loadSessionSummary();
-        }
+    } else if (evtName === 'state:changed') {
+        document.dispatchEvent(new CustomEvent('evonic:state-changed', {detail: data}));
+        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', {detail: data}));
     } else if (evtName === 'response_chunk') {
         if (data.content && _sseThinkingId) {
             chatUI.appendTimelineEntry(_sseThinkingId, {type: 'response', content: data.content});
@@ -465,11 +549,36 @@ const POLL_INTERVAL = 2000;       // poll chat every 2s
 const SIDEBAR_POLL_INTERVAL = 5000; // refresh sidebar every 5s
 
 const chatUI = new ChatUI($('#chat-messages'), {
-    perspective: 'B',
+    perspective: 'A',
     showTimestamps: true,
     userBubbleClass: 'bg-white text-gray-800 border border-gray-200 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100',
     assistantBubbleClass: 'bg-gray-200 text-gray-800 dark:bg-[#152A3A] border dark:border-[#1B394F] dark:text-gray-100',
     formatTimestamp: formatTime,
+});
+
+// Wiki-link clicks from chat messages → preview modal
+document.addEventListener('evonic:wikilink-click', async function (e) {
+    const title = e.detail && e.detail.title;
+    if (!title || !currentAgentId) return;
+    const fromModal = !!(e.detail && e.detail._fromModal);
+    var slug = null;
+    try {
+        const res = await fetch('/api/agents/' + encodeURIComponent(currentAgentId) + '/kb-graph');
+        const graphData = await res.json();
+        const pages = (graphData && graphData.pages) || {};
+        const want = title.trim().toLowerCase();
+        for (const [s, p] of Object.entries(pages)) {
+            const pt = (p.title || '').trim().toLowerCase();
+            if (pt === want || s.toLowerCase() === want || s.split('/').pop().toLowerCase() === want) { slug = s; break; }
+        }
+    } catch (err) { /* ignore */ }
+    if (!slug) { showWikilinkPreview(title, null, fromModal); return; }
+    try {
+        const res = await fetch('/api/agents/' + encodeURIComponent(currentAgentId) + '/kb/' + encodeURIComponent(slug + '.md'));
+        const data = await res.json();
+        if (data.error) { showWikilinkPreview(title, null, fromModal); return; }
+        showWikilinkPreview(title, renderKBDocPreview(data.content), fromModal);
+    } catch (err) { showWikilinkPreview(title, null, fromModal); }
 });
 
 // Scroll-to-bottom button logic
@@ -538,6 +647,9 @@ function renderEntries(entries, { persistent = false } = {}) {
                 if (_pendingReplyText !== null && entry.content === _pendingReplyText) {
                     _pendingReplyText = null;
                     console.log('[renderEntries] FINAL skipped (matched _pendingReplyText)');
+                } else if (_pendingSlashResponse !== null && entry.content === _pendingSlashResponse) {
+                    _pendingSlashResponse = null;
+                    console.log('[renderEntries] FINAL skipped (matched _pendingSlashResponse from SSE done)');
                 } else {
                     const $el = chatUI.appendMessage('assistant', entry.content, {timestamp: entry.ts ? new Date(entry.ts).toISOString() : null, metadata: meta});
                     console.log('[renderEntries] FINAL appendMessage returned element:', !!$el.length);
@@ -647,7 +759,7 @@ function renderSessionList() {
         const prefixIcon = s.last_message_role === 'assistant' ? '<span class="text-indigo-400 mr-1">Bot:</span>' : '';
         const chBadge = channelBadge(s.channel_type);
         const botDot = s.bot_enabled ? '' : '<span class="inline-block w-1.5 h-1.5 rounded-full bg-red-400 ml-1" title="Bot disabled"></span>';
-        const displayName = s.peer_agent_name ? [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ') : esc(s.agent_name || 'Unknown');
+        const displayName = explorerDisplayName(s);
         return `
         <div class="session-item relative p-3 cursor-pointer ${selected}${activeClass} transition-colors border-b border-gray-200 dark:border-gray-700 last:border-b-0" onclick="selectSession('${s.id}')">
             <div class="flex items-center gap-2 mb-1">
@@ -686,7 +798,7 @@ function renderMobileDropdown() {
     dd.classList.remove('hidden');
     dd.innerHTML = allSessions.slice(0, 20).map(s => {
         const chBadge = channelBadge(s.channel_type);
-        const displayName = s.peer_agent_name ? [esc(s.agent_name || 'Unknown'), esc(s.peer_agent_name)].sort().join(' - ') : esc(s.agent_name || 'Unknown');
+        const displayName = explorerDisplayName(s);
         return `
         <div class="p-3 hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer border-b border-gray-50 dark:border-gray-600 last:border-0" onclick="selectSession('${s.id}'); document.getElementById('mobile-dropdown').classList.add('hidden');">
             <div class="flex items-center gap-2">
@@ -744,6 +856,7 @@ async function selectSession(sessionId) {
     const s = data.session;
     const messages = data.messages || [];
     currentAgentId = s.agent_id || null;
+    currentAttachmentsEnabled = s.attachments_enabled == null ? true : !!s.attachments_enabled;
 
     // Remember last visited session
     try { sessionStorage.setItem(_LAST_SESSION_KEY, sessionId); } catch (_) {}
@@ -753,7 +866,7 @@ async function selectSession(sessionId) {
     document.getElementById('reply-bar').classList.remove('hidden');
     document.getElementById('empty-state')?.classList.add('hidden');
 
-    document.getElementById('hdr-agent').textContent = s.agent_name || 'Unknown';
+    document.getElementById('hdr-agent').textContent = explorerDisplayName(s);
     document.getElementById('hdr-user').textContent = s.external_user_id;
 
     const badge = document.getElementById('hdr-channel-badge');
@@ -1034,7 +1147,7 @@ function connectSessionStream(sessionId, afterSeq = 0) {
         dispatch(data);
     }
 
-    for (const evtName of ['thinking', 'tool_call_started', 'tool_executed', 'response_chunk', 'turn_split', 'session_clear', 'approval_required', 'approval_resolved']) {
+    for (const evtName of ['thinking', 'tool_call_started', 'tool_executed', 'state:changed', 'response_chunk', 'turn_split', 'session_clear', 'approval_required', 'approval_resolved']) {
         es.addEventListener(evtName, e => {
             if (currentSessionId !== sessionId) return;
             const data = JSON.parse(e.data);
@@ -1076,7 +1189,11 @@ function connectSessionStream(sessionId, afterSeq = 0) {
             }
             if (!alreadyRendered) {
                 // Not rendered yet — display the response and mark it so POST/poll skip it
-                chatUI.appendMessage('assistant', payload.response);
+                const msgOpts = {};
+                if (payload.attachment_info) {
+                    msgOpts.metadata = { attachment_info: payload.attachment_info };
+                }
+                chatUI.appendMessage('assistant', payload.response, msgOpts);
                 if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
                 _pendingSlashResponse = payload.response;
             }
@@ -1107,6 +1224,23 @@ function connectSessionStream(sessionId, afterSeq = 0) {
         if (_sseThinkingId) {
             chatUI.finalizeThinkingBubble(_sseThinkingId);
             _sseThinkingId = null;
+        }
+        // Render the final response from the done event. The SSE done event
+        // already carries the response text (from turn_complete). Rendering it
+        // here means the chat bubble appears instantly rather than waiting for
+        // the next poll tick. This is also the ONLY path that works for
+        // explorer sub-agent sessions — their JSONL chatlog lives under the
+        // parent's agent ID, so the poll's chatlog_manager.get(agent_id, ...)
+        // lookup returns nothing (see routes/agents.py api_chat_jsonl).
+        if (payload.response) {
+            const wasAtBottom = chatUI.isNearBottom(80);
+            const msgOpts = {};
+            if (payload.attachment_info) {
+                msgOpts.metadata = { attachment_info: payload.attachment_info };
+            }
+            chatUI.appendMessage('assistant', payload.response, msgOpts);
+            if (wasAtBottom) requestAnimationFrame(() => chatUI.scrollToBottom());
+            _pendingSlashResponse = payload.response;
         }
         _sseCompleted = true;
         // Reconnect so we're ready for the next incoming message
@@ -1202,6 +1336,128 @@ function clearFileInput() {
     if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
 }
 
+// ==================== Drag & Drop File Upload ====================
+
+let _dragCounter = 0;
+let _droppedFile = null;
+
+function _formatFileSize(size) {
+    if (size < 1024) return `${size} B`;
+    if (size < 1048576) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / 1048576).toFixed(1)} MB`;
+}
+
+function _isFileAccepted(file) {
+    const accept = document.getElementById('file-input').getAttribute('accept') || '';
+    const exts = accept.split(',').map(s => s.trim().toLowerCase());
+    if (exts.some(e => e === 'image/*') && file.type.startsWith('image/')) return true;
+    const fname = file.name.toLowerCase();
+    return exts.some(e => e.startsWith('.') && fname.endsWith(e));
+}
+
+(function initChatDropZone() {
+    const zone = document.getElementById('chat-drop-zone');
+    if (!zone) return;
+    const overlay = document.getElementById('chat-drop-overlay');
+
+    zone.addEventListener('dragenter', function(e) {
+        e.preventDefault();
+        _dragCounter++;
+        if (_dragCounter === 1) overlay.classList.remove('hidden');
+    });
+    zone.addEventListener('dragover', function(e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+    });
+    zone.addEventListener('dragleave', function(e) {
+        e.preventDefault();
+        _dragCounter--;
+        if (_dragCounter <= 0) { _dragCounter = 0; overlay.classList.add('hidden'); }
+    });
+    zone.addEventListener('drop', function(e) {
+        e.preventDefault();
+        _dragCounter = 0;
+        overlay.classList.add('hidden');
+        const file = e.dataTransfer.files[0];
+        if (!file) return;
+        if (!currentSessionId) {
+            if (typeof showToast === 'function') showToast('Select a session first', true);
+            return;
+        }
+        if (!_isFileAccepted(file)) {
+            if (typeof showToast === 'function') showToast('File type not supported', true);
+            return;
+        }
+        openChatDropModal(file);
+    });
+})();
+
+function openChatDropModal(file) {
+    _droppedFile = file;
+    const modal = document.getElementById('chat-drop-modal');
+    const previewImg = document.getElementById('chat-drop-preview-img');
+    const previewFile = document.getElementById('chat-drop-preview-file');
+    const msgInput = document.getElementById('chat-drop-message');
+
+    msgInput.value = (document.getElementById('reply-input') || {}).value || '';
+
+    if (file.type.startsWith('image/')) {
+        previewImg.src = URL.createObjectURL(file);
+        previewImg.classList.remove('hidden');
+        previewFile.classList.add('hidden');
+    } else {
+        previewImg.classList.add('hidden');
+        previewFile.classList.remove('hidden');
+        document.getElementById('chat-drop-filename').textContent = file.name;
+        document.getElementById('chat-drop-filesize').textContent = _formatFileSize(file.size);
+    }
+    modal.classList.remove('hidden');
+    setTimeout(() => {
+        msgInput.focus();
+        msgInput.style.height = 'auto';
+        msgInput.style.height = Math.min(msgInput.scrollHeight, 150) + 'px';
+    }, 50);
+}
+
+function closeChatDropModal() {
+    const modal = document.getElementById('chat-drop-modal');
+    modal.classList.add('hidden');
+    const previewImg = document.getElementById('chat-drop-preview-img');
+    if (previewImg.src) { URL.revokeObjectURL(previewImg.src); previewImg.src = ''; }
+    _droppedFile = null;
+}
+
+function submitChatDropModal() {
+    if (!_droppedFile) return;
+    const msgInput = document.getElementById('chat-drop-message');
+    const replyInput = document.getElementById('reply-input');
+    const fileInput = document.getElementById('file-input');
+
+    // Set message text if provided
+    if (msgInput.value.trim()) replyInput.value = msgInput.value.trim();
+
+    // Inject dropped file into the file input
+    const dt = new DataTransfer();
+    dt.items.add(_droppedFile);
+    fileInput.files = dt.files;
+
+    closeChatDropModal();
+    doSendReply();
+}
+
+// Enter submits the drop modal (Shift+Enter inserts a newline); Escape closes it.
+document.addEventListener('keydown', function(e) {
+    const modal = document.getElementById('chat-drop-modal');
+    if (!modal || modal.classList.contains('hidden')) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        submitChatDropModal();
+    } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeChatDropModal();
+    }
+});
+
 // ==================== Send Reply ====================
 
 // Chat-input keydown handler: Enter submits on desktop, inserts newline on mobile.
@@ -1210,15 +1466,69 @@ function clearFileInput() {
 const CHAT_DESKTOP_BREAKPOINT = 1024;
 function chatInputKeydown(event) {
     if (event.key !== 'Enter') return;
+    if (event.shiftKey) {
+        // Shift+Enter inserts a newline natively; offer the editor-mode tip for long messages.
+        showEditorTip();
+        return;
+    }
     const isDesktop = window.innerWidth >= CHAT_DESKTOP_BREAKPOINT;
-    if (isDesktop && !event.shiftKey) {
+    if (isDesktop) {
         // Desktop: Enter alone submits the message
         event.preventDefault();
         doSendReply();
     }
     // Mobile: Enter does nothing special — textarea handles newline natively.
-    // Shift+Enter on desktop: also falls through — textarea inserts newline natively.
 }
+
+// ==================== Editor Mode ====================
+
+function showEditorTip() {
+    const tip = document.getElementById('editor-tip');
+    if (tip) tip.classList.remove('hidden');
+}
+function hideEditorTip() {
+    const tip = document.getElementById('editor-tip');
+    if (tip) tip.classList.add('hidden');
+}
+
+// Open the editor-mode modal, pre-filled with the current chat input text.
+function openChatEditorModal() {
+    const input = document.getElementById('reply-input');
+    const ta = document.getElementById('chat-editor-textarea');
+    ta.value = input.value;
+    document.getElementById('chat-editor-modal').classList.remove('hidden');
+    hideEditorTip();
+    setTimeout(function () { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 50);
+}
+
+// Cancel: close the modal and move the edited text back into the regular chat input.
+function closeChatEditorModal() {
+    const input = document.getElementById('reply-input');
+    const ta = document.getElementById('chat-editor-textarea');
+    input.value = ta.value;
+    document.getElementById('chat-editor-modal').classList.add('hidden');
+    input.dispatchEvent(new Event('input')); // trigger auto-grow
+    input.focus();
+}
+
+// Submit: copy the edited text into the chat input and send it to the agent.
+function submitChatEditorModal() {
+    const input = document.getElementById('reply-input');
+    const ta = document.getElementById('chat-editor-textarea');
+    input.value = ta.value;
+    document.getElementById('chat-editor-modal').classList.add('hidden');
+    doSendReply();
+}
+
+// Esc cancels the editor modal (moving text back into the chat input).
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') return;
+    const modal = document.getElementById('chat-editor-modal');
+    if (modal && !modal.classList.contains('hidden')) {
+        e.preventDefault();
+        closeChatEditorModal();
+    }
+});
 
 async function doSendReply() {
     if (!currentSessionId) return;
@@ -1229,7 +1539,7 @@ async function doSendReply() {
     if (!text && !file) return;
 
     const $btn = $('#reply-btn');
-    $btn.prop('disabled', true).text('Sending...');
+    $btn.prop('disabled', true);
 
     // Optimistically render the outgoing message so it appears before the thinking bubble.
     // Perspective 'A' = sending as user role; 'B' = sending as assistant role.
@@ -1245,12 +1555,16 @@ async function doSendReply() {
     const $msgEl = chatUI.appendMessage(outRole, displayText, {metadata: optimisticMeta});
     // If the agent is mid-turn, mark message as queued with clock indicator
     if (_sseThinkingId) chatUI.markLastUserBubbleQueued($msgEl);
+    // Clear input and file preview immediately so the UI feels responsive
+    $input.val('');
+    if (file) clearFileInput();
     requestAnimationFrame(function () { chatUI.scrollToBottom(); });
     _pendingReplyText = null; // Will be set after we know the final text from backend
 
     let res;
     if (file) {
-        // Multipart upload
+        // Multipart upload with progress tracking
+        chatUI.markMessageUploading($msgEl);
         const formData = new FormData();
         formData.append('text', text);
         formData.append('perspective', _chatPerspective);
@@ -1261,7 +1575,17 @@ async function doSendReply() {
             data: formData,
             processData: false,
             contentType: false,
+            xhr: function() {
+                const xhr = new XMLHttpRequest();
+                xhr.upload.addEventListener('progress', function(e) {
+                    if (e.lengthComputable) {
+                        chatUI.updateUploadProgress($msgEl, Math.round(e.loaded / e.total * 100));
+                    }
+                });
+                return xhr;
+            },
         }).catch(err => ({ error: err.responseJSON?.error || 'Upload failed' }));
+        chatUI.markMessageUploadDone($msgEl);
     } else {
         // Existing JSON path
         _pendingReplyText = text;
@@ -1273,25 +1597,23 @@ async function doSendReply() {
         }).catch(err => ({ error: err.responseJSON?.error || 'Request failed' }));
     }
 
-    $btn.prop('disabled', false).text('Send');
+    $btn.prop('disabled', false);
     if (res.error) {
         _pendingReplyText = null;
         _pendingFileUpload = false;
         $msgEl.remove(); // remove optimistically-rendered message on failure
         return alert(res.error);
     }
+    hideEditorTip();
     // Defensive: if the response indicates a UI clear (e.g. /clear command), clear the chat
     if (res.clear_ui) {
-        $input.val('');
         chatUI.clearContainer();
         _pendingReplyText = null;
-        clearFileInput();
         return;
     }
     // Slash command response — display immediately, then suppress duplicate renders.
     // Guard: if SSE already rendered it (race), skip to avoid double display.
     if (res.slash_command && res.response) {
-        $input.val('');
         const wasAtBottom = chatUI.isNearBottom(80);
         if (_pendingSlashResponse === null) {
             chatUI.appendMessage('assistant', res.response);
@@ -1299,13 +1621,11 @@ async function doSendReply() {
         }
         _pendingReplyText = null;
         _pendingSlashResponse = res.response;
-        if (file) { _pendingFileUpload = true; clearFileInput(); }
+        if (file) { _pendingFileUpload = true; }
         return;
     }
-    $input.val('');
     if (file) {
         _pendingFileUpload = true;
-        clearFileInput();
     }
 }
 
@@ -1372,76 +1692,349 @@ async function deleteSession(sessionId) {
 
 // ==================== Session State ====================
 
+// Render the "Background Processes" section for the Session State panel.
+// Shared shape with agent_detail.html — spinner while running, ✓/✗ when done.
+// A "process" is a live thing — only running jobs are shown. Once a job
+// exits (done/timeout/failed) it drops off the list entirely, and rows are
+// styled as terminal command lines (mono + prompt glyph + live dot) so they
+// don't read like the checkbox/checkmark Task list.
+// In-memory cache of background process data, keyed by job_id.
+let _bgProcessesData = {};
+
+function buildBgProcessesHtml(procs) {
+    if (!Array.isArray(procs)) return '';
+    const running = procs.filter(p => p && p.status === 'running');
+    if (running.length === 0) return '';
+    // Store in cache for modal lookup
+    _bgProcessesData = {};
+    for (const p of running) {
+        _bgProcessesData[p.job_id] = p;
+    }
+    const liveDot = '<span class="relative flex h-2 w-2 flex-shrink-0"><span class="absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60 animate-ping"></span><span class="relative inline-flex h-2 w-2 rounded-full bg-green-500"></span></span>';
+    let html = '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Background Processes</div><ul class="space-y-1">';
+    for (const p of running) {
+        const secs = Math.max(0, Math.floor(Date.now() / 1000 - p.started_at));
+        const elapsed = secs < 60 ? `${secs}s` : (secs < 3600 ? `${Math.floor(secs / 60)}m` : `${Math.floor(secs / 3600)}h${Math.floor((secs % 3600) / 60)}m`);
+        html += `<li class="flex items-center gap-1.5 cursor-pointer rounded px-1 py-0.5 -mx-1 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" onclick="openBgProcessModal('${esc(p.job_id)}')" title="Click to view details">${liveDot}<span class="text-green-500 dark:text-green-400 font-mono text-[11px] flex-shrink-0 select-none">❯</span><span class="font-mono text-[11px] text-gray-700 dark:text-gray-200 truncate">${esc(p.command)}</span><span class="font-mono text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 ml-auto tabular-nums">${esc(elapsed)}</span></li>`;
+    }
+    html += '</ul></div>';
+    return html;
+}
+
+// Render the "Context" usage block for the Session State panel: how much of
+// the model's context window the last LLM call consumed. cu = {used, max,
+// percent} from /chat/state; max/percent are null when the window is unknown.
+function buildContextUsageHtml(cu) {
+    if (!cu || !cu.used) return '';
+    const fmt = n => n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+    let label, barHtml = '';
+    if (cu.max) {
+        const pct = Math.min(100, cu.percent || 0);
+        const color = pct > 85 ? 'bg-red-500' : (pct >= 60 ? 'bg-amber-500' : 'bg-indigo-500');
+        label = `${fmt(cu.used)} / ${fmt(cu.max)} (${pct}%)`;
+        barHtml = `<div class="w-full h-1.5 bg-gray-200 dark:bg-gray-600 rounded-full mt-1 overflow-hidden"><div class="h-1.5 ${color} rounded-full transition-all" style="width:${pct}%"></div></div>`;
+    } else {
+        label = `~${fmt(cu.used)} tokens`;
+    }
+    return `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600"><div class="flex justify-between items-center"><span class="text-gray-500 dark:text-gray-400 font-medium text-xs uppercase tracking-wide">Context</span><span class="text-[10px] text-gray-400 dark:text-gray-500 tabular-nums">${label}</span></div>${barHtml}</div>`;
+}
+
+// ==================== Background Process Modal ====================
+
+let _bgProcessModalJobId = null;
+let _bgLogPollTimer = null;
+let _bgElapsedTimer = null;
+let _bgProcessModalTrigger = null;
+
+function _formatBgProcessDuration(seconds) {
+    const secs = Math.max(0, Math.floor(seconds || 0));
+    if (secs < 60) return `${secs}s`;
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m ${secs % 60}s`;
+}
+
+function openBgProcessModal(jobId) {
+    const p = _bgProcessesData[jobId];
+    if (!p) return;
+    _bgProcessModalJobId = jobId;
+    _bgProcessModalTrigger = document.activeElement;
+
+    const backdrop = document.getElementById('bg-process-modal-backdrop');
+    const modal = document.getElementById('bg-process-modal');
+    const body = document.getElementById('bg-process-modal-body');
+    const title = document.getElementById('bg-process-modal-title');
+    const subtitle = document.getElementById('bg-process-modal-subtitle');
+    const kindColors = {
+        wrapper: 'border-gray-300 text-gray-600 dark:border-white/15 dark:text-slate-300',
+        tmux: 'border-amber-300 text-amber-600 dark:border-amber-500/40 dark:text-amber-400',
+        screen: 'border-purple-300 text-purple-600 dark:border-purple-500/40 dark:text-purple-400',
+        nohup: 'border-sky-300 text-sky-600 dark:border-sky-500/40 dark:text-sky-400'
+    };
+    const pillStyles = {
+        running: { text: 'Running • Live', cls: 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-300 dark:shadow-lg dark:shadow-emerald-500/30', dot: 'bg-emerald-500 dark:bg-emerald-400', ping: true },
+        done: { text: 'Done', cls: 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-300', dot: 'bg-sky-500 dark:bg-sky-400', ping: false },
+        timeout: { text: 'Timeout', cls: 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-300', dot: 'bg-amber-500 dark:bg-amber-400', ping: false },
+        failed: { text: 'Failed', cls: 'border-red-300 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-300', dot: 'bg-red-500 dark:bg-red-400', ping: false }
+    };
+
+    const startedDate = new Date(p.started_at * 1000);
+    const finishedDate = p.finished_at ? new Date(p.finished_at * 1000) : null;
+    const elapsed = _formatBgProcessDuration((p.finished_at || Date.now() / 1000) - p.started_at);
+    const status = p.status || 'running';
+    const isRunning = status === 'running' && !p.finished_at;
+    const exitCode = !isRunning && p.exit_code != null ? String(p.exit_code) : null;
+    const kindColor = kindColors[p.kind] || kindColors.wrapper;
+    const pill = pillStyles[status] || pillStyles.failed;
+    const dateOptions = { year: 'numeric', month: 'short', day: 'numeric' };
+    const timeOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit' };
+    const startedDay = startedDate.toLocaleDateString([], dateOptions);
+    const startedTime = startedDate.toLocaleTimeString([], timeOptions);
+
+    const iconClock = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l2.5 2.5"/></svg>';
+    const iconRefresh = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>';
+    const iconTerminal = '<svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l3 3-3 3m5 0h3M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg>';
+
+    // Header subtitle (job id + kind + status text) and status pill.
+    const subtitleHtml = `<span class="font-mono text-gray-700 dark:text-slate-200">${esc(p.job_id)}</span>`
+        + `<span class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium ${kindColor}">${esc(p.kind || 'wrapper')}</span>`
+        + '<span class="text-gray-300 dark:text-slate-600" aria-hidden="true">•</span>'
+        + `<span>${isRunning ? 'Running in the background' : 'Process ' + esc(status)}</span>`;
+    const pillDot = pill.ping
+        ? `<span class="relative flex h-2 w-2" aria-hidden="true"><span class="absolute inline-flex h-full w-full animate-ping rounded-full ${pill.dot} opacity-70"></span><span class="relative inline-flex h-2 w-2 rounded-full ${pill.dot}"></span></span>`
+        : `<span class="h-2 w-2 rounded-full ${pill.dot}" aria-hidden="true"></span>`;
+    const pillHtml = `<span class="inline-flex items-center gap-2 rounded-full border px-4 py-1.5 text-xs font-bold uppercase tracking-wider ${pill.cls}" role="status">${pillDot}${esc(pill.text)}</span>`;
+
+    let html = '<div class="space-y-6">';
+
+    // Execution stats — four columns split by vertical dividers on desktop.
+    html += '<div class="grid grid-cols-2 gap-x-4 gap-y-6 sm:grid-cols-4 sm:gap-x-0 sm:gap-y-0 sm:divide-x sm:divide-gray-200 sm:dark:divide-white/10">';
+    html += `<div class="sm:px-6 sm:first:pl-0"><div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">${iconClock}<span class="text-sm font-medium">Started</span></div><p class="mt-2 text-lg font-bold text-gray-900 dark:text-white">${esc(startedDay)}</p><p class="mt-1 text-sm tabular-nums text-gray-400 dark:text-slate-500">${esc(startedTime)}</p></div>`;
+    html += `<div class="sm:px-6"><div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">${iconClock}<span class="text-sm font-medium">Elapsed</span></div><p class="bg-process-elapsed mt-2 font-mono text-lg font-bold tabular-nums text-gray-900 dark:text-white" data-started="${p.started_at}" data-finished="${p.finished_at || 0}">${esc(elapsed)}</p><p class="mt-1 text-sm ${isRunning ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-400 dark:text-slate-500'}">${isRunning ? 'Updating live' : 'Total runtime'}</p></div>`;
+    html += `<div class="sm:px-6"><div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">${iconRefresh}<span class="text-sm font-medium">Finished</span></div><p class="mt-2 text-lg font-bold ${finishedDate ? 'text-gray-900 dark:text-white' : 'text-emerald-600 dark:text-emerald-400'}">${finishedDate ? esc(finishedDate.toLocaleDateString([], dateOptions)) : 'In progress'}</p><p class="mt-1 text-sm tabular-nums text-gray-400 dark:text-slate-500">${finishedDate ? esc(finishedDate.toLocaleTimeString([], timeOptions)) : 'Waiting for completion'}</p></div>`;
+    html += `<div class="sm:px-6 sm:last:pr-0"><div class="flex items-center gap-2 text-gray-500 dark:text-slate-400">${iconTerminal}<span class="text-sm font-medium">Exit code</span></div><p class="mt-2 text-lg font-bold ${exitCode === '0' ? 'text-emerald-600 dark:text-emerald-400' : (exitCode ? 'text-red-600 dark:text-red-400' : 'text-gray-400 dark:text-slate-300')}">${esc(exitCode || 'Pending')}</p><p class="mt-1 text-sm text-gray-400 dark:text-slate-500">${exitCode == null ? 'Available when finished' : (exitCode === '0' ? 'Completed successfully' : 'Process returned an error')}</p></div>`;
+    html += '</div>';
+
+    // Command block — kept dark in both themes (terminal aesthetic).
+    html += '<div class="border-t border-gray-200 pt-5 dark:border-white/10">';
+    html += '<h4 class="text-sm font-bold text-gray-700 dark:text-slate-300">Command</h4>';
+    html += '<div class="mt-2.5 flex items-start gap-3 rounded-xl border border-white/10 bg-slate-950 p-4">';
+    html += `<pre class="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-sm leading-6 text-slate-200"><code>${esc(p.command || '')}</code></pre>`;
+    html += '<button id="bg-process-copy-btn" type="button" onclick="copyBgProcessCommand()" class="inline-flex flex-shrink-0 items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50" aria-label="Copy background process command"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 9V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7a2 2 0 002 2h3"/></svg><span id="bg-process-copy-label">Copy</span></button>';
+    html += '</div></div>';
+
+    if (p.log_file) {
+        html += '<div class="border-t border-gray-200 pt-5 dark:border-white/10">';
+        html += '<div class="mb-2 flex items-center justify-between gap-3"><div class="flex items-center gap-2"><h4 class="text-sm font-bold text-gray-700 dark:text-slate-300">Live output</h4><span id="bg-log-live-badge" class="hidden items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-300"><span class="h-1.5 w-1.5 rounded-full bg-emerald-500 dark:bg-emerald-400"></span>LIVE</span></div><span id="bg-log-refreshed" class="flex-shrink-0 text-xs text-gray-400 dark:text-slate-500" aria-live="polite"></span></div>';
+        html += `<p class="mb-2 truncate font-mono text-xs text-gray-400 dark:text-slate-500" title="${esc(p.log_file)}">${esc(p.log_file)}</p>`;
+        html += '<pre id="bg-log-content" class="max-h-80 min-h-[9rem] overflow-auto rounded-xl border border-white/10 bg-slate-950 p-4 font-mono text-[11px] leading-5 text-emerald-300" aria-label="Background process log output" aria-live="polite"><span class="flex items-center justify-center py-8 text-slate-500"><svg class="mr-2 h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke-width="3"></circle><path class="opacity-75" stroke-width="3" stroke-linecap="round" d="M21 12a9 9 0 00-9-9"></path></svg>Loading live output...</span></pre></div>';
+    } else {
+        html += '<div class="flex flex-wrap items-center gap-4 border-t border-gray-200 pt-5 dark:border-white/10"><div class="flex items-center gap-3"><svg class="h-5 w-5 flex-shrink-0 text-gray-400 dark:text-slate-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v4m0 4h.01M10.3 4.7l-7.6 13.2A2 2 0 004.4 21h15.2a2 2 0 001.7-3.1L13.7 4.7a2 2 0 00-3.4 0z"/></svg><span class="font-bold text-gray-700 dark:text-slate-200">Live output unavailable</span></div><span class="hidden h-8 w-px bg-gray-200 sm:block dark:bg-white/10"></span><span class="text-sm text-gray-500 dark:text-slate-500">This process was started without a log file.</span></div>';
+    }
+
+    html += '</div>';
+    title.textContent = p.session_name || 'Background Process';
+    subtitle.innerHTML = subtitleHtml;
+    const pillEl = document.getElementById('bg-process-status-pill');
+    if (pillEl) pillEl.innerHTML = pillHtml;
+    body.innerHTML = html;
+    backdrop.classList.remove('hidden');
+    modal.classList.remove('hidden');
+    if (isRunning) _startBgElapsedTimer();
+    if (p.log_file) _fetchBgLog();
+    setTimeout(() => {
+        const closeButton = modal.querySelector('button[aria-label="Close background process details"]');
+        if (closeButton) closeButton.focus();
+    }, 50);
+}
+
+async function copyBgProcessCommand() {
+    const p = _bgProcessesData[_bgProcessModalJobId];
+    const button = document.getElementById('bg-process-copy-btn');
+    const label = document.getElementById('bg-process-copy-label');
+    if (!p || !button || !label) return;
+    let textarea = null;
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(p.command || '');
+        } else {
+            textarea = document.createElement('textarea');
+            textarea.value = p.command || '';
+            textarea.setAttribute('readonly', '');
+            textarea.className = 'fixed left-[-9999px] top-0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            if (!document.execCommand('copy')) throw new Error('Copy command failed');
+        }
+        label.textContent = 'Copied';
+        button.classList.add('border-emerald-500/50', 'text-emerald-300');
+        setTimeout(() => { label.textContent = 'Copy'; button.classList.remove('border-emerald-500/50', 'text-emerald-300'); }, 1800);
+    } catch (error) {
+        label.textContent = 'Copy failed';
+        button.classList.add('border-red-500/50', 'text-red-300');
+        setTimeout(() => { label.textContent = 'Copy'; button.classList.remove('border-red-500/50', 'text-red-300'); }, 2200);
+    } finally {
+        if (textarea) textarea.remove();
+    }
+}
+
+function closeBgProcessModal() {
+    const backdrop = document.getElementById('bg-process-modal-backdrop');
+    const modal = document.getElementById('bg-process-modal');
+    backdrop.classList.add('hidden');
+    modal.classList.add('hidden');
+    _bgProcessModalJobId = null;
+    _stopBgElapsedTimer();
+    _stopBgLogPolling();
+    if (_bgProcessModalTrigger && document.contains(_bgProcessModalTrigger)) _bgProcessModalTrigger.focus();
+    _bgProcessModalTrigger = null;
+}
+
+function _startBgElapsedTimer() {
+    _stopBgElapsedTimer();
+    _bgElapsedTimer = setInterval(() => {
+        const modal = document.getElementById('bg-process-modal');
+        const el = modal ? modal.querySelector('.bg-process-elapsed') : null;
+        if (!el) { _stopBgElapsedTimer(); return; }
+        const started = parseFloat(el.dataset.started) || 0;
+        const finished = parseFloat(el.dataset.finished) || 0;
+        if (finished) { _stopBgElapsedTimer(); return; }
+        el.textContent = _formatBgProcessDuration(Date.now() / 1000 - started);
+    }, 1000);
+}
+
+function _stopBgElapsedTimer() {
+    if (_bgElapsedTimer) { clearInterval(_bgElapsedTimer); _bgElapsedTimer = null; }
+}
+
+function _fetchBgLog() {
+    const p = _bgProcessesData[_bgProcessModalJobId];
+    if (!p || !p.log_file) return;
+    if (!currentAgentId) return;
+
+    fetch(`/api/agents/${encodeURIComponent(currentAgentId)}/bg-job/log?file=${encodeURIComponent(p.log_file)}&lines=200`)
+        .then(res => {
+            if (!res.ok) throw new Error('Failed to load log');
+            return res.json();
+        })
+        .then(data => {
+            const pre = document.getElementById('bg-log-content');
+            if (!pre) return;
+            if (data.content && data.content.length > 0) {
+                pre.textContent = data.content.join('\n');
+            } else {
+                pre.innerHTML = '<span class="text-gray-500 italic">(empty log)</span>';
+            }
+            pre.scrollTop = pre.scrollHeight;
+
+            // Show live badge
+            const badge = document.getElementById('bg-log-live-badge');
+            if (badge) { badge.classList.remove('hidden'); badge.classList.add('inline-flex'); }
+
+            // Update refreshed time
+            const refreshed = document.getElementById('bg-log-refreshed');
+            if (refreshed) refreshed.textContent = 'refreshed just now';
+
+            // Schedule next poll
+            _stopBgLogPolling();
+            _bgLogPollTimer = setTimeout(_fetchBgLog, 3000);
+        })
+        .catch(err => {
+            const pre = document.getElementById('bg-log-content');
+            if (pre) pre.innerHTML = `<span class="text-red-400 italic">Failed to load log: ${esc(err.message)}</span>`;
+            // Retry after longer delay
+            _stopBgLogPolling();
+            _bgLogPollTimer = setTimeout(_fetchBgLog, 5000);
+        });
+}
+
+function _stopBgLogPolling() {
+    if (_bgLogPollTimer) { clearTimeout(_bgLogPollTimer); _bgLogPollTimer = null; }
+}
+
 let lastSummaryText = null;
+let _sessionStateData = {};
+let _summaryRefreshTimer = null;
+
+function _renderSessionStateSnapshot(stateData) {
+    let planHtml = '';
+    if (stateData.mode) {
+        const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+        planHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
+    }
+    if (stateData.plan_file) {
+        planHtml += `<button class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1 cursor-pointer hover:underline hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors border-0" onclick="openPlanModal('${esc(stateData.plan_file)}')" title="Click to view plan">📋 ${esc(stateData.plan_file)}</button> `;
+    }
+    if (stateData.tasks && stateData.tasks.length > 0) {
+        const icons = {pending: '\u2610', in_progress: '\u27f3', done: '\u2713'};
+        const iconColors = {pending: 'text-gray-400', in_progress: 'text-amber-500', done: 'text-green-500'};
+        planHtml += '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Tasks</div><ul class="space-y-0.5">';
+        for (const t of stateData.tasks) {
+            const active = t.status === 'in_progress';
+            const spinnerSvg = '<svg class="task-active-icon animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.2"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 60"/></svg>';
+            const icon = active ? spinnerSvg : (icons[t.status] || '\u2610');
+            const color = iconColors[t.status] || 'text-gray-400';
+            const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
+            const iconCls = `${color} inline-flex items-center justify-center w-4 h-4 text-xs flex-shrink-0`;
+            const textCls = active ? 'task-active-text text-xs' : `${textClass} text-xs`;
+            planHtml += `<li class="flex items-start gap-1.5"><span class="${iconCls}">${icon}</span><span class="${textCls}">${esc(t.text)}</span></li>`;
+        }
+        planHtml += '</ul></div>';
+    }
+    planHtml += buildBgProcessesHtml(stateData.background_processes);
+
+    const skills = Array.isArray(stateData.loaded_skills)
+        ? stateData.loaded_skills.map(skill => typeof skill === 'string'
+            ? {skill_id: skill, name: skill}
+            : skill)
+        : [];
+    const badges = _buildSkillBadges(skills);
+    ['', 'mobile-'].forEach(prefix => {
+        const ctxEl = document.getElementById(prefix + 'SessionContext');
+        const planEl = document.getElementById(prefix + 'SessionPlan');
+        const skillsEl = document.getElementById(prefix + 'SessionSkills');
+        if (ctxEl) ctxEl.innerHTML = buildContextUsageHtml(stateData.context_usage);
+        if (planEl) planEl.innerHTML = planHtml ? `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">${planHtml}</div>` : '';
+        if (skillsEl) skillsEl.innerHTML = badges.hasBadges ? '<div class="pt-2 border-t border-gray-100 dark:border-gray-600"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">📜 ' + badges.count + ' Skills:</div><div class="flex flex-wrap gap-1 mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">' + badges.html + '</div></div>' : '';
+    });
+}
+
+function _renderSessionSummary(data) {
+    const metaText = data.summary
+        ? `${data.message_count} msgs summarized` + (data.updated_at ? ` · ${formatTime(data.updated_at)}` : '')
+        : null;
+    ['', 'mobile-'].forEach(prefix => {
+        const summaryEl = document.getElementById(prefix + 'SessionSummary');
+        const meta = document.getElementById(prefix + 'summary-meta');
+        if (summaryEl && data.summary) {
+            summaryEl.innerHTML = '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
+            if (meta) {
+                meta.textContent = metaText || '';
+                meta.classList.remove('hidden');
+            }
+        } else if (summaryEl) {
+            summaryEl.innerHTML = '<p class="text-xs text-gray-400 italic">No summary yet.</p>';
+            if (meta) meta.classList.add('hidden');
+        }
+    });
+    lastSummaryText = data.summary || null;
+}
 
 async function loadSessionSummary() {
     if (!currentSessionId) return;
     try {
-        // Fetch session summary and agent state in parallel
-        const fetches = [fetch(`/api/sessions/${currentSessionId}/summary`)];
-        if (currentAgentId) {
-            const userId = document.getElementById('hdr-user')?.textContent || 'web_test';
-            fetches.push(fetch(`/api/agents/${currentAgentId}/chat/state?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(currentSessionId)}`));
-        } else {
-            fetches.push(Promise.resolve(null));
-        }
-        const [sumRes, stateRes] = await Promise.all(fetches);
-        const data = await sumRes.json();
-        const stateData = (stateRes && stateRes.ok) ? await stateRes.json() : {};
-
-        // Build plan section: mode badge + plan file + tasks
-        let planHtml = '';
-        if (stateData.mode) {
-            const modeColor = stateData.mode === 'execute' ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-            planHtml += `<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium ${modeColor}">${esc(stateData.mode)}</span> `;
-        }
-        if (stateData.plan_file) {
-            planHtml += `<button class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300 ml-1 cursor-pointer hover:underline hover:bg-purple-200 dark:hover:bg-purple-800 transition-colors border-0" onclick="openPlanModal('${esc(stateData.plan_file)}')" title="Click to view plan">📋 ${esc(stateData.plan_file)}</button> `;
-        }
-        if (stateData.tasks && stateData.tasks.length > 0) {
-            const icons = {pending: '\u2610', in_progress: '\u27f3', done: '\u2713'};
-            const iconColors = {pending: 'text-gray-400', in_progress: 'text-amber-500', done: 'text-green-500'};
-            planHtml += '<div class="mt-2"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">Tasks</div><ul class="space-y-0.5">';
-            for (const t of stateData.tasks) {
-                const active = t.status === 'in_progress';
-                const spinnerSvg = '<svg class="task-active-icon animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-opacity="0.2"/><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="40 60"/></svg>';
-                const icon = active ? spinnerSvg : (icons[t.status] || '\u2610');
-                const color = iconColors[t.status] || 'text-gray-400';
-                const textClass = t.status === 'done' ? 'line-through text-gray-400 dark:text-gray-500' : 'text-gray-700 dark:text-gray-200';
-                const iconCls = `${color} inline-flex items-center justify-center w-4 h-4 text-xs flex-shrink-0`;
-                const textCls = active ? 'task-active-text text-xs' : `${textClass} text-xs`;
-                planHtml += `<li class="flex items-start gap-1.5"><span class="${iconCls}">${icon}</span><span class="${textCls}">${esc(t.text)}</span></li>`;
-            }
-            planHtml += '</ul></div>';
-        }
-
-        // Build skill badges section
-        const skills = Array.isArray(stateData.loaded_skills) ? stateData.loaded_skills : [];
-        const badges = _buildSkillBadges(skills);
-
-        const metaText = data.summary
-            ? `${data.message_count} msgs summarized` + (data.updated_at ? ` \u00b7 ${formatTime(data.updated_at)}` : '')
-            : null;
-
-        ['', 'mobile-'].forEach(prefix => {
-            const planEl = document.getElementById(prefix + 'SessionPlan');
-            const skillsEl = document.getElementById(prefix + 'SessionSkills');
-            const summaryEl = document.getElementById(prefix + 'SessionSummary');
-            const meta = document.getElementById(prefix + 'summary-meta');
-            if (planEl) planEl.innerHTML = planHtml ? `<div class="mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">${planHtml}</div>` : '';
-            if (skillsEl) skillsEl.innerHTML = badges.hasBadges ? '<div class="pt-2 border-t border-gray-100 dark:border-gray-600"><div class="text-gray-500 dark:text-gray-400 font-medium mb-1 text-xs uppercase tracking-wide">📜 ' + badges.count + ' Skills:</div><div class="flex flex-wrap gap-1 mb-3 pb-3 border-b border-gray-100 dark:border-gray-600">' + badges.html + '</div></div>' : '';
-            if (summaryEl && data.summary) {
-                summaryEl.innerHTML = '<div class="recap-prose">' + marked.parse(data.summary) + '</div>';
-                meta.textContent = metaText || '';
-                meta.classList.remove('hidden');
-            } else if (summaryEl) {
-                summaryEl.innerHTML = '<p class="text-xs text-gray-400 italic">No summary yet.</p>';
-                meta.classList.add('hidden');
-            }
-        });
-        lastSummaryText = data.summary || null;
+        const sumRes = await fetch(`/api/sessions/${currentSessionId}/summary`);
+        if (sumRes.ok) _renderSessionSummary(await sumRes.json());
     } catch(e) { /* ignore */ }
 }
+
+function scheduleSessionSummaryRefresh() {
+    clearTimeout(_summaryRefreshTimer);
+    _summaryRefreshTimer = setTimeout(() => {
+        _summaryRefreshTimer = null;
+        loadSessionSummary();
+    }, 1000);
+}
+
 async function forceRecap(btn) {
     if (!currentSessionId) return;
     const original = btn.textContent;
@@ -1463,11 +2056,15 @@ async function forceRecap(btn) {
 }
 
 function clearSummaryPanel() {
+    clearTimeout(_summaryRefreshTimer);
+    _summaryRefreshTimer = null;
     ['', 'mobile-'].forEach(prefix => {
+        const ctxEl = document.getElementById(prefix + 'SessionContext');
         const planEl = document.getElementById(prefix + 'SessionPlan');
         const skillsEl = document.getElementById(prefix + 'SessionSkills');
         const summaryEl = document.getElementById(prefix + 'SessionSummary');
         const meta = document.getElementById(prefix + 'summary-meta');
+        if (ctxEl) ctxEl.innerHTML = '';
         if (planEl) planEl.innerHTML = '';
         if (skillsEl) skillsEl.innerHTML = '';
         if (summaryEl) summaryEl.innerHTML = '<p class="text-xs text-gray-400 italic">No summary yet.</p>';
@@ -1481,16 +2078,49 @@ function clearSummaryPanel() {
 async function loadAgentState() {
     if (!currentAgentId) return;
     const userId = document.getElementById('hdr-user')?.textContent || 'web_test';
-    renderAgentState(currentAgentId, userId, ['agent-state-content', 'mobile-agent-state-content'], currentSessionId);
+    try {
+        const url = `/api/agents/${currentAgentId}/chat/state?user_id=${encodeURIComponent(userId)}&session_id=${encodeURIComponent(currentSessionId || '')}`;
+        const response = await fetch(url);
+        if (!response.ok) return;
+        _sessionStateData = await response.json();
+        _renderSessionStateSnapshot(_sessionStateData);
+        renderAgentState(
+            currentAgentId,
+            userId,
+            ['agent-state-content', 'mobile-agent-state-content'],
+            currentSessionId,
+            _sessionStateData
+        );
+    } catch(e) { /* ignore */ }
 }
 
 function clearAgentStatePanel() {
+    _sessionStateData = {};
     clearAgentState(['agent-state-content', 'mobile-agent-state-content']);
 }
 
-document.addEventListener('evonic:agent-state-changed', function() {
-    loadAgentState();
-    loadSessionSummary();
+document.addEventListener('evonic:agent-state-changed', function(event) {
+    const detail = event.detail || {};
+    const stateKeys = ['mode', 'plan_file', 'tasks', 'loaded_skills'];
+    const hasStateSnapshot = stateKeys.some(key => Object.prototype.hasOwnProperty.call(detail, key));
+
+    if (hasStateSnapshot) {
+        for (const key of stateKeys) {
+            if (Object.prototype.hasOwnProperty.call(detail, key)) _sessionStateData[key] = detail[key];
+        }
+        _renderSessionStateSnapshot(_sessionStateData);
+        renderAgentState(
+            currentAgentId,
+            null,
+            ['agent-state-content', 'mobile-agent-state-content'],
+            currentSessionId,
+            _sessionStateData
+        );
+    } else {
+        // ATG and non-stream callers still emit the legacy event without a snapshot.
+        loadAgentState();
+    }
+    scheduleSessionSummaryRefresh();
 });
 
 function toggleMobileSummary() {
@@ -1541,6 +2171,45 @@ function showMobileSummaryBtn(show) {
 
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function truncate(s, n) { return s && s.length > n ? s.substring(0, n) + '...' : (s || ''); }
+
+function explorerDisplayName(s) {
+    // Unified matcher for both sub-agent (_sub_N) and explorer (_explorer_N).
+    // Sub-agents and explorers are in-memory only — absent from the agents table —
+    // so agent_name falls back to the raw agent_id via COALESCE(ag.name, si.agent_id).
+    // Patterns checked in order: agent_name, external_user_id, agent_id, session_id.
+    // Three display categories:
+    //   Regular agent (human ↔ agent):   "Linus"
+    //   Sub-agent   (agent ↔ sub):       "Linus Torvalds - Sub-agent #1"
+    //   Explorer    (agent ↔ explorer):  "Linus Torvalds - Explorer #1"
+    //   Organizer   (agent ↔ organizer): "Linus Torvalds - Organizer #1"
+
+    const KIND = /_(explorer|organizer|sub)_(\d+)/;           // anywhere in string
+    const KIND_END = /_(explorer|organizer|sub)_(\d+)$/;      // at end only (agent_name fallback)
+    const labelFor = k => k === 'explorer' ? 'Explorer' : k === 'organizer' ? 'Organizer' : 'Sub-agent';
+
+    const an = s.agent_name || 'Unknown';
+    const pn = s.peer_agent_name;  // null/undefined when peer not in agents table
+
+    if (an) {
+        const m = an.match(KIND_END);
+        if (m) return esc(pn || 'Unknown') + ' - ' + labelFor(m[1]) + ' #' + m[2];
+    }
+
+    const euM = (s.external_user_id || '').match(KIND);
+    if (euM) return esc(an) + ' - ' + labelFor(euM[1]) + ' #' + euM[2];
+
+    const aiM = (s.agent_id || '').match(KIND);
+    if (aiM) return esc(pn || an) + ' - ' + labelFor(aiM[1]) + ' #' + aiM[2];
+
+    // Parent ↔ explorer where the marker only survives in the session id
+    // (e.g. id "linus_explorer_1-0bcfaa63"); the parent is this session's agent.
+    const idM = (s.id || '').match(KIND);
+    if (idM) return esc(an) + ' - ' + labelFor(idM[1]) + ' #' + idM[2];
+
+    // Regular inter-agent (both in agents table) or single-agent session
+    if (pn) return [esc(an), esc(pn)].sort().join(' - ');
+    return esc(an);
+}
 
 function userIdColorClass(userId) {
     if (!userId) return '';
@@ -1607,10 +2276,10 @@ async function loadSettingsState() {
     } catch(e) { /* ignore */ }
     // Load chat perspective from localStorage (migrate legacy 'bot'/'user' to 'B'/'A')
     const stored = localStorage.getItem('evonic_chat_perspective');
-    if (stored === 'A' || stored === 'user') {
-        _chatPerspective = 'A';
-    } else {
+    if (stored === 'B' || stored === 'agent') {
         _chatPerspective = 'B';
+    } else {
+        _chatPerspective = 'A';
     }
     document.getElementById('chat-perspective-toggle').checked = _chatPerspective === 'A';
     chatUI.setPerspective(_chatPerspective);
@@ -1632,10 +2301,10 @@ function updateReplyPlaceholder() {
             ? 'Type a reply as A (right side)...'
             : 'Type a reply as B (left side)...';
     }
-    // Show/hide attach button based on perspective
+    // Show/hide attach button based on perspective and agent's attachments_enabled setting
     const attachBtn = document.getElementById('attach-btn');
     if (attachBtn) {
-        if (_chatPerspective === 'A') {
+        if (_chatPerspective === 'A' && currentAttachmentsEnabled) {
             attachBtn.classList.remove('hidden');
         } else {
             attachBtn.classList.add('hidden');
@@ -1753,10 +2422,10 @@ $(document).on('keydown', function (e) {
 // Load chat perspective from localStorage on page load
 (function initChatPerspective() {
     const stored = localStorage.getItem('evonic_chat_perspective');
-    if (stored === 'A' || stored === 'user') {
-        _chatPerspective = 'A';
-    } else {
+    if (stored === 'B' || stored === 'agent') {
         _chatPerspective = 'B';
+    } else {
+        _chatPerspective = 'A';
     }
     document.getElementById('chat-perspective-toggle').checked = _chatPerspective === 'A';
     chatUI.setPerspective(_chatPerspective);
@@ -1831,11 +2500,16 @@ function closePlanModal() {
     _planModalFetchedFor = null;
 }
 
-// Escape key to close modal
+// Escape key to close modals
 document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') {
-        var backdrop = document.getElementById('plan-modal-backdrop');
-        if (backdrop && !backdrop.classList.contains('hidden')) {
+        var bgBackdrop = document.getElementById('bg-process-modal-backdrop');
+        if (bgBackdrop && !bgBackdrop.classList.contains('hidden')) {
+            closeBgProcessModal();
+            return;
+        }
+        var planBackdrop = document.getElementById('plan-modal-backdrop');
+        if (planBackdrop && !planBackdrop.classList.contains('hidden')) {
             closePlanModal();
         }
     }
@@ -1862,4 +2536,29 @@ document.addEventListener('keydown', function(e) {
         </div>
     </div>
 </div>
+
+<!-- Background Process Modal -->
+<div id="bg-process-modal-backdrop" class="hidden fixed inset-0 z-[100] flex items-end justify-center bg-slate-950/70 p-0 backdrop-blur-sm sm:items-center sm:p-4" onclick="closeBgProcessModal()" role="presentation">
+    <div id="bg-process-modal" class="hidden flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl border border-gray-200 bg-white text-gray-900 shadow-2xl dark:border-white/10 dark:bg-slate-950 dark:text-slate-100 sm:max-h-[90vh] sm:rounded-2xl" role="dialog" aria-modal="true" aria-labelledby="bg-process-modal-title" aria-describedby="bg-process-modal-subtitle" onclick="event.stopPropagation()">
+        <header class="relative flex flex-shrink-0 items-start justify-between gap-4 border-b border-gray-200 px-5 py-4 dark:border-white/10 sm:px-6 sm:py-5">
+            <div class="flex min-w-0 items-center gap-4">
+                <span class="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-2xl border border-gray-200 bg-gray-100 text-gray-600 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 sm:h-12 sm:w-12"><svg class="h-5 w-5 sm:h-6 sm:w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M8 9l3 3-3 3m5 0h3M5 4h14a2 2 0 012 2v12a2 2 0 01-2 2H5a2 2 0 01-2-2V6a2 2 0 012-2z"/></svg></span>
+                <div class="min-w-0">
+                    <h3 id="bg-process-modal-title" class="truncate text-lg font-bold tracking-tight text-gray-900 dark:text-white sm:text-xl">Background Process</h3>
+                    <p id="bg-process-modal-subtitle" class="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-sm text-gray-500 dark:text-slate-400">Process execution details</p>
+                </div>
+            </div>
+            <div class="flex flex-shrink-0 items-center gap-2 sm:gap-3">
+                <span id="bg-process-status-pill" class="hidden sm:inline-flex"></span>
+                <button type="button" onclick="closeBgProcessModal()" class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-gray-50 text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 focus:outline-none focus:ring-2 focus:ring-gray-300 dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white dark:focus:ring-white/40" aria-label="Close background process details" title="Close (Esc)">
+                    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+        </header>
+        <div id="bg-process-modal-body" class="flex-1 overflow-y-auto overscroll-contain p-5 sm:p-6">
+            <div class="flex items-center justify-center py-12 text-gray-400 dark:text-slate-500"><svg class="mr-2 h-5 w-5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle class="opacity-25" cx="12" cy="12" r="9" stroke-width="3"></circle><path class="opacity-75" stroke-width="3" stroke-linecap="round" d="M21 12a9 9 0 00-9-9"></path></svg><span class="text-sm">Loading process details...</span></div>
+        </div>
+    </div>
+</div>
+
 {% endblock %}

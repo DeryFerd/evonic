@@ -44,6 +44,16 @@ def list_skillsets() -> List[Dict[str, Any]]:
     ]
 
 
+def count_skillsets() -> int:
+    """Count skillset JSON files without loading full content.
+
+    Much faster than list_skillsets() — no JSON parsing, just a directory scan.
+    """
+    if not os.path.isdir(SKILLCSETS_DIR):
+        return 0
+    return sum(1 for fname in os.listdir(SKILLCSETS_DIR) if fname.endswith('.json'))
+
+
 def get_skillset(skill_id: str) -> Optional[Dict[str, Any]]:
     """Get a single skillset by its ID."""
     for s in _load_skillset_files():

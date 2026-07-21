@@ -189,6 +189,7 @@ const TYPE_COLORS = {
     local:  'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
     remote: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
     tunnel:  'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300',
+    bwrap:  'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
 };
 const STATUS_DOT_CLS = {
     connected:    'bg-green-500',
@@ -223,7 +224,7 @@ function loadWorkplace() {
 function applyWorkplaceData(h) {
     const cfg = (typeof h.config === 'string') ? JSON.parse(h.config || '{}') : (h.config || {});
     const type = h.type;
-    const TYPE_LABELS = { local: 'Local', remote: 'Remote SSH', tunnel: 'Tunnel' };
+    const TYPE_LABELS = { local: 'Local', remote: 'Remote SSH', tunnel: 'Tunnel', bwrap: 'Bwrap' };
 
     $('#workplace-title').text(h.name);
     $('#workplace-subtitle').text(TYPE_LABELS[type] || type);
@@ -237,9 +238,10 @@ function applyWorkplaceData(h) {
     // Config form
     $('#edit-name').val(h.name);
     $('#config-local, #config-remote, #config-tunnel').addClass('hidden');
-    if (type === 'local') {
+    if (type === 'local' || type === 'bwrap') {
         $('#config-local').removeClass('hidden');
         $('#cfg-local-path').val(cfg.workspace_path || '');
+        if (type === 'bwrap') $('#connection-actions').removeClass('hidden');
     } else if (type === 'remote') {
         $('#config-remote').removeClass('hidden');
         $('#cfg-remote-host').val(cfg.host || '');
@@ -289,7 +291,7 @@ function onAuthTypeChange() {
 
 function buildConfig() {
     const type = homeData ? homeData.type : 'local';
-    if (type === 'local') return { workspace_path: $('#cfg-local-path').val().trim() };
+    if (type === 'local' || type === 'bwrap') return { workspace_path: $('#cfg-local-path').val().trim() };
     if (type === 'remote') {
         const auth = $('#cfg-remote-auth').val();
         const cfg = {

@@ -7,5 +7,15 @@
   "author": "Evonic",
   "tools_file": "tools.json",
   "lazy_tools": false,
-  "default_enabled": true
+  "default_enabled": true,
+  "core": true,
+  "requirements": {
+    "binaries": [
+      {
+        "name": "rg",
+        "version_command": "rg --version",
+        "fix_script": "scripts/install_ripgrep.sh"
+      }
+    ]
+  }
 }

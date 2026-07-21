@@ -116,6 +116,30 @@ class TestVersionTuple(unittest.TestCase):
         self.assertLess(_version_tuple('v1.0.0-beta'), _version_tuple('v1.0.0-rc.1'))
         self.assertLess(_version_tuple('v1.0.0-rc.1'), _version_tuple('v1.0.0'))
 
+    # -- git-describe "N commits ahead" handling (no bogus update banner) -----
+
+    def test_git_describe_ahead_is_newer_than_base_tag(self):
+        """`v0.8.7-193-g183c448` is 193 commits AHEAD of v0.8.7 → newer, so the
+        base tag must NOT be considered an available update over it."""
+        cur = _version_tuple('v0.8.7-193-g183c448')
+        base = _version_tuple('v0.8.7')
+        self.assertGreater(cur, base)
+        self.assertFalse(base > cur)  # this False is what suppresses the banner
+
+    def test_git_describe_dirty_suffix_ahead_is_newer(self):
+        cur = _version_tuple('v0.8.7-193-g183c448-dirty')
+        self.assertGreater(cur, _version_tuple('v0.8.7'))
+
+    def test_git_describe_still_behind_a_real_newer_release(self):
+        """A genuinely newer release must still register as an update."""
+        cur = _version_tuple('v0.8.7-193-g183c448')
+        self.assertGreater(_version_tuple('v0.8.8'), cur)
+        self.assertGreater(_version_tuple('v0.9.0'), cur)
+
+    def test_git_describe_ahead_of_newer_base_beats_old_release(self):
+        cur = _version_tuple('v0.9.0-5-gabc1234')
+        self.assertGreater(cur, _version_tuple('v0.8.7'))
+
 
 class TestApplyUpdate(unittest.TestCase):
     """apply_update must reinstall, repair, smoke-test, and roll back on failure."""

@@ -62,7 +62,7 @@ preferences, and communication style instructions.
 
 ## Usage
 
-- Read this file: read("notes.md")
+- Read this file: read_file(file_path="/_self/kb/notes.md")
 - Update via write_file with path /_self/kb/notes.md
 - Update immediately when the user gives a new preference
 - Prioritize notes.md over `remember` for non-factual preference information
@@ -140,6 +140,18 @@ _TOOL_DEFS = [
                     "run_as_user": {
                         "type": "string",
                         "description": "Linux username to run bash/python as when sandbox is disabled. Set to empty string to clear. Only super agents can change this."
+                    },
+                    "workplace_id": {
+                        "type": "string",
+                        "description": "Workplace ID to assign this agent to (e.g. 'a15117f03576'). Use list_workplaces to discover available workplaces. Set to empty string to unassign."
+                    },
+                    "sandbox_enabled": {
+                        "type": "boolean",
+                        "description": "Whether the sandbox (Docker) execution environment is enabled for this agent."
+                    },
+                    "bash_exec_enabled": {
+                        "type": "boolean",
+                        "description": "Whether the agent can execute arbitrary bash commands."
                     }
                 },
                 "required": ["agent_id"]
@@ -292,6 +304,10 @@ _TOOL_DEFS = [
                     "model_id": {
                         "type": "string",
                         "description": "Optional model ID to assign (optional, uses skillset default)"
+                    },
+                    "workplace_id": {
+                        "type": "string",
+                        "description": "Optional workplace ID to assign the new agent to (e.g. 'a15117f03576'). Use list_workplaces to discover available workplaces."
                     }
                 },
                 "required": ["skill_id", "agent_id"]
@@ -471,6 +487,11 @@ def _exec_update_agent(args: dict, agent_context: dict = None) -> dict:
     update_data = {k: v for k, v in args.items() if k != 'agent_id'}
     if 'system_prompt' in update_data:
         _write_system_prompt(agent_id, update_data.pop('system_prompt'))
+    if 'model_id' in update_data and update_data['model_id'] == '':
+        update_data['model_id'] = None  # empty string resets to global default
+    if 'messaging_acl' in update_data and isinstance(update_data['messaging_acl'], list):
+        import json as _json
+        update_data['messaging_acl'] = _json.dumps(update_data['messaging_acl'])
     if update_data:
         db.update_agent(agent_id, update_data)
     return {'success': True, 'message': f"Agent '{agent_id}' updated."}
@@ -616,14 +637,18 @@ def _exec_apply_skillset(args: dict) -> dict:
         workspace_dir = os.path.join(WORKSPACE_DIR, agent_id)
         os.makedirs(workspace_dir, exist_ok=True)
 
-        db.create_agent({
+        create_data = {
             'id': agent_id,
             'name': result.get('name', ''),
             'description': result.get('description', ''),
             'system_prompt': result.get('system_prompt', ''),
             'model_id': result.get('model'),
             'workspace': workspace_dir,
-        })
+        }
+        workplace_id = args.get('workplace_id', '').strip()
+        if workplace_id:
+            create_data['workplace_id'] = workplace_id
+        db.create_agent(create_data)
 
         tools = result.get('tools', [])
         if tools:

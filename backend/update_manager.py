@@ -92,6 +92,25 @@ def _version_tuple(tag: str):
     Returns a comparable object that works with both packaging.version and
     tuple-based comparison for backward compatibility.
     """
+    # git describe of a commit AHEAD of a release tag, e.g.
+    # "v0.8.7-193-g183c448" (193 commits past v0.8.7), optionally "-dirty".
+    # Such a build is NEWER than its base tag, so normalize it to a PEP 440
+    # post-release (0.8.7.post193) which sorts ABOVE the base release. Without
+    # this, packaging (<22) parses the whole string as a LegacyVersion that
+    # sorts BELOW the tag, producing a bogus "update available: v0.8.7-193-... → v0.8.7".
+    describe = re.match(
+        r'v?(\d+)\.(\d+)\.(\d+)-(\d+)-g[0-9a-fA-F]+(?:-dirty)?$', tag or ''
+    )
+    if describe:
+        maj, minor, patch, ahead = (int(describe.group(i)) for i in range(1, 5))
+        version_obj = None
+        if HAS_PACKAGING:
+            try:
+                version_obj = pkg_version.parse(f'{maj}.{minor}.{patch}.post{ahead}')
+            except (ValueError, TypeError):
+                pass
+        return _VersionComparable(version_obj, (maj, minor, patch, ahead))
+
     # Fallback tuple parsing
     m = re.match(r'v?(\d+)(?:\.(\d+))?(?:\.(\d+))?', tag or '')
     if not m:
@@ -346,9 +365,30 @@ def _git_run(*args, cwd=None):
 
 
 def _get_current_version():
-    """Get the current version from git describe."""
+    """Get the current version from git describe.
+
+    Prefers the VERSION file when it indicates a newer release than the
+    base tag from git describe.  This handles diverged branches where the
+    latest release tag lives on another branch (e.g. main) and is not
+    reachable from the current HEAD (e.g. dev).
+    """
     rc, stdout, _ = _git_run('describe', '--tags', '--always')
-    return stdout if rc == 0 else None
+    if rc != 0:
+        return None
+
+    version_file = os.path.join(config.APP_ROOT, 'VERSION')
+    if os.path.exists(version_file):
+        try:
+            with open(version_file) as f:
+                file_ver = f.read().strip()
+            if file_ver:
+                tag_match = re.match(r'v?(\d+\.\d+\.\d+)', stdout)
+                if tag_match and _version_tuple(file_ver) > _version_tuple(tag_match.group(0)):
+                    return file_ver
+        except (IOError, OSError):
+            pass
+
+    return stdout
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +650,20 @@ def get_status() -> dict:
                 status['step'] = 0
                 status['step_label'] = ''
 
+        # --- stale-available auto-reset ---------------------------------
+        # A cached 'available' status may be stale: the VERSION file was
+        # bumped (e.g. via git pull-rebase) but the persisted state still
+        # carries an old current_version < latest_version.  Re-validate.
+        if _state['status'] == 'available':
+            current = _get_current_version()
+            latest = _state['latest_version']
+            if current and latest and _version_tuple(current) >= _version_tuple(latest):
+                _state['status'] = 'idle'
+                _state['current_version'] = current
+                _persist_state(_state)
+                status['status'] = 'idle'
+                status['current_version'] = current
+
         # Clear crashed flag after first status read
         if _state.get('crashed'):
             _state['crashed'] = False
@@ -621,6 +675,23 @@ def check_for_update(force=False) -> dict:
 
     with _lock:
         if not force and (now - _state['last_check']) < 86400:
+            # Re-validate stale 'available' status. After a server restart
+            # the persisted current_version may be outdated (e.g. VERSION
+            # was bumped by a git pull-rebase but the persisted state still
+            # has the old git-describe value).  If current >= latest the
+            # update was already applied — reset to idle.
+            if _state['status'] == 'available':
+                current = _get_current_version()
+                latest = _state['latest_version']
+                if current and latest and _version_tuple(current) >= _version_tuple(latest):
+                    _state['status'] = 'idle'
+                    _state['current_version'] = current
+                    _persist_state(_state)
+                    return {
+                        'available': False,
+                        'current': current,
+                        'latest': latest,
+                    }
             return {
                 'available': _state['status'] == 'available',
                 'current': _state['current_version'],
@@ -809,6 +880,8 @@ def trigger_restart() -> dict:
         _state['step_label'] = ''
         _state['error'] = None
         _state['crashed'] = False
+        _state['current_version'] = None
+        _state['latest_version'] = None
         _persist_state(_state)
 
     from backend.restart import schedule_restart

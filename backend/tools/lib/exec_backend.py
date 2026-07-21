@@ -86,8 +86,15 @@ class ExecutionBackend(ABC):
     """Base class for all execution backends."""
 
     @abstractmethod
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
-        """Execute a bash script. Returns {stdout, stderr, exit_code, execution_time}."""
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        """Execute a bash script. Returns {stdout, stderr, exit_code, execution_time}.
+
+        on_output: optional Callable[[str], None] invoked with incremental
+        output chunks as they arrive (live streaming). The return value is
+        unchanged — the full buffered output is still returned for logging and
+        backward compatibility. Backends that cannot stream ignore it and
+        return batched output as before.
+        """
 
     @abstractmethod
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
@@ -208,11 +215,24 @@ class BackendRegistry:
         workspace = (agent_context or {}).get('workspace') or None
 
         if sandbox_enabled:
-            from backend.tools.lib.backends.docker_backend import DockerBackend
+            try:
+                from config import SANDBOX_BACKEND
+            except ImportError:
+                SANDBOX_BACKEND = 'docker'
             agent_id = (agent_context or {}).get('agent_id', (agent_context or {}).get('id', ''))
             is_subagent = bool((agent_context or {}).get('is_subagent'))
-            backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace,
-                                    is_subagent=is_subagent)
+            is_explorer = bool((agent_context or {}).get('is_explorer'))
+            if SANDBOX_BACKEND == 'bwrap':
+                from backend.tools.lib.backends.bwrap_backend import BwrapBackend
+                agent_name = (agent_context or {}).get('agent_name') or (agent_context or {}).get('name') or ''
+                backend = BwrapBackend(session_id, workspace=workspace, agent_id=agent_id,
+                                       agent_name=agent_name, is_subagent=is_subagent,
+                                       is_explorer=is_explorer)
+            else:
+                from backend.tools.lib.backends.docker_backend import DockerBackend
+                backend = DockerBackend(session_id, agent_id=agent_id, workspace=workspace,
+                                        is_subagent=is_subagent,
+                                        is_explorer=is_explorer)
         else:
             from backend.tools.lib.backends.local_backend import LocalBackend
             run_as_user = (agent_context or {}).get('run_as_user') or None

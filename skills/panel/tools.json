@@ -1,0 +1,146 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "panel_add_action",
+      "description": "Add a new action button to an agent's panel. Action buttons appear on the agent detail page. Actions can be 'script' (bash script executed as run_as_user) or 'prompt' (text sent to agent session). Use {{param_name}} placeholders in content for user-fillable parameters. Agents can only add actions to their own panel (unless super agent).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The agent ID whose panel to add the action to. Must be your own agent ID (unless you are super agent)."
+          },
+          "label": {
+            "type": "string",
+            "description": "Display label for the action button."
+          },
+          "action_type": {
+            "type": "string",
+            "enum": ["script", "prompt"],
+            "description": "Type of action. 'script' runs a predefined bash script. 'prompt' sends text to the agent session."
+          },
+          "content": {
+            "type": "string",
+            "description": "Script body (for 'script' type) or prompt text (for 'prompt' type). Use {{param_name}} placeholders for user-fillable values."
+          },
+          "params": {
+            "type": "array",
+            "description": "Parameter definitions for {{placeholders}} in content. Each param is an object with: name, label, type (text/password/number/select), required (boolean), and default (optional string).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "description": "Variable name used in {{name}} placeholders." },
+                "label": { "type": "string", "description": "Display label shown to the user." },
+                "type": { "type": "string", "enum": ["text", "password", "number", "select"], "description": "Input type." },
+                "required": { "type": "boolean", "description": "Whether this parameter is mandatory." },
+                "default": { "type": "string", "description": "Default value (optional)." }
+              },
+              "required": ["name", "label", "type", "required"]
+            }
+          },
+          "sort_order": {
+            "type": "integer",
+            "description": "Display order position. Lower numbers appear first. Default: 0."
+          }
+        },
+        "required": ["agent_id", "label", "action_type", "content"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "panel_update_action",
+      "description": "Update an existing action button on an agent's panel. Only agent_id and action_id are required — all other fields update only when provided. Agents can only update actions on their own panel (unless super agent).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The agent ID whose panel the action belongs to. Must be your own agent ID (unless you are super agent)."
+          },
+          "action_id": {
+            "type": "integer",
+            "description": "The ID of the action to update."
+          },
+          "label": {
+            "type": "string",
+            "description": "New display label for the action button (optional)."
+          },
+          "action_type": {
+            "type": "string",
+            "enum": ["script", "prompt"],
+            "description": "New action type (optional)."
+          },
+          "content": {
+            "type": "string",
+            "description": "New script body or prompt text (optional)."
+          },
+          "params": {
+            "type": "array",
+            "description": "New parameter definitions (optional).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string", "description": "Variable name." },
+                "label": { "type": "string", "description": "Display label." },
+                "type": { "type": "string", "enum": ["text", "password", "number", "select"], "description": "Input type." },
+                "required": { "type": "boolean", "description": "Whether mandatory." },
+                "default": { "type": "string", "description": "Default value." }
+              },
+              "required": ["name", "label", "type", "required"]
+            }
+          },
+          "sort_order": {
+            "type": "integer",
+            "description": "New display order position (optional)."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Enable or disable the action (optional)."
+          }
+        },
+        "required": ["agent_id", "action_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "panel_remove_action",
+      "description": "Remove an action button from an agent's panel. This permanently deletes the action. Agents can only remove actions from their own panel (unless super agent).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The agent ID whose panel the action belongs to. Must be your own agent ID (unless you are super agent)."
+          },
+          "action_id": {
+            "type": "integer",
+            "description": "The ID of the action to remove."
+          }
+        },
+        "required": ["agent_id", "action_id"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "panel_list_actions",
+      "description": "List all action buttons on an agent's panel. Returns actions ordered by sort_order then id. Agents can only list their own panel's actions (unless super agent).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "description": "The agent ID whose panel actions to list. Must be your own agent ID (unless you are super agent)."
+          }
+        },
+        "required": ["agent_id"]
+      }
+    }
+  }
+]

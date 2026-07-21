@@ -183,7 +183,7 @@ class ToolDefinition:
     description: str = ""
     function: Dict[str, Any] = None  # OpenAI function schema
     mock_response: Any = None  # JSON object or JS code string
-    mock_response_type: str = "json"  # 'json' or 'javascript'
+    mock_response_type: str = "json"  # 'json', 'javascript', or 'python'
     no_mock: bool = False  # If True, use real backend instead of mock (fail if no backend)
     path: str = ""
     created_at: str = ""
@@ -242,7 +242,7 @@ class TestLoader:
         domains = []
         
         # Define preferred domain order
-        domain_order = ["conversation", "math", "sql", "tool_calling", "reasoning", "health"]
+        domain_order = ["conversation", "math", "tool_calling", "reasoning", "health"]
         
         # Scan default tests directory
         if self.tests_dir.exists():
@@ -562,6 +562,22 @@ class TestLoader:
                                 "mock_response": skill_def.get('mock_response'),
                                 "mock_response_type": skill_def.get('mock_response_type', 'json'),
                                 "no_mock": skill_def.get('no_mock', False)
+                            }
+                        break
+            elif tool_id.startswith('plugin:'):
+                # Resolve plugin tool from plugin_manager
+                from backend.plugin_manager import plugin_manager
+                for plugin_def in plugin_manager.get_all_plugin_tool_defs():
+                    if plugin_def.get('id') == tool_id:
+                        func = plugin_def.get('function', {})
+                        func_name = func.get('name', '')
+                        if func_name:
+                            tools_by_func_name[func_name] = {
+                                "type": "function",
+                                "function": func,
+                                "mock_response": plugin_def.get('mock_response'),
+                                "mock_response_type": plugin_def.get('mock_response_type', 'json'),
+                                "no_mock": plugin_def.get('no_mock', False)
                             }
                         break
             else:

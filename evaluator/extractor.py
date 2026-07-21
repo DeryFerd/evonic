@@ -92,7 +92,9 @@ class AnswerExtractor:
         )
         
         messages = [{"role": "user", "content": prompt}]
-        llm_response = llm_client.chat_completion(messages, temperature=0.0)
+        # Extraction output is a short answer; cap it so a decoding loop cannot run
+        # to the model's full (thinking-doubled) token budget.
+        llm_response = llm_client.chat_completion(messages, temperature=0.0, max_tokens=1024)
         
         if llm_response.get("success"):
             content = llm_client.extract_content(llm_response)
@@ -207,8 +209,8 @@ class AnswerExtractor:
         if is_gemma4_format(content):
             return strip_gemma4_thinking(content)
         
-        # Standard format: <think>...</think>
-        pattern = r'<think>(.*?)</think>'
+        # Standard format: <think>...</think> or <thinking>...</thinking>
+        pattern = r'<(?:think|thinking)>(.*?)</(?:think|thinking)>'
         matches = re.findall(pattern, content, re.DOTALL)
         cleaned = re.sub(pattern, '', content, flags=re.DOTALL).strip()
         thinking = '\n'.join(matches) if matches else None

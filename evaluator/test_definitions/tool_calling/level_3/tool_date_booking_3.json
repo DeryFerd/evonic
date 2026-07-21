@@ -2,7 +2,7 @@
   "id": "tool_date_booking_3",
   "name": "Get Date + Hotel Booking",
   "description": "Test calling get_current_date and create_booking tools together - check today's date and book a hotel",
-  "prompt": "Hari ini tanggal berapa? Setelah tahu tanggalnya, buat reservasi hotel di Bali untuk 2 malam mulai besok untuk 2 tamu dengan nama 'Yanto', check-in besok, 1 malam, no telp: 08123456789",
+  "prompt": "Hari ini tanggal berapa? Setelah tahu tanggalnya, buat reservasi hotel di Bali untuk 2 tamu dengan nama 'Yanto', check-in besok, 1 malam, no telp: 08123456789",
   "expected": {
     "tools": [
       "get_current_date",

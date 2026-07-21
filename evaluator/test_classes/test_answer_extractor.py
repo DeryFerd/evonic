@@ -140,11 +140,23 @@ class TestExtractionPrompts:
         assert "ya" in prompt_data["prompt"].lower() or "tidak" in prompt_data["prompt"].lower()
         assert prompt_data["expected_format"] == "boolean"
     
-    def test_reasoning_l2_prompt(self):
-        """Reasoning L2 should ask for boolean (ya/tidak)"""
+    def test_reasoning_l2_default_prompt(self):
+        """Reasoning L2 without expected defaults to sequence"""
         prompt_data = answer_extractor._get_extraction_prompt("reasoning", 2, "some answer")
         assert prompt_data is not None
+        assert prompt_data["expected_format"] == "sequence"
+    
+    def test_reasoning_l2_boolean_prompt(self):
+        """Reasoning L2 with string expected uses boolean template"""
+        prompt_data = answer_extractor._get_extraction_prompt("reasoning", 2, "some answer", expected="Ya")
+        assert prompt_data is not None
         assert prompt_data["expected_format"] == "boolean"
+    
+    def test_reasoning_l2_sequence_prompt(self):
+        """Reasoning L2 with list expected uses sequence template"""
+        prompt_data = answer_extractor._get_extraction_prompt("reasoning", 2, "some answer", expected=[3, 7, 15, 18, 22])
+        assert prompt_data is not None
+        assert prompt_data["expected_format"] == "sequence"
     
     def test_reasoning_l3_prompt(self):
         """Reasoning L3 should ask for text (analogy answers)"""
@@ -152,11 +164,23 @@ class TestExtractionPrompts:
         assert prompt_data is not None
         assert prompt_data["expected_format"] == "text"
     
-    def test_reasoning_l4_prompt(self):
-        """Reasoning L4 should ask for boolean (causal reasoning)"""
+    def test_reasoning_l4_default_prompt(self):
+        """Reasoning L4 without expected defaults to statements"""
         prompt_data = answer_extractor._get_extraction_prompt("reasoning", 4, "some answer")
         assert prompt_data is not None
+        assert prompt_data["expected_format"] == "statements"
+    
+    def test_reasoning_l4_boolean_prompt(self):
+        """Reasoning L4 with consider_alternatives dict uses boolean template"""
+        prompt_data = answer_extractor._get_extraction_prompt("reasoning", 4, "some answer", expected={"consider_alternatives": True})
+        assert prompt_data is not None
         assert prompt_data["expected_format"] == "boolean"
+    
+    def test_reasoning_l4_statements_prompt(self):
+        """Reasoning L4 with list expected uses statements template"""
+        prompt_data = answer_extractor._get_extraction_prompt("reasoning", 4, "some answer", expected=[2, 4])
+        assert prompt_data is not None
+        assert prompt_data["expected_format"] == "statements"
     
     def test_reasoning_l5_prompt(self):
         """Reasoning L5 should ask for flexible format (number or text)"""

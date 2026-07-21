@@ -108,16 +108,26 @@ def _send_free_notification(agent_id: str):
 
 
 def _on_summary_updated(event):
-    """After summarization, extract and store memorable facts in the background."""
-    payload = event.get('payload', {})
+    """After summarization, run the single knowledge pipeline in background.
+
+    Calls ``process_knowledge()`` which extracts entities, inserts inline
+    wiki-links into existing KB docs, and emits ``doc_updated``.
+    """
+    # event_stream.emit() delivers the data dict FLAT (no 'payload' wrapper), so
+    # read fields off the event directly. (Falling back to a 'payload' key keeps
+    # this resilient if an emitter ever wraps.)
+    payload = event.get('payload') or event
     agent_id = payload.get('agent_id')
     session_id = payload.get('session_id')
     summary = payload.get('summary')
+    # Latest turns not yet folded into the summary — handed to the Knowledge
+    # Organizer as conversation context so freshly-mentioned info isn't lost.
+    tail_messages = payload.get('tail_messages') or []
     if not (agent_id and session_id and summary):
         return
 
     import threading
-    from backend.agent_runtime.memory_manager import extract_and_store_memories
+    from backend.agent_runtime.memory_manager import process_knowledge
     from backend.llm_usage_events import usage_context
     from models.db import db
 
@@ -126,13 +136,32 @@ def _on_summary_updated(event):
         return
 
     def _run_extract():
-        # Tag all LLM calls in this background thread as 'memory' usage.
         with usage_context('memory', agent_id, agent.get('name'), session_id):
-            extract_and_store_memories(
-                agent, session_id, summary,
-                AgentRuntime._llm_serializer._llm_lock)
+            process_knowledge(agent, session_id, summary,
+                              AgentRuntime._llm_serializer._llm_lock,
+                              recent_messages=tail_messages)
 
     threading.Thread(target=_run_extract, daemon=True).start()
+
+
+def _on_doc_updated(event):
+    """When KB docs are modified, trigger an evomem sync.
+
+    The evomem binary scans the updated markdown files, parses inline wiki-links,
+    and rebuilds the graph database (.evomem.db).
+    """
+    payload = event.get('payload', {})
+    agent_id = payload.get('agent_id')
+    modified_slugs = payload.get('modified_slugs', [])
+    if not agent_id:
+        return
+    log.info("[doc_updated] agent=%s modified=%d slug(s) -- running sync",
+             agent_id, len(modified_slugs))
+    from backend.agent_runtime.evomem_client import sync as evomem_sync
+    try:
+        evomem_sync(agent_id)
+    except Exception as e:
+        log.warning("[doc_updated] sync failed for %s: %s", agent_id, e)
 
 
 # Register event listeners
@@ -140,6 +169,7 @@ try:
     from backend.event_stream import event_stream
     event_stream.on('agent_busy_changed', _on_agent_busy_changed)
     event_stream.on('summary_updated', _on_summary_updated)
+    event_stream.on('doc_updated', _on_doc_updated)
     # Auto-forward sub-agent/inter-agent replies to the originating agent's session.
     # Must be registered here (not lazily in agent_messaging.py) so it fires
     # regardless of whether agent_messaging tools have been loaded yet.

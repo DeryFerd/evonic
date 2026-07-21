@@ -36,6 +36,23 @@ def _make_agent():
     db.set_agent_skills(AGENT_ID, [])
 
 
+SCHEDULER_TOOL_DEFS = [
+    {'type': 'function', 'function': {'name': 'create_schedule', 'parameters': {}}},
+    {'type': 'function', 'function': {'name': 'cancel_schedule', 'parameters': {}}},
+    {'type': 'function', 'function': {'name': 'list_schedules', 'parameters': {}}},
+]
+
+
+def _mock_non_lazy_scheduler(mock_sm):
+    """Configure a mocked skills_manager with a non-lazy 'scheduler' skill.
+
+    The real scheduler skill is lazy (lazy_tools=true) since task #688, so
+    tests exercising the non-lazy auto-assign path must mock it.
+    """
+    mock_sm.get_skill.return_value = {'id': 'scheduler', 'tools_file': 'tools.json'}
+    mock_sm.get_skill_tool_defs.return_value = SCHEDULER_TOOL_DEFS
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -49,10 +66,12 @@ class TestAssignSkillsAutoTools:
 
         from backend.tools.super_agent_tools import _exec_assign_skills
 
-        result = _exec_assign_skills({
-            'agent_id': AGENT_ID,
-            'skill_ids': ['scheduler'],
-        })
+        with patch('backend.skills_manager.skills_manager') as mock_sm:
+            _mock_non_lazy_scheduler(mock_sm)
+            result = _exec_assign_skills({
+                'agent_id': AGENT_ID,
+                'skill_ids': ['scheduler'],
+            })
 
         assert result.get('success') is True
         assert 'Auto-assigned' in result.get('message', '')
@@ -95,19 +114,22 @@ class TestAssignSkillsAutoTools:
 
         from backend.tools.super_agent_tools import _exec_assign_skills
 
-        # First assignment
-        _exec_assign_skills({
-            'agent_id': AGENT_ID,
-            'skill_ids': ['scheduler'],
-        })
+        with patch('backend.skills_manager.skills_manager') as mock_sm:
+            _mock_non_lazy_scheduler(mock_sm)
 
-        tools_after_first = db.get_agent_tools(AGENT_ID)
+            # First assignment
+            _exec_assign_skills({
+                'agent_id': AGENT_ID,
+                'skill_ids': ['scheduler'],
+            })
 
-        # Second assignment — same skill
-        result = _exec_assign_skills({
-            'agent_id': AGENT_ID,
-            'skill_ids': ['scheduler'],
-        })
+            tools_after_first = db.get_agent_tools(AGENT_ID)
+
+            # Second assignment — same skill
+            result = _exec_assign_skills({
+                'agent_id': AGENT_ID,
+                'skill_ids': ['scheduler'],
+            })
 
         assert 'already assigned' in result.get('message', '').lower()
 
@@ -207,10 +229,12 @@ class TestAssignSkillsAutoTools:
 
         from backend.tools.super_agent_tools import _exec_assign_skills
 
-        result = _exec_assign_skills({
-            'agent_id': AGENT_ID,
-            'skill_ids': ['scheduler'],
-        })
+        with patch('backend.skills_manager.skills_manager') as mock_sm:
+            _mock_non_lazy_scheduler(mock_sm)
+            result = _exec_assign_skills({
+                'agent_id': AGENT_ID,
+                'skill_ids': ['scheduler'],
+            })
 
         assert result.get('success') is True
         # Only 2 new tools should be auto-assigned (cancel_schedule, list_schedules)

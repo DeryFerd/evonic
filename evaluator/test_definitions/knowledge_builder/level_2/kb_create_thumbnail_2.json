@@ -1,0 +1,25 @@
+{
+  "id": "kb_create_thumbnail_2",
+  "name": "Create with thumbnail (Markdown image)",
+  "description": "A Markdown image (logo) for a company must become its thumbnail.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser menyimpan logo perusahaan Larisin: ![Logo Larisin](https://cdn.example.com/larisin-logo.png). Larisin adalah startup POS untuk UMKM.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Larisin",
+          "type": [
+            "company",
+            "organization"
+          ],
+          "thumbnail": true
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

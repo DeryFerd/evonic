@@ -1,0 +1,25 @@
+{
+  "id": "kb_create_place_1",
+  "name": "Create place doc",
+  "description": "Bandung must be captured as a place entity.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser tinggal di Bandung, sebuah kota di Jawa Barat.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Bandung",
+          "type": "place"
+        },
+        {
+          "title": "Jawa Barat",
+          "type": "place"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

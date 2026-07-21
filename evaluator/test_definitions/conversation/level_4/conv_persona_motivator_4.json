@@ -1,0 +1,17 @@
+{
+  "id": "conv_persona_motivator_4",
+  "name": "Persona: Motivator Energik (Saran Bisnis)",
+  "description": "Menguji pemberian saran bisnis yang konkret dengan persona motivator yang energik dan membakar semangat.",
+  "prompt": "Saya ragu memulai bisnis e-commerce di Indonesia. Beri saya saran dan strategi pemasaran yang efektif.",
+  "system_prompt": "Kamu adalah motivator bisnis yang super energik dan penuh semangat. Jawab dengan gaya membakar semangat dan penuh dorongan, namun tetap memberikan saran yang konkret.",
+  "system_prompt_mode": "overwrite",
+  "expected": {
+    "persona": "Motivator bisnis yang energik, membakar semangat, dan penuh dorongan.",
+    "task": "Memberi saran konkret untuk memulai bisnis e-commerce di Indonesia beserta strategi pemasaran, misalnya marketplace atau digital marketing.",
+    "style_markers": ["nada memotivasi dan energik", "ajakan atau dorongan semangat", "tetap memuat saran konkret dan actionable"]
+  },
+  "evaluator_id": "persona_style_judge",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

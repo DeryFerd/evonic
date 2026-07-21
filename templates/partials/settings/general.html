@@ -1,0 +1,395 @@
+{# General pane — grouped, auto-saving setting rows.
+   Controls carry data-setting-key/type(/endpoint); settings-core.js AutoSave
+   handles persistence and per-row feedback. Toggles are written inline
+   (same .dyn-toggle pattern as partials/toggle.html) so they can carry
+   data attributes. #}
+
+<div class="settings-pane-head">
+    <h2 class="settings-pane-title">General</h2>
+    <p class="settings-pane-desc">
+        Core behavior, model routing, and reliability tuning. Changes save
+        automatically.
+    </p>
+</div>
+
+<!-- ================= Appearance ================= -->
+<section class="setting-group" id="group-appearance">
+    <div class="setting-group-head">
+        <i data-lucide="palette"></i>
+        <h3>Appearance</h3>
+    </div>
+    <div class="setting-group-body">
+        <div class="setting-row" data-search="theme light dark system appearance color scheme">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Theme</div>
+                <div class="setting-row-desc">
+                    Light, dark, or follow your system preference.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <div class="segmented" id="theme-segmented" role="radiogroup" aria-label="Theme">
+                    <span class="segmented-thumb"></span>
+                    <button type="button" class="segmented-btn" data-value="light" onclick="settingsGeneral.setTheme('light')">
+                        <i data-lucide="sun"></i>Light
+                    </button>
+                    <button type="button" class="segmented-btn" data-value="system" onclick="settingsGeneral.setTheme('system')">
+                        <i data-lucide="monitor"></i>System
+                    </button>
+                    <button type="button" class="segmented-btn" data-value="dark" onclick="settingsGeneral.setTheme('dark')">
+                        <i data-lucide="moon"></i>Dark
+                    </button>
+                </div>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="agent sidebar limit maximum agents shown list">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Agent Sidebar Limit</div>
+                <div class="setting-row-desc">
+                    Maximum number of agents shown in the sidebar. Range: 1&ndash;500.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="agent-sidebar-limit-input" class="setting-num"
+                       min="1" max="500"
+                       data-setting-key="agent_sidebar_limit" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ================= Models & Routing ================= -->
+<section class="setting-group" id="group-models-routing">
+    <div class="setting-group-head">
+        <i data-lucide="route"></i>
+        <h3>Models &amp; Routing</h3>
+    </div>
+    <div class="setting-group-body">
+        <div class="setting-row stacked" data-search="default llm model global agents evaluations">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Default LLM Model</div>
+                <div class="setting-row-desc">
+                    Global default model for all agents and evaluations.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="default-model-select" class="setting-select"
+                        data-setting-key="default_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row stacked" data-search="vision model describe image analysis multimodal">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Vision Model</div>
+                <div class="setting-row-desc">
+                    Vision-capable model used by the <code>describe_image</code>
+                    tool. Only models with vision support are listed.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="vision-model-select" class="setting-select"
+                        data-setting-key="vision_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row stacked" data-search="kb organizer model knowledge base memory vault background sub-agent">
+            <div class="setting-row-text">
+                <div class="setting-row-title">KB Organizer Model</div>
+                <div class="setting-row-desc">
+                    Model used by the KB Organizer background sub-agent that files
+                    conversation knowledge into each agent's memory vault. Defaults
+                    to the agent's own model when unset.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="kb-organizer-model-select" class="setting-select"
+                        data-setting-key="kb_organizer_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="task classifier trivial complex planning skip classify">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Task Classifier</div>
+                <div class="setting-row-desc">
+                    Automatically classify tasks as trivial or complex. Trivial
+                    tasks skip planning and execute directly.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="task-classifier-toggle" class="sr-only peer"
+                           data-setting-key="task_classifier_enabled" data-setting-type="bool">
+                    <span class="dyn-toggle"></span>
+                </label>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row stacked" data-search="task classifier model select classification">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Task Classifier Model</div>
+                <div class="setting-row-desc">
+                    Model used for task classification. Small, fast models work well.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="task-classifier-model-select" class="setting-select"
+                        data-setting-key="task_classifier_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row stacked" data-search="cmp path detection model context memory path boundary switch">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Path Detection Model (CMP)</div>
+                <div class="setting-row-desc">
+                    Model used by Context Memory Path for task-boundary decisions
+                    (continue / return / branch) and path card summarization.
+                    Accuracy here decides when a new session path is opened —
+                    a stronger model is recommended if path switching misfires.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <select id="cmp-model-select" class="setting-select"
+                        data-setting-key="cmp_model_id">
+                    <option value="">Loading models…</option>
+                </select>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ================= Agent Behavior ================= -->
+<section class="setting-group" id="group-agent-behavior">
+    <div class="setting-group-head">
+        <i data-lucide="bot"></i>
+        <h3>Agent Behavior</h3>
+    </div>
+    <div class="setting-group-body">
+        <div class="setting-row" data-search="message wrapper preferences instructions personal facts learn">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Message Wrapper</div>
+                <div class="setting-row-desc">
+                    Prepends a brief instruction to each user message, prompting
+                    agents to scan it for preferences, instructions, and personal
+                    facts before replying. Recommended for personal assistant
+                    agents; can be overridden per-agent in Advanced Settings.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="message-wrapper-toggle" class="sr-only peer"
+                           data-setting-key="message_wrapper_enabled" data-setting-type="bool">
+                    <span class="dyn-toggle"></span>
+                </label>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="max tool iterations loop reasoning multi-step limit">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Max Tool Iterations</div>
+                <div class="setting-row-desc">
+                    Maximum tool-call iterations per agent turn and per evaluation.
+                    Prevents infinite loops in multi-step reasoning. Range: 1&ndash;1000.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="max-tool-iterations-input" class="setting-num"
+                       min="1" max="1000"
+                       data-setting-key="max_tool_iterations" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="long running command detection guard build compile make cargo npm timeout">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Long-Running Command Detection</div>
+                <div class="setting-row-desc">
+                    Detect and block build/compile commands (make, cargo, npm
+                    build, …) that may exceed the bash timeout. When disabled, all
+                    commands run directly.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="long-running-guard-toggle" class="sr-only peer"
+                           data-setting-key="long_running_guard_enabled" data-setting-type="bool">
+                    <span class="dyn-toggle"></span>
+                </label>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ================= Reliability & Concurrency ================= -->
+<section class="setting-group" id="group-reliability">
+    <div class="setting-group-head">
+        <i data-lucide="activity"></i>
+        <h3>Reliability &amp; Concurrency</h3>
+    </div>
+    <div class="setting-group-body">
+        <div class="setting-row" data-search="agent timeout retries automatic retry llm chat">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Agent Timeout Retries</div>
+                <div class="setting-row-desc">
+                    Automatic retries when the LLM times out mid-reasoning during
+                    chat. 0 disables auto-retry.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="agent-timeout-retries-input" class="setting-num"
+                       min="0" max="10"
+                       data-setting-key="agent_timeout_retries" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="llm max retries transient errors backoff 5xx timeout">
+            <div class="setting-row-text">
+                <div class="setting-row-title">LLM Max Retries</div>
+                <div class="setting-row-desc">
+                    Maximum retry attempts on transient LLM errors (timeout, 5xx),
+                    with exponential backoff (2s, 4s, 8s…). 0 disables.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="llm-max-retries-input" class="setting-num"
+                       min="0" max="20"
+                       data-setting-key="llm_max_retries" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="max concurrent turns per agent parallel queries sessions">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Max Concurrent Turns per Agent</div>
+                <div class="setting-row-desc">
+                    Maximum parallel queries per agent (from different sessions).
+                    0 = unlimited.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="max-concurrent-per-agent-input" class="setting-num"
+                       min="0" max="20"
+                       data-setting-key="max_concurrent_llm_per_agent" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="max concurrent turns per model global default limit">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Max Concurrent Turns per Model</div>
+                <div class="setting-row-desc">
+                    Global default for all models (used when a model's own limit is
+                    0). 0 = unlimited.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="max-concurrent-per-model-input" class="setting-num"
+                       min="0" max="20"
+                       data-setting-key="max_concurrent_llm_per_model" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="max concurrent llm global hard cap simultaneous calls serialised api keys">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Max Concurrent LLM (Global)</div>
+                <div class="setting-row-desc">
+                    Hard cap on simultaneous LLM calls <em>across all</em> agents
+                    and models. 1 = serialised (default, safest for shared API
+                    keys). Increase only if your provider allows concurrent calls.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="max-concurrent-llm-global-input" class="setting-num"
+                       min="1" max="20"
+                       data-setting-key="max_concurrent_llm_global" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+        <div class="setting-row" data-search="agent queue workers threads processing messages restart">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Agent Queue Workers</div>
+                <div class="setting-row-desc">
+                    Worker threads processing agent messages. Increases take effect
+                    immediately; decreases require a restart. Range: 1&ndash;32.
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <input type="number" id="agent-queue-workers-input" class="setting-num"
+                       min="1" max="32"
+                       data-setting-key="agent_queue_workers" data-setting-type="int" />
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- ================= Privacy & Access ================= -->
+<section class="setting-group" id="group-privacy">
+    <div class="setting-group-head">
+        <i data-lucide="lock"></i>
+        <h3>Privacy &amp; Access</h3>
+    </div>
+    <div class="setting-group-body">
+        <div class="setting-row" data-search="public history unauthenticated read-only evaluation data access">
+            <div class="setting-row-text">
+                <div class="setting-row-title">Public History</div>
+                <div class="setting-row-desc">
+                    Allow unauthenticated users to view the history and detail
+                    pages (read-only). Make sure no sensitive information appears
+                    in evaluation results.
+                    <a href="/evaluate/docs/public-history" target="_blank">Read implications &rarr;</a>
+                </div>
+            </div>
+            <div class="setting-row-control">
+                <label class="relative inline-flex items-center cursor-pointer">
+                    <input type="checkbox" id="public-history-toggle" class="sr-only peer"
+                           data-setting-key="public_history" data-setting-type="bool"
+                           data-setting-endpoint="put:/api/settings/public-history">
+                    <span class="dyn-toggle"></span>
+                </label>
+                <span class="save-status" aria-live="polite"></span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Public History confirm modal -->
+<div id="public-history-confirm-modal" class="modal">
+    <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-md mx-4">
+        <div class="px-6 pt-5 pb-4">
+            <div class="flex items-start gap-3">
+                <div class="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/40 flex items-center justify-center">
+                    <i data-lucide="triangle-alert" class="w-5 h-5 text-amber-600 dark:text-amber-400"></i>
+                </div>
+                <div>
+                    <h3 class="text-base font-semibold text-gray-900 dark:text-gray-100 mb-1">
+                        Make history public?
+                    </h3>
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                        Your evaluation data will become publicly accessible.
+                        Make sure no sensitive information — queries, prompts, or
+                        personal data — appears in existing or future evaluation
+                        results.
+                    </p>
+                </div>
+            </div>
+        </div>
+        <div class="flex justify-end gap-2 px-6 pb-5">
+            <button type="button" id="public-history-cancel-btn"
+                    class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition">
+                Cancel
+            </button>
+            <button type="button" id="public-history-confirm-btn"
+                    class="px-4 py-2 text-sm font-medium text-white bg-amber-600 rounded-lg hover:bg-amber-700 transition">
+                Enable Public History
+            </button>
+        </div>
+    </div>
+</div>

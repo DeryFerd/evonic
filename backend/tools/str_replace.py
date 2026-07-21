@@ -1,5 +1,6 @@
 """Backend implementation for the str_replace tool — exact-string replacement in files."""
 
+import logging
 import os
 
 try:
@@ -7,12 +8,13 @@ try:
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+logger = logging.getLogger(__name__)
+
 from backend.tools._workspace import resolve_workspace_path
 try:
     from backend.tools.lib.safety_pipeline import should_skip_safety
 except ImportError:
-    import logging
-    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for str_replace tool")
+    logger.warning("safety_pipeline unavailable — safety checks disabled for str_replace tool")
     should_skip_safety = lambda agent: True
 
 def _match_with_unicode_fallback(content, old_str, new_str):
@@ -45,6 +47,21 @@ def _match_with_unicode_fallback(content, old_str, new_str):
             norm_new = normalize_code_quotes(new_str)
             return norm_old, norm_new, occurrences
 
+    # Tier 4: bidirectional quote normalization fallback
+    # The file may contain smart quotes while the agent provides straight quotes,
+    # or the reverse.  Normalize both sides and locate the match position in the
+    # original content so we can extract the actual (smart-quoted) substring.
+    norm_content = normalize_code_quotes(content)
+    if norm_content != content or norm_old != old_str:
+        if norm_old in norm_content:
+            # locate the first occurrence in normalized content
+            idx = norm_content.index(norm_old)
+            effective_old = content[idx:idx + len(norm_old)]
+            occurrences = content.count(effective_old)
+            if occurrences > 0:
+                effective_new = normalize_code_quotes(new_str)
+                return effective_old, effective_new, occurrences
+
     return old_str, new_str, 0
 
 
@@ -54,6 +71,11 @@ def _close_match_hint(content, old_str):
     norm = normalize_code_quotes(old_str)
     if norm != old_str and norm in content:
         return f" Did you mean: {norm!r}? (quotes were normalized from smart \u2192 straight)"
+    # Reverse case: file has smart quotes, agent provided straight quotes
+    norm_content = normalize_code_quotes(content)
+    norm_old = normalize_code_quotes(old_str)
+    if norm_content != content and norm_old == old_str and norm_old in norm_content:
+        return f" The file contains smart quotes matching your input. Try copying the exact text from read_file output."
     return ""
 
 
@@ -203,13 +225,19 @@ def execute(agent, args: dict) -> dict:
 
     # /_self/ path: always route to the agent's local directory on the evonic server.
     # Sub-agents inherit their parent's directory — use effective agent ID.
-    from backend.tools._workspace import is_self_path, resolve_self_path
+    from backend.tools._workspace import is_self_path, resolve_self_path, _self_fuzzy_suggestion
     agent_id = ((agent or {}).get("parent_id") if (agent or {}).get("is_subagent")
                 else (agent or {}).get("id", ""))
     if agent_id and is_self_path(file_path):
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
+        # If the file doesn't exist, check for similar names (typos).
+        if not os.path.exists(local_path):
+            suggestion = _self_fuzzy_suggestion(agent_id, file_path)
+            if suggestion:
+                return {'error': f"File not found: {display_path}. Did you mean: {suggestion}"}
+            return {'error': f"File not found: {display_path}."}
         result = str_replace(local_path, old_str, new_str, count=count)
         if 'error' in result and display_path != local_path:
             result['error'] = result['error'].replace(local_path, display_path)
@@ -220,6 +248,14 @@ def execute(agent, args: dict) -> dict:
                 logger.info("str_replace[%s]: kb edit detected, evomem sync scheduled", agent_id)
             except Exception as e:
                 logger.warning("str_replace[%s]: failed to schedule evomem sync: %s", agent_id, e)
+            if local_path.endswith('.md'):
+                try:
+                    from backend.agent_runtime.context import kb_frontmatter_warning
+                    _warn = kb_frontmatter_warning(local_path)
+                    if _warn:
+                        result['warning'] = _warn
+                except Exception:
+                    pass
         return result
 
     # Hint when path starts with _self/ but missing leading slash
@@ -270,11 +306,13 @@ def execute(agent, args: dict) -> dict:
 
         return {'result': 'success', 'replacements': count}
 
-    # When sandbox is enabled or the agent has a workplace, route file I/O
-    # through the execution backend (Docker container, SSH remote, etc.).
-    sandbox_enabled = (agent or {}).get('sandbox_enabled', 0)
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.).
+    sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
-    if sandbox_enabled or has_workplace:
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
         from backend.tools.lib.exec_backend import registry
         session_id = (agent or {}).get('session_id') or 'default'
         backend = registry.get_backend(session_id, agent)

@@ -69,7 +69,7 @@
         inputEl = document.createElement('input');
         inputEl.type = 'text';
         inputEl.placeholder = 'Search agents...';
-        inputEl.className = 'flex-1 bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-base placeholder-gray-400 dark:placeholder-gray-500 py-2';
+        inputEl.className = 'flex-1 bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-base placeholder-gray-400 dark:placeholder-gray-500 py-2 px-2';
         inputEl.setAttribute('autocomplete', 'off');
         inputEl.setAttribute('spellcheck', 'false');
 

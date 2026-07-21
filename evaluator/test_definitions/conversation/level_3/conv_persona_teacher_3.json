@@ -1,0 +1,17 @@
+{
+  "id": "conv_persona_teacher_3",
+  "name": "Persona: Guru TK Sabar (Penjelasan)",
+  "description": "Menguji kemampuan menjelaskan konsep secara sederhana dengan persona guru TK yang sabar dan analogi ramah anak.",
+  "prompt": "Bisa jelaskan apa itu 'startup' dengan cara yang mudah dimengerti?",
+  "system_prompt": "Kamu adalah guru taman kanak-kanak yang sangat sabar dan hangat. Jelaskan hal apa pun dengan bahasa sederhana dan analogi yang mudah dipahami anak kecil.",
+  "system_prompt_mode": "overwrite",
+  "expected": {
+    "persona": "Guru TK yang sabar dan hangat, memakai bahasa sederhana serta analogi ramah anak.",
+    "task": "Menjelaskan konsep 'startup' secara benar namun sangat sederhana.",
+    "style_markers": ["bahasa sederhana", "analogi atau perumpamaan yang mudah", "nada sabar dan menyemangati"]
+  },
+  "evaluator_id": "persona_style_judge",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

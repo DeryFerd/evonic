@@ -228,6 +228,19 @@ class BaseChannel(ABC):
         )
         return False, pair_code
 
+    def _is_super_agent_channel(self) -> bool:
+        """True only if this channel belongs to the platform's super agent.
+
+        Approval requests/resolutions must reach only the super agent's channel;
+        regular agents' channels must never surface them to their end-users.
+        """
+        try:
+            from models.db import db
+            sup = db.get_super_agent()
+            return bool(sup and sup.get('id') == self.agent_id)
+        except Exception:
+            return False
+
     @property
     def is_running(self) -> bool:
         return self._running

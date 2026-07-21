@@ -72,46 +72,47 @@ def execute(agent, args: dict) -> dict:
 
     # Build formatted output
     lines = []
+    remaining = 6
     source = graph["source"]
     lines.append(f"## KB Graph: {filename}\n")
 
     # Outgoing references section
-    outgoing = graph["outgoing"]
-    dangling = graph["outgoing_dangling"]
+    outgoing = graph["outgoing"][:remaining]
+    remaining -= len(outgoing)
+    dangling = graph["outgoing_dangling"][:remaining]
+    remaining -= len(dangling)
     total_out = len(outgoing) + len(dangling)
 
     lines.append(f"→ references ({total_out}):")
-    if outgoing:
-        for o in outgoing:
-            age = _format_age(o.get("updated_at"))
-            title = o.get("title", o["slug"])
-            if age:
-                lines.append(f"  - {o['slug']} ({title}) — last updated {age}")
-            else:
-                lines.append(f"  - {o['slug']} ({title})")
-    if dangling:
-        for d in dangling:
-            lines.append(f"  - ⚠ dangling: {d} (target page does not exist)")
+    for o in outgoing:
+        age = _format_age(o.get("updated_at"))
+        title = o.get("title", o["slug"])
+        if age:
+            lines.append(f"  - {o['slug']} ({title}) — last updated {age}")
+        else:
+            lines.append(f"  - {o['slug']} ({title})")
+    for d in dangling:
+        lines.append(f"  - ⚠ dangling: {d} (target page does not exist)")
     if total_out == 0:
         lines.append("  <none>")
 
     lines.append("")
 
     # Incoming references section
-    incoming = graph["incoming"]
+    incoming = graph["incoming"][:remaining]
+    remaining -= len(incoming)
     lines.append(f"↑ referenced by ({len(incoming)}):")
-    if incoming:
-        for inc in incoming:
-            title = inc.get("title", inc["slug"])
-            lines.append(f"  - {inc['slug']} ({title})")
-    else:
+    for inc in incoming:
+        title = inc.get("title", inc["slug"])
+        lines.append(f"  - {inc['slug']} ({title})")
+    if not incoming:
         lines.append("  <none>")
 
     lines.append("")
 
     # Same-tag discovery
     same_tag = graph["same_tag_docs"]
-    if same_tag and source.get("tags"):
+    if remaining and same_tag and source.get("tags"):
         tags = source["tags"]
         # Group by tag
         by_tag = {}
@@ -124,10 +125,13 @@ def execute(agent, args: dict) -> dict:
 
         for tag in tags:
             related = by_tag.get(tag, [])
-            if related:
+            if related and remaining:
                 lines.append(f"Related by tag [{tag}]:")
-                for r in related:
+                for r in related[:remaining]:
                     lines.append(f"  - {r['slug']} ({r.get('title', r['slug'])})")
+                    remaining -= 1
+            if not remaining:
+                break
 
     return {"result": "\n".join(lines)}
 
@@ -151,6 +155,6 @@ def test_execute():
     assert ".md" in result["error"]
 
     # Missing agent_id
-    result = execute({}, {"filename": "notes.md"})
+    result = execute({}, {"filename": "evonic.md"})
     assert "error" in result
     assert "agent_id" in result["error"]

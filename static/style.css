@@ -82,10 +82,13 @@ html.dark {
 .chat-prose blockquote { border-left: 3px solid rgba(0,0,0,0.15); padding-left: 0.75em; margin: 0.4em 0; opacity: 0.85; }
 .chat-prose h1, .chat-prose h2, .chat-prose h3 { font-weight: 600; margin: 0.4em 0 0.2em; }
 .chat-prose a { text-decoration: underline; }
-.chat-prose table { border-collapse: collapse; margin: 0.4em 0; font-size: 0.85em; min-width: max-content; }
+/* Table itself is the horizontal scroll container (display:block) so it never
+   overflows the bubble even without a wrapper. width:max-content keeps narrow
+   tables snug; max-width:100% clamps wide ones and lets them scroll L/R. */
+.chat-prose table { display: block; width: max-content; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-collapse: collapse; margin: 0.4em 0; font-size: 0.85em; }
 .chat-prose th, .chat-prose td { border: 1px solid rgba(0,0,0,0.12); padding: 0.3em 0.6em; white-space: nowrap; }
 .chat-prose th { background: rgba(0,0,0,0.04); font-weight: 600; }
-/* Wrap table in scrollable container so it never overflows the bubble */
+/* Legacy wrapper (some render paths add it); table already scrolls on its own. */
 .chat-prose .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
 /* Bot bubble prose — light mode defaults */
 .bot-bubble .chat-prose code { background: rgba(0,0,0,0.08); }
@@ -173,6 +176,62 @@ html.dark .task-active-text {
 .tl-detail pre {
     max-width: 100%;
     overflow-x: auto;
+}
+
+/* Compact recall tool results */
+.recall-ui { min-width: 0; color: #334155; }
+.recall-header { display: flex; align-items: center; justify-content: space-between; gap: 0.4rem; margin-bottom: 0.2rem; padding: 0.18rem 0.3rem; border: 0; border-radius: 4px; background: #f5f3ff; }
+.recall-title, .recall-header-meta, .recall-card-top, .recall-card-chips, .recall-meta, .recall-edge { display: flex; align-items: center; }
+.recall-title { min-width: 0; gap: 0.25rem; color: #6d28d9; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.recall-dot { width: 5px; height: 5px; flex: none; border-radius: 999px; background: #8b5cf6; }
+.recall-header-meta, .recall-card-chips { gap: 0.18rem; flex: none; }
+.recall-chip, .recall-count { display: inline-flex; align-items: center; min-height: 13px; padding: 0 0.25rem; border: 0; border-radius: 999px; background: #ede9fe; color: #7c3aed; font-size: 0.5rem; font-weight: 650; line-height: 1.15; }
+.recall-count { min-width: 14px; justify-content: center; background: #7c3aed; color: #fff; }
+.recall-chip-accent { color: #a21caf; }
+.recall-score { color: #4f46e5; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.recall-list { display: grid; gap: 0.2rem; }
+.recall-card { min-width: 0; padding: 0.25rem 0.34rem; border: 0; border-radius: 4px; background: #f8fafc; }
+.recall-card-top { justify-content: space-between; gap: 0.3rem; margin-bottom: 0.08rem; }
+.recall-card-title { min-width: 0; overflow: hidden; color: #6d28d9; font-size: 0.6rem; font-weight: 700; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.recall-body { color: #334155; font-size: 0.66rem; line-height: 1.28; overflow-wrap: anywhere; white-space: pre-wrap; }
+.recall-body.is-clamped { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.recall-more { margin-top: 0.05rem; padding: 0; border: 0; background: none; color: #7c3aed; cursor: pointer; font-size: 0.52rem; font-weight: 650; }
+.recall-meta { min-width: 0; flex-wrap: wrap; gap: 0.12rem 0.32rem; margin-top: 0.1rem; color: #64748b; font-size: 0.5rem; line-height: 1.1; }
+.recall-source { color: #7c3aed; font-weight: 650; }
+.recall-path { min-width: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.recall-time { margin-left: auto; white-space: nowrap; }
+.recall-query { margin-bottom: 0.32rem; padding: 0.28rem 0.45rem; overflow: hidden; border-radius: 5px; background: #f8fafc; color: #64748b; font-size: 0.62rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.recall-empty { padding: 0.55rem; border: 1px dashed #c4b5fd; border-radius: 6px; color: #64748b; font-size: 0.68rem; text-align: center; }
+.recall-gaps { margin-top: 0.32rem; padding: 0.32rem 0.45rem; border: 1px solid #fcd34d; border-radius: 6px; background: #fffbeb; color: #92400e; font-size: 0.62rem; }
+.recall-gaps summary { cursor: pointer; font-weight: 700; }
+.recall-gaps div { margin-top: 0.22rem; }
+.recall-card-edge { padding-block: 0.2rem; }
+.recall-edge { flex-wrap: wrap; gap: 0.2rem; color: #334155; font-size: 0.62rem; font-weight: 600; }
+.recall-relation { padding: 0 0.25rem; border-radius: 999px; background: #ede9fe; color: #6d28d9; font-size: 0.5rem; text-transform: uppercase; }
+.recall-hop { color: #64748b; font-size: 0.5rem; font-weight: 400; }
+
+html.dark .recall-ui { color: #dbeafe; }
+html.dark .recall-header { background: #202038; }
+html.dark .recall-title { color: #c4b5fd; }
+html.dark .recall-chip { background: #292944; color: #c4b5fd; }
+html.dark .recall-count { background: #7c3aed; color: #fff; }
+html.dark .recall-chip-accent { color: #f0abfc; }
+html.dark .recall-score { color: #a5b4fc; }
+html.dark .recall-card { background: #172033; }
+html.dark .recall-card-title { color: #c4b5fd; }
+html.dark .recall-body { color: #dbe4f0; }
+html.dark .recall-more { color: #c4b5fd; }
+html.dark .recall-meta { color: #94a3b8; }
+html.dark .recall-source { color: #c4b5fd; }
+html.dark .recall-query { background: #172033; color: #aebed0; }
+html.dark .recall-empty { border-color: #4c3f75; color: #aebed0; }
+html.dark .recall-gaps { border-color: #78350f; background: #2a2118; color: #fcd34d; }
+html.dark .recall-edge { color: #dbe4f0; }
+html.dark .recall-relation { background: #352b58; color: #d8b4fe; }
+html.dark .recall-hop { color: #94a3b8; }
+
+@media (min-width: 900px) {
+    .recall-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 * {
@@ -721,7 +780,9 @@ footer {
     #chat-messages {
         /* Fill all space between header and input bar */
         flex: 1;
-        min-height: 0;
+        /* override the inline min-height:300px so the scroll container can shrink
+           inside a tight chat room instead of overflowing onto the input bar */
+        min-height: 0 !important;
         overflow-y: auto;
         max-height: none;
     }

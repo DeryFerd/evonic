@@ -247,7 +247,7 @@ def create_blueprint():
         # Strip thinking/reasoning tags if present
         if '<think' in reply or '<reasoning' in reply:
             import re
-            reply = re.sub(r'<think>.*?</think>', '', reply, flags=re.DOTALL)
+            reply = re.sub(r'<(?:think|thinking)>.*?</(?:think|thinking)>', '', reply, flags=re.DOTALL)
             reply = re.sub(r'<reasoning>.*?</reasoning>', '', reply, flags=re.DOTALL)
             reply = reply.strip()
 
@@ -360,6 +360,37 @@ def create_blueprint():
 
         comments = kanban_db.get_comments(task_id)
         return jsonify({'comments': comments})
+
+    @bp.route('/api/kanban/comments/<int:comment_id>', methods=['DELETE'])
+    def kanban_api_delete_comment(comment_id):
+        comment = kanban_db.get_comment(comment_id)
+        if not comment:
+            return jsonify({'error': 'Comment not found'}), 404
+
+        task = kanban_db.get(comment['task_id'])
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+
+        # Check write access on the parent task
+        is_allowed, error = _check_write_access(task)
+        if not is_allowed:
+            return jsonify({'error': error}), 403
+
+        # Only the comment author or super agent can delete
+        agent_id = _get_request_agent_id()
+        owner_name = _get_owner_name()
+        is_owner = (comment.get('author') == agent_id or comment.get('author') == owner_name)
+        if not is_owner and not (agent_id and _is_super_agent(agent_id)):
+            return jsonify({'error': 'You can only delete your own comments'}), 403
+
+        deleted = kanban_db.delete_comment(comment_id)
+        if not deleted:
+            return jsonify({'error': 'Failed to delete comment'}), 500
+
+        kanban_db.add_activity(comment['task_id'], 'comment_deleted',
+                               f'Comment by {comment.get("author", "unknown")} deleted')
+        return jsonify({'success': True})
+
 
     # ─── Activity Log ──────────────────────────────────────────────────────────
 
@@ -497,6 +528,26 @@ def create_blueprint():
             kanban_db.update(task_id, fields)
             kanban_db.log_task_updated(task_id, f'assignee: {task.get("assignee")} → {agent_id}')
             task['assignee'] = agent_id
+
+        # Block trigger if task has unmet dependencies
+        try:
+            if kanban_db.has_unmet_dependencies(task_id):
+                unmet = kanban_db.get_unmet_dependencies(task_id)
+                blocking = ', '.join(f"#{t['id']} '{t['title']}'" for t in unmet)
+                return jsonify({
+                    'error': (
+                        f"Task #{task_id} has unmet dependencies. "
+                        f"The following tasks must be completed first: {blocking}."
+                    )
+                }), 409
+        except Exception as dep_exc:
+            return jsonify({
+                'error': (
+                    f"Task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later."
+                )
+            }), 500
 
         # Trigger the agent using the same notify path as the kanban scheduler
         try:

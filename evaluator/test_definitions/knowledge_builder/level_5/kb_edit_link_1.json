@@ -1,0 +1,20 @@
+{
+  "id": "kb_edit_link_1",
+  "name": "Edit body to fix a link",
+  "description": "Wrap a now-documented entity's plain-text mention into a [[link]] via an edit op.",
+  "prompt": "EXISTING documents:\n[anwar-saputra] Anwar Saputra :: Software engineer.\n\nSOURCE:\nKoreksi dokumen Anwar Saputra: frasa \"bekerja di Acme\" harus menjadi \"bekerja di [[Acme]]\" karena Acme kini punya dokumennya sendiri.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "edit": [
+        {
+          "slug": "anwar-saputra"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

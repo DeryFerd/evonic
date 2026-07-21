@@ -1,0 +1,707 @@
+/* ============================================================
+   System Settings console — "precision instrument panel"
+   All colors flow through the design tokens in style.css
+   (--bg-card, --bg-hover, --text-*, --border-*), so dark mode
+   works via html.dark without per-rule overrides.
+   ============================================================ */
+
+:root {
+    --st-accent: #6366f1;
+    --st-accent-soft: rgba(99, 102, 241, 0.10);
+    --st-accent-strong: #4f46e5;
+    --st-ok: #10b981;
+    --st-err: #ef4444;
+    --st-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+html.dark {
+    --st-accent: #818cf8;
+    --st-accent-soft: rgba(129, 140, 248, 0.14);
+    --st-accent-strong: #a5b4fc;
+}
+
+/* ---------- Page frame ---------- */
+.settings-console {
+    padding: 24px 20px 64px;
+}
+.settings-console-header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-bottom: 20px;
+}
+.settings-console-header h2 {
+    margin: 0;
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: -0.015em;
+    color: var(--text-heading);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.settings-console-header h2 svg {
+    width: 22px;
+    height: 22px;
+    color: var(--st-accent);
+}
+.settings-console-sub {
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+/* ---------- Two-pane shell ---------- */
+.settings-shell {
+    display: grid;
+    grid-template-columns: 224px minmax(0, 1fr);
+    gap: 28px;
+    align-items: start;
+}
+
+/* ---------- Nav rail ---------- */
+.settings-nav {
+    position: sticky;
+    top: 72px;
+    max-height: calc(100vh - 88px);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.settings-nav-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 14px 12px 6px;
+}
+.settings-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    position: relative;
+    transition: background-color 0.15s ease, color 0.15s ease, opacity 0.2s ease;
+}
+.settings-nav-item svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+    opacity: 0.75;
+    transition: opacity 0.15s ease;
+}
+.settings-nav-item:hover {
+    background: var(--bg-hover);
+    color: var(--text-heading);
+}
+.settings-nav-item.active {
+    background: var(--st-accent-soft);
+    color: var(--st-accent-strong);
+}
+.settings-nav-item.active svg {
+    opacity: 1;
+}
+.settings-nav-item.search-dim {
+    opacity: 0.35;
+}
+
+/* ---------- Settings search ---------- */
+.settings-search {
+    position: relative;
+    margin-bottom: 8px;
+}
+.settings-search input {
+    width: 100%;
+    padding: 8px 30px 8px 32px;
+    font-size: 0.85rem;
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.settings-search input:focus {
+    border-color: var(--st-accent);
+    box-shadow: 0 0 0 3px var(--st-accent-soft);
+}
+.settings-search input::placeholder {
+    color: var(--text-muted);
+}
+.settings-search > svg {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 15px;
+    height: 15px;
+    color: var(--text-muted);
+    pointer-events: none;
+}
+.settings-search kbd {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--st-mono);
+    font-size: 0.65rem;
+    line-height: 1;
+    padding: 3px 5px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    pointer-events: none;
+}
+.settings-search-results {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    z-index: 45;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.16);
+    overflow: hidden;
+    max-height: 320px;
+    overflow-y: auto;
+}
+.settings-search-result {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 8px 12px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border-color);
+}
+.settings-search-result:last-child {
+    border-bottom: none;
+}
+.settings-search-result:hover,
+.settings-search-result.selected {
+    background: var(--st-accent-soft);
+}
+.settings-search-result .sr-title {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-heading);
+}
+.settings-search-result .sr-path {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 1px;
+}
+.settings-search-empty {
+    padding: 12px;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-align: center;
+}
+
+/* ---------- Panes ---------- */
+.settings-pane {
+    display: none;
+    animation: st-pane-in 0.18s ease;
+    min-width: 0;
+}
+.settings-pane.active {
+    display: block;
+}
+/* Narrow panes (form-style content): cap the width so the control never
+   drifts far away from its label on wide screens. */
+.settings-pane.narrow {
+    max-width: 860px;
+}
+@keyframes st-pane-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to   { opacity: 1; transform: none; }
+}
+.settings-pane-title {
+    margin: 0 0 4px;
+    font-size: 1.05rem;
+    font-weight: 650;
+    color: var(--text-heading);
+    letter-spacing: -0.01em;
+}
+.settings-pane-desc {
+    margin: 0 0 18px;
+    font-size: 0.83rem;
+    color: var(--text-secondary);
+}
+
+/* ---------- Setting groups ---------- */
+.setting-group {
+    margin-bottom: 28px;
+}
+.setting-group-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding-left: 2px;
+}
+.setting-group-head svg {
+    width: 14px;
+    height: 14px;
+    color: var(--st-accent);
+}
+.setting-group-head h3 {
+    margin: 0;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.setting-group-head::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--border-color);
+    margin-left: 6px;
+}
+.setting-group-body {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+/* ---------- Setting rows ---------- */
+.setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.15s ease;
+}
+.setting-row:last-child {
+    border-bottom: none;
+}
+.setting-row:hover {
+    background: var(--bg-hover);
+}
+.setting-row-text {
+    min-width: 0;
+}
+.setting-row-title {
+    font-size: 0.875rem;
+    font-weight: 550;
+    color: var(--text-heading);
+}
+.setting-row-desc {
+    font-size: 0.78rem;
+    line-height: 1.45;
+    color: var(--text-secondary);
+    margin-top: 2px;
+    max-width: 60ch;
+}
+.setting-row-desc a {
+    color: var(--st-accent-strong);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.setting-row-desc code {
+    font-family: var(--st-mono);
+    font-size: 0.72rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 1px 4px;
+}
+.setting-row-control {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+/* stacked variant: control drops below the text (used for model selects) */
+.setting-row.stacked {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+}
+.setting-row.stacked .setting-row-control {
+    justify-content: flex-start;
+}
+.setting-row.stacked select {
+    flex: 1;
+    max-width: 420px;
+}
+
+/* Search jump highlight */
+@keyframes st-row-flash {
+    0%   { background: var(--st-accent-soft); box-shadow: inset 3px 0 0 var(--st-accent); }
+    70%  { background: var(--st-accent-soft); box-shadow: inset 3px 0 0 var(--st-accent); }
+    100% { background: transparent; box-shadow: none; }
+}
+.setting-row.row-highlight {
+    animation: st-row-flash 2s ease forwards;
+}
+
+/* ---------- Controls ---------- */
+.setting-num {
+    width: 76px;
+    padding: 6px 8px;
+    text-align: center;
+    font-family: var(--st-mono);
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.setting-num:focus {
+    border-color: var(--st-accent);
+    box-shadow: 0 0 0 3px var(--st-accent-soft);
+}
+.setting-select {
+    padding: 7px 10px;
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: 1px solid var(--border-input);
+    border-radius: 8px;
+    outline: none;
+    max-width: 320px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.setting-select:focus {
+    border-color: var(--st-accent);
+    box-shadow: 0 0 0 3px var(--st-accent-soft);
+}
+
+/* ---------- Segmented control (theme) ---------- */
+.segmented {
+    display: inline-grid;
+    grid-auto-flow: column;
+    grid-auto-columns: 1fr;
+    position: relative;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 3px;
+    isolation: isolate;
+}
+.segmented-thumb {
+    position: absolute;
+    top: 3px;
+    bottom: 3px;
+    left: 3px;
+    width: calc((100% - 6px) / 3);
+    border-radius: 7px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+    transition: transform 0.22s cubic-bezier(0.3, 0.9, 0.4, 1);
+    z-index: 0;
+}
+.segmented-btn {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border: none;
+    background: transparent;
+    border-radius: 7px;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.15s ease;
+    white-space: nowrap;
+}
+.segmented-btn svg {
+    width: 14px;
+    height: 14px;
+}
+.segmented-btn.active {
+    color: var(--st-accent-strong);
+    font-weight: 600;
+}
+
+/* ---------- Save status (auto-save feedback) ---------- */
+.save-status {
+    width: 18px;
+    height: 18px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+}
+.save-status.is-saving,
+.save-status.is-saved,
+.save-status.is-error {
+    opacity: 1;
+}
+.save-status.is-saved {
+    color: var(--st-ok);
+    animation: st-pop 0.35s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.save-status.is-error {
+    color: var(--st-err);
+}
+@keyframes st-pop {
+    0% { transform: scale(0.4); }
+    60% { transform: scale(1.2); }
+    100% { transform: scale(1); }
+}
+.save-status .st-check-path {
+    stroke-dasharray: 24;
+    stroke-dashoffset: 24;
+    animation: st-check-draw 0.3s ease 0.05s forwards;
+}
+@keyframes st-check-draw {
+    to { stroke-dashoffset: 0; }
+}
+.setting-row-error {
+    font-size: 0.74rem;
+    color: var(--st-err);
+    margin-top: 4px;
+}
+
+/* ---------- Loading skeleton ---------- */
+.settings-pane[data-loading] .setting-row-control {
+    opacity: 0.4;
+    pointer-events: none;
+    filter: saturate(0.4);
+}
+.skeleton-bar {
+    display: inline-block;
+    height: 14px;
+    border-radius: 6px;
+    background: linear-gradient(
+        90deg,
+        var(--bg-hover) 25%,
+        var(--border-color) 50%,
+        var(--bg-hover) 75%
+    );
+    background-size: 200% 100%;
+    animation: st-shimmer 1.2s linear infinite;
+}
+@keyframes st-shimmer {
+    from { background-position: 200% 0; }
+    to   { background-position: -200% 0; }
+}
+
+/* ---------- Buttons ---------- */
+.btn-primary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--st-accent);
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: background-color 0.15s ease;
+}
+.btn-primary:hover {
+    background: var(--st-accent-strong);
+}
+html.dark .btn-primary {
+    background: #4f46e5;
+    color: #fff;
+}
+html.dark .btn-primary:hover {
+    background: #6366f1;
+}
+.btn-primary svg {
+    width: 15px;
+    height: 15px;
+}
+.btn-icon {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 5px;
+    font-size: 14px;
+    border-radius: 6px;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+.btn-icon:hover {
+    color: var(--text-heading);
+    background: var(--bg-hover);
+}
+.btn-icon.delete:hover {
+    color: var(--st-err);
+}
+
+/* ---------- Modal (shared by all settings panes + hmads) ---------- */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(15, 23, 42, 0.55);
+    backdrop-filter: blur(2px);
+    z-index: 1000;
+    overflow-y: auto;
+}
+.modal.active {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+/* ---------- Spinner / misc ---------- */
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: var(--text-secondary);
+}
+.hidden {
+    display: none !important;
+}
+.spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--border-color);
+    border-top-color: var(--st-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto;
+}
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+.save-status .spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+    margin: 0;
+}
+
+/* ---------- Test-connection tips (models pane) ---------- */
+.test-tips {
+    margin-top: 0.75rem;
+    padding: 0.75rem;
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+}
+.test-tips ul {
+    margin: 0.25rem 0 0 0;
+    padding-left: 1.25rem;
+}
+.test-tips li {
+    margin-bottom: 0.25rem;
+    color: #92400e;
+}
+.test-tips-success {
+    background: #ecfdf5;
+    border-color: #6ee7b7;
+}
+.test-tips-success li {
+    color: #065f46;
+}
+.test-error-detail {
+    margin-top: 0.5rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    word-break: break-all;
+}
+html.dark .test-tips {
+    background: rgba(251, 191, 36, 0.1);
+    border-color: rgba(251, 191, 36, 0.3);
+}
+html.dark .test-tips li {
+    color: #fcd34d;
+}
+html.dark .test-tips-success {
+    background: rgba(16, 185, 129, 0.1);
+    border-color: rgba(16, 185, 129, 0.3);
+}
+html.dark .test-tips-success li {
+    color: #6ee7b7;
+}
+
+/* ---------- Mobile: rail becomes sticky pill bar ---------- */
+@media (max-width: 1023px) {
+    .settings-shell {
+        display: block;
+    }
+    .settings-nav {
+        position: sticky;
+        top: 57px; /* under the 56px sticky header + border */
+        z-index: 40;
+        flex-direction: row;
+        align-items: center;
+        gap: 6px;
+        max-height: none;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 10px 0;
+        margin-bottom: 14px;
+        background: var(--bg-page);
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: none;
+    }
+    .settings-nav::-webkit-scrollbar {
+        display: none;
+    }
+    .settings-nav-label {
+        display: none;
+    }
+    .settings-search {
+        margin-bottom: 0;
+        flex: 0 0 180px;
+    }
+    .settings-nav-item {
+        width: auto;
+        flex-shrink: 0;
+        padding: 7px 13px;
+        border: 1px solid var(--border-color);
+        border-radius: 999px;
+        background: var(--bg-card);
+    }
+    .settings-nav-item.active {
+        border-color: var(--st-accent);
+        background: var(--st-accent-soft);
+    }
+    .setting-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+    }
+    .setting-row-control {
+        justify-content: flex-end;
+    }
+    .setting-row.stacked select {
+        max-width: none;
+    }
+}

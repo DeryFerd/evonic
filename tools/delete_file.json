@@ -1,0 +1,25 @@
+{
+  "id": "delete_file",
+  "name": "Delete File",
+  "description": "Delete a file from the workspace.",
+  "function": {
+    "name": "delete_file",
+    "description": "Permanently delete a file. Use this to remove duplicate, broken, or obsolete documents from the workspace. The file must exist and the path must be within the workspace boundary.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to the file to delete. Relative paths are resolved against the workspace root."
+        }
+      },
+      "required": [
+        "file_path"
+      ]
+    }
+  },
+  "mock_response": "result = {'result': 'success', 'deleted': args.get('file_path', '')}",
+  "mock_response_type": "python",
+  "created_at": "2026-06-30T00:00:00.000000",
+  "updated_at": "2026-06-30T00:00:00.000000"
+}

@@ -9,7 +9,7 @@ class AgentMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id FROM agents ORDER BY last_active_at DESC NULLS LAST, name")
+            cursor.execute("SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id, messaging_acl, messaging_acl_mode, memory_engine, kb_organizer_mode, enable_atg, enable_cmp FROM agents ORDER BY last_active_at DESC NULLS LAST, name")
             return [dict(row) for row in cursor.fetchall()]
 
     def get_enabled_agents_sorted(self, limit: int = None) -> List[Dict[str, Any]]:
@@ -17,7 +17,7 @@ class AgentMixin:
         Filters and sorts in SQL instead of Python for performance."""
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
-            sql = """SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id FROM agents
+            sql = """SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id, messaging_acl, messaging_acl_mode, memory_engine, kb_organizer_mode, enable_atg, enable_cmp FROM agents
                      WHERE enabled = 1
                      ORDER BY last_active_at DESC NULLS LAST, name"""
             if limit is not None:
@@ -29,7 +29,7 @@ class AgentMixin:
         with self._connect() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id FROM agents WHERE id = ?", (agent_id,))
+            cursor.execute("SELECT id, name, description, system_prompt, vision_enabled, created_at, updated_at, summarize_threshold, summarize_tail, summarize_prompt, message_buffer_seconds, inject_agent_id, inject_datetime, send_intermediate_responses, outbound_buffer_seconds, enable_agent_state, workspace, is_super, enabled, default_model_id, sandbox_enabled, attachments_enabled, attachment_max_size_mb, audio_enabled, video_enabled, artifacts_enabled, last_active_at, safety_checker_enabled, bash_exec_enabled, primary_channel_id, avatar_path, disable_parallel_tool_execution, disable_turn_prefetch, agent_messaging_enabled, session_count, fallback_model_id, model_id, tool_compression_enabled, message_wrapper_enabled, run_as_user, vision_model_id, inter_agent_clear_context, builtin_tools_enabled, workplace_id, messaging_acl, messaging_acl_mode, memory_engine, kb_organizer_mode, enable_atg, enable_cmp FROM agents WHERE id = ?", (agent_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
 
@@ -42,8 +42,8 @@ class AgentMixin:
                     workspace, agent_messaging_enabled, sandbox_enabled, summarize_tail, artifacts_enabled,
                     message_wrapper_enabled, fallback_model_id, model_id, audio_enabled, video_enabled,
                     run_as_user, bash_exec_enabled, vision_model_id, inter_agent_clear_context,
-                    builtin_tools_enabled)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    builtin_tools_enabled, messaging_acl, messaging_acl_mode, workplace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 agent['id'], agent.get('name', agent['id']),
                 agent.get('description', ''), agent.get('system_prompt', ''),
@@ -71,6 +71,9 @@ class AgentMixin:
                 agent.get('vision_model_id'),
                 1 if agent.get('inter_agent_clear_context') else 0,
                 1 if agent.get('builtin_tools_enabled', True) else 0,
+                agent.get('messaging_acl'),
+                agent.get('messaging_acl_mode', 'whitelist'),
+                agent.get('workplace_id'),
             ))
             conn.commit()
         return agent['id']
@@ -85,8 +88,11 @@ class AgentMixin:
                    'agent_messaging_enabled', 'workplace_id',
                    'attachments_enabled', 'attachment_max_size_mb', 'artifacts_enabled',
                    'fallback_model_id', 'audio_enabled', 'video_enabled',
+                   'model_id',
                    'run_as_user', 'bash_exec_enabled', 'vision_model_id',
-                   'inter_agent_clear_context', 'builtin_tools_enabled'}
+                   'inter_agent_clear_context', 'builtin_tools_enabled',
+                   'messaging_acl', 'messaging_acl_mode',
+                   'memory_engine', 'kb_organizer_mode', 'enable_atg', 'enable_cmp'}
         updates = {k: v for k, v in data.items() if k in allowed}
         if not updates:
             return False
@@ -317,3 +323,62 @@ class AgentMixin:
             )
             row = cursor.fetchone()
             return row[0] if row else None
+
+    # ---- Pending tool-call approvals (for SSE snapshot on reconnect) ----
+
+    def store_pending_tool_approval(self, approval_id: str, session_id: str,
+                                     agent_id: str, tool_name: str,
+                                     tool_args: dict, approval_info: dict,
+                                     reasons: list, score: int = None,
+                                     source_agent_id: str = None,
+                                     source_agent_name: str = None):
+        """Persist a pending tool-call approval to the database so
+        reconnecting SSE clients can retrieve it via _build_snapshot()."""
+        import json
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO pending_tool_approvals
+                    (id, session_id, agent_id, tool_name, tool_args,
+                     approval_info, reasons, score,
+                     source_agent_id, source_agent_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                approval_id, session_id, agent_id, tool_name,
+                json.dumps(tool_args), json.dumps(approval_info),
+                json.dumps(reasons), score,
+                source_agent_id, source_agent_name,
+            ))
+            conn.commit()
+
+    def delete_pending_tool_approval(self, approval_id: str):
+        """Remove a resolved tool-call approval from the database."""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_tool_approvals WHERE id = ?",
+                (approval_id,)
+            )
+            conn.commit()
+
+    def get_pending_tool_approvals(self) -> list:
+        """Return all pending tool-call approvals (for SSE snapshot)."""
+        import json
+        with self._connect() as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("""
+                SELECT id, session_id, agent_id, tool_name, tool_args,
+                       approval_info, reasons, score,
+                       source_agent_id, source_agent_name,
+                       created_at
+                FROM pending_tool_approvals
+                ORDER BY created_at
+            """).fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                for col in ('tool_args', 'approval_info', 'reasons'):
+                    try:
+                        d[col] = json.loads(d[col])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                results.append(d)
+            return results

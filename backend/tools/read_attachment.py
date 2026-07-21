@@ -69,7 +69,8 @@ def _path_within_agent(path: str, agent_id: str) -> bool:
     return real.startswith(root + os.sep)
 
 
-def _format_metadata(row: Optional[Dict[str, Any]], fallback_path: str) -> str:
+def _format_metadata(row: Optional[Dict[str, Any]], fallback_path: str,
+                     workplace_path: Optional[str] = None) -> str:
     """Return a JSON metadata block for binary attachments."""
     if row:
         meta = {
@@ -93,6 +94,8 @@ def _format_metadata(row: Optional[Dict[str, Any]], fallback_path: str) -> str:
             'created_at': None,
             'path': fallback_path,
         }
+    if workplace_path and workplace_path != meta.get('path'):
+        meta['workplace_path'] = workplace_path
     return (
         "[Attachment metadata — binary file, not directly readable as text]\n\n"
         + json.dumps(meta, indent=2)
@@ -214,7 +217,13 @@ def execute(agent, args: dict) -> dict:
             return {"error": "Invalid attachment_id — must be an integer."}
         row = db.get_attachment(attachment_id)
         if not row:
-            return {"error": "Attachment not found or expired."}
+            return {
+                "error": (
+                    f"Attachment ID {attachment_id} was not found. Use the numeric "
+                    "'Attachment ID' shown in the attachment metadata; do not use "
+                    "a session ID or a number inferred from the file path."
+                )
+            }
         if row['agent_id'] != agent_id and not agent.get('is_super'):
             return {"error": "Access denied — attachment belongs to a different agent."}
         resolved_path = row.get('file_path')
@@ -240,14 +249,25 @@ def execute(agent, args: dict) -> dict:
     else:
         return {"error": "Provide either 'attachment_id' or 'path'."}
 
+    # If the agent operates in a remote workplace (SSH/tunnel/etc.), ensure the
+    # attachment file is available on the remote filesystem.  This is needed
+    # because _read_text_file routes through the execution backend when the
+    # agent has a workplace, and would otherwise fail to find the file.
+    try:
+        from backend.tools._ensure_workplace_file import ensure_workplace_file
+        workplace_path = ensure_workplace_file(resolved_path, agent)
+    except (ImportError, RuntimeError) as e:
+        return {"error": f"Failed to prepare attachment for workplace: {e}"}
+
     mime_type = (row or {}).get('mime_type')
 
-    # Dispatch
+    # Dispatch — use the workplace path for operations that route through the
+    # execution backend, and the original host path for direct filesystem access.
     if _is_pdf(mime_type, resolved_path):
         return {"result": _read_pdf_text(resolved_path, offset)}
 
     if _is_textish(mime_type, resolved_path):
-        return {"result": _read_text_file(resolved_path, offset=offset)}
+        return {"result": _read_text_file(workplace_path, offset=offset)}
 
     # Binary fallback — metadata only.
-    return {"result": _format_metadata(row, resolved_path)}
+    return {"result": _format_metadata(row, resolved_path, workplace_path)}

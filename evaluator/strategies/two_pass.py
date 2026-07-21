@@ -52,7 +52,8 @@ class TwoPassEvaluator(BaseEvaluator):
             expected_value = expected.get("answer", expected.get("value", expected))
         
         # PASS 2: Extract clean answer (include original question for context)
-        extraction = self.extractor.extract(self.domain, level, response, prompt)
+        # Pass expected_value to help select correct extraction template
+        extraction = self.extractor.extract(self.domain, level, response, prompt, expected=expected_value)
         
         if not extraction["success"]:
             pass2_details = {

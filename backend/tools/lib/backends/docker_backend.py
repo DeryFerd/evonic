@@ -20,6 +20,7 @@ import time
 
 from backend.tools.lib.exec_backend import ExecutionBackend, truncate
 from backend.tools.lib.process_tracker import process_tracker
+from backend.tools._workspace import scratch_dir
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +278,7 @@ def _get_or_create_container(session_id: str, agent_id: str = '', workspace: str
 
     name = _container_name(session_id, agent_id)
     effective_workspace = os.path.abspath(workspace if workspace else SANDBOX_WORKSPACE)
+    scratch = scratch_dir(agent_id)
     created_at = time.time()
 
     cmd = [
@@ -296,9 +298,9 @@ def _get_or_create_container(session_id: str, agent_id: str = '', workspace: str
         '-v', f'{effective_workspace}:/workspace:rw',
         '-v', f'{_HELPERS_DIR}:{_HELPERS_MOUNT}:ro',
         '-w', '/workspace',
-        '-e', 'SCRATCH=/workspace/.scratch',
+        '-e', f'SCRATCH={scratch}',
         SANDBOX_IMAGE,
-        'sh', '-c', 'mkdir -p /workspace/.scratch && exec sleep infinity',
+        'sh', '-c', f'mkdir -p {scratch} && exec sleep infinity',
     ]
 
     result = _docker(*cmd)
@@ -393,13 +395,15 @@ class DockerBackend(ExecutionBackend):
     """Executes bash/python inside a persistent Docker container."""
 
     def __init__(self, session_id: str, agent_id: str = '', workspace: str = None,
-                 is_subagent: bool = False):
+                 is_subagent: bool = False, is_explorer: bool = False):
         self._session_id = session_id
         self._agent_id = agent_id
         self._workspace = workspace
-        # Sub-agents run with cwd = /workspace/.scratch so their relative-path
-        # writes stay out of the project root (the container's mounted workspace).
-        self._workdir = '/workspace/.scratch' if is_subagent else None
+        # Normal sub-agents run with cwd = their scratchpad so their relative-path
+        # writes stay out of the project root.  Explorer sub-agents have their own
+        # explicit workspace and must NOT be redirected to the scratchpad.  The
+        # dir is created at container start (see _get_or_create_container).
+        self._workdir = scratch_dir(agent_id) if (is_subagent and not is_explorer) else None
 
     # ------------------------------------------------------------------
     # Path resolution — translate host paths to /workspace mount point
@@ -418,7 +422,12 @@ class DockerBackend(ExecutionBackend):
             return '/workspace' + path[len(effective):]
         return path
 
-    def run_bash(self, script: str, timeout: int, env: dict) -> dict:
+    def run_bash(self, script: str, timeout: int, env: dict, on_output=None) -> dict:
+        # on_output (live streaming) is not supported for Docker exec; output is
+        # returned batched. Accepted for API compatibility.
+        # Abort if a /stop landed in the race window just before this call.
+        if process_tracker.is_stop_pending(self._session_id):
+            return {'error': 'Execution stopped by user', 'exit_code': -9, 'execution_time': 0.0}
         container_id, err = _get_or_create_container(self._session_id, agent_id=self._agent_id, workspace=self._workspace)
         if err:
             return {'error': err}
@@ -459,6 +468,9 @@ class DockerBackend(ExecutionBackend):
         }
 
     def run_python(self, code: str, timeout: int, env: dict) -> dict:
+        # Abort if a /stop landed in the race window just before this call.
+        if process_tracker.is_stop_pending(self._session_id):
+            return {'error': 'Execution stopped by user', 'exit_code': -9, 'execution_time': 0.0}
         with _pool_lock:
             info = _containers.get(self._session_id, {})
             is_first = info.get('first_call', False)

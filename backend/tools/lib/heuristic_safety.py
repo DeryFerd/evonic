@@ -202,6 +202,16 @@ BASH_DANGEROUS_PATTERNS: list[dict[str, Any]] = [
     {"pattern": r"\bauthorized_keys2?\b", "weight": 10, "category": "ssh_key", "description": "Reference to authorized_keys file"},
 ]
 
+# Root filesystem scan detection (performance concern, not security).
+# Kept OUT of BASH_DANGEROUS_PATTERNS on purpose: this is a performance guard,
+# not a trust decision, so bash.py runs it via check_root_filesystem_scan()
+# independently of the safety pipeline — i.e. it fires even for super agents and
+# agents with safety_checker_enabled=0. See check_root_filesystem_scan() below.
+ROOT_FS_SCAN_RULES: list[dict[str, Any]] = [
+    {"pattern": r"\bfind\s+/(?:\s|$)", "weight": 8, "category": "root_filesystem_scan", "description": "Root filesystem scan via find (performance concern)"},
+    {"pattern": r"\btree\s+/(?:\s|$)", "weight": 8, "category": "root_filesystem_scan", "description": "Root filesystem scan via tree (performance concern)"},
+]
+
 
 # F. SQLite Database Access Patterns (warning-level, score 2-3)
 # These are intentionally low-weight — basic SQLite access (SELECT, INSERT, UPDATE)
@@ -278,6 +288,34 @@ _SENSITIVE_FILE_COMPILED = _compile(SENSITIVE_FILE_PATTERNS)
 _BASH_DANGEROUS_COMPILED = _compile(BASH_DANGEROUS_PATTERNS)
 _SQLITE_COMPILED = _compile(SQLITE_ACCESS_PATTERNS)
 _SQL_DESTRUCTIVE_COMPILED = _compile(SQL_DESTRUCTIVE_PATTERNS)
+_ROOT_FS_SCAN_COMPILED = _compile(ROOT_FS_SCAN_RULES)
+
+
+def check_root_filesystem_scan(code: str) -> dict | None:
+    """Standalone performance guard for root filesystem scans (`find /`, `tree /`).
+
+    Returned as a requires_approval result so bash.py can halt for human
+    confirmation. Deliberately independent of the safety pipeline: bash.py calls
+    this regardless of is_super / safety_checker_enabled so the (slow) root scan
+    always prompts. bash.py still gates it on `_skip_safety` so the post-approval
+    re-execution runs without re-prompting.
+
+    Returns a safety-result-shaped dict on match, else None.
+    """
+    matched = [p for p in _ROOT_FS_SCAN_COMPILED if p["compiled"].search(code)]
+    if not matched:
+        return None
+    reasons = [p["description"] for p in matched]
+    approval_info = _generate_approval_info(
+        {"matched_patterns": matched}, {}, "bash")
+    return {
+        "level": "requires_approval",
+        "score": sum(p["weight"] for p in matched),
+        "reasons": reasons,
+        "blocked_patterns": ["root_filesystem_scan"],
+        "requires_approval": True,
+        "approval_info": approval_info,
+    }
 
 
 # ============================================================================
@@ -629,6 +667,9 @@ def _generate_approval_info(
     elif "sqlite_access" in categories or "sqlite_db_file" in categories:
         risk_level = "medium"
         description = "This action accesses local SQLite database files which may contain sensitive data."
+    elif "root_filesystem_scan" in categories:
+        risk_level = "medium"
+        description = "This action scans the entire root filesystem which can take a very long time and may expose sensitive system files."
     elif "privilege_escalation" in categories or "permission_escalation" in categories:
         risk_level = "medium"
         description = "This action may escalate privileges or change permissions."

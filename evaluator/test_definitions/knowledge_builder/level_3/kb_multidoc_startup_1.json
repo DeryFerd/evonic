@@ -1,0 +1,28 @@
+{
+  "id": "kb_multidoc_startup_1",
+  "name": "Multiple docs from a startup story",
+  "description": "Founder, company, and product should each be a linked doc.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser mendirikan startup bernama Larisin yang membuat produk POS bernama LarisinKasir untuk UMKM di Indonesia.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Larisin",
+          "type": [
+            "company",
+            "organization"
+          ]
+        },
+        {
+          "title": "LarisinKasir",
+          "type": "product"
+        }
+      ]
+    },
+    "require_links": true
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

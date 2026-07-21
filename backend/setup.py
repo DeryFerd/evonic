@@ -150,7 +150,7 @@ preferences, and communication style instructions.
 
 ## Usage
 
-- Read this file: read("notes.md")
+- Read this file: read_file(file_path="/_self/kb/notes.md")
 - Update via write_file with path /_self/kb/notes.md
 - Update immediately when the user gives a new preference
 - Prioritize notes.md over `remember` for non-factual preference information
@@ -320,6 +320,49 @@ def _derive_agent_id(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Seed default system settings
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SETTINGS = [
+    # --- Appearance ---
+    ("theme", "system"),
+    # --- Models & Routing ---
+    ("vision_model_id", ""),
+    ("kb_organizer_model_id", ""),
+    ("task_classifier_enabled", "0"),
+    # --- Reliability ---
+    ("agent_timeout_retries", str(config.AGENT_TIMEOUT_RETRIES)),
+    ("llm_max_retries", "5"),
+    ("max_concurrent_llm_per_agent", "1"),
+    ("max_concurrent_llm_per_model", "0"),
+    ("max_concurrent_llm_global", "1"),
+    ("agent_queue_workers", str(config.AGENT_QUEUE_WORKERS)),
+    ("max_tool_iterations", str(config.AGENT_MAX_TOOL_ITERATIONS)),
+    ("agent_sidebar_limit", str(config.AGENT_SIDEBAR_LIMIT)),
+    # --- Privacy & Guards ---
+    ("public_history", "0"),
+    ("long_running_guard_enabled", "1" if config.LONG_RUNNING_GUARD_ENABLED else "0"),
+    ("message_wrapper_enabled", "1"),
+    # --- Events ---
+    ("events_dispatch_enabled", "1"),
+]
+
+
+def _seed_default_settings():
+    """Write default system settings into app_settings where missing.
+
+    Uses db.set_setting() which is INSERT ... ON CONFLICT DO UPDATE,
+    so existing user-customised values are preserved — only absent
+    keys receive their defaults.  Idempotent; safe to call repeatedly.
+    """
+    for key, value in _DEFAULT_SETTINGS:
+        try:
+            db.set_setting(key, value)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
 
@@ -386,8 +429,21 @@ def run_setup(
             _update_env_var(env_path, "SECRET_KEY", _key)
             os.environ["SECRET_KEY"] = _key
 
-        # 1. Create model in DB as default
-        model_id = f"setup_{provider}"
+        # 1a. Ensure provider exists in providers table
+        if not db.get_provider(provider):
+            db.create_provider({
+                "id": provider,
+                "name": provider_cfg.get("label", provider),
+                "type": provider_cfg.get("type", "remote"),
+                "base_url": resolved_base_url,
+                "api_key": api_key or "",
+                "api_format": provider_cfg.get("api_format", "openai"),
+            })
+        elif api_key:
+            db.update_provider(provider, {"api_key": api_key, "base_url": resolved_base_url})
+
+        # 1b. Create model in DB as default
+        model_id = db.generate_model_id(provider, model_name)
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
             model_api_format = "ollama"
@@ -468,6 +524,10 @@ def run_setup(
         db.set_setting("super_agent_id", agent_id)
         db.set_setting("agent_language", language)
         db.set_setting("sandbox_default_enabled", "1" if sandbox_enabled else "0")
+
+        # 6.5 Seed default system settings so the Settings UI and runtime
+        #      have known-good values on the very first page load.
+        _seed_default_settings()
 
         # 7. Enable all installed plugins
         for manifest_path in glob.glob(
@@ -580,8 +640,20 @@ def run_reconfigure(
     resolved_base_url = (base_url or provider_cfg["base_url"]).rstrip("/")
 
     try:
-        # 1. Update or create model in DB as default
-        model_id = f"setup_{provider}"
+        # 1a. Ensure provider exists in providers table
+        if not db.get_provider(provider):
+            db.create_provider({
+                "id": provider,
+                "name": provider_cfg.get("label", provider),
+                "type": provider_cfg.get("type", "remote"),
+                "base_url": resolved_base_url,
+                "api_key": api_key or "",
+                "api_format": provider_cfg.get("api_format", "openai"),
+            })
+        elif api_key:
+            db.update_provider(provider, {"api_key": api_key, "base_url": resolved_base_url})
+
+        # 1b. Update or create model in DB as default
         # Derive api_format: ollama + local → openai, ollama + remote → ollama native
         if provider == "ollama" and "ollama.com" in resolved_base_url:
             model_api_format = "ollama"
@@ -590,7 +662,6 @@ def run_reconfigure(
             model_api_format = provider_cfg.get("api_format", "openai")
             model_type = provider_cfg["type"]
         model_data = {
-            "id": model_id,
             "name": f"{provider_cfg['label']} ({model_name})",
             "type": model_type,
             "provider": provider,
@@ -601,10 +672,13 @@ def run_reconfigure(
             "enabled": 1,
             "api_format": model_api_format,
         }
-        existing_model = db.get_model_by_id(model_id)
+        # Look up by new-format id first, then the legacy setup_<provider> id
+        existing_model = db.get_model_by_id(
+            f"{provider}/{model_name}"
+        ) or db.get_model_by_id(f"setup_{provider}")
         if existing_model:
             # Update preserves the user's manual thinking toggle
-            db.update_model(model_id, model_data)
+            db.update_model(existing_model["id"], model_data)
         else:
             model_data["thinking"] = 1 if provider_cfg.get("default_thinking") else 0
             db.create_model(model_data)
@@ -635,6 +709,7 @@ def run_reconfigure(
         # 5. Store settings
         db.set_setting("agent_language", language)
         db.set_setting("sandbox_default_enabled", "1" if sandbox_enabled else "0")
+        _seed_default_settings()
 
         # 6. Update admin password if provided
         if password:

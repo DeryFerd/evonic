@@ -1,27 +1,29 @@
 """
-evomem_writer.py — write structured markdown into an agent's evomem.
+evomem_writer.py — write structured markdown docs into an agent's evomem.
 
-Evomem treats disk as the source of truth: pages are markdown files, the
-database is derived via `sync`. The CLI `capture` command only writes flat,
-unlinked notes to inbox/ — which leaves the knowledge graph empty. This module
-writes *structured* pages instead:
+Evomem treats disk as the source of truth: docs are markdown files, the database
+is derived via `sync`. This module writes *rich, inline-linked* docs (the
+Obsidian/wiki model) and schedules a debounced `sync` so the graph is built off
+the hot path.
 
-- entity pages (entities/<slug>.md) with frontmatter + a `## Relationships`
-  section of typed blockquote edges,
-- note/fact pages (notes/<slug>.md) with `[[entities/...]]` wiki-links,
+Model
+-----
+- A **doc** is one markdown file with frontmatter (`title`, `type`,
+  `description`, optional `tags`/`aliases`, `created`/`updated`) and a body of
+  rich prose. Relationships are expressed as **inline** `[[Doc Title]]`
+  wiki-links woven into the sentences — never a separate "Relations" list.
+- Docs live at the knowledge root or inside a **collection** folder, one level
+  under kb/ (e.g. `kb/riset-xyz/`), created on the user's request. Each collection
+  has an `index.md` of `type: session` or `type: group` describing it.
+- There is no `entities/` directory: an entity like "Jakarta" is just a doc with
+  `type: place`. Links resolve to a doc by title/alias anywhere in the vault, so
+  callers link by display title, not by path.
 
-then schedules a debounced `sync` so the graph (typed edges) is built off the
-hot path. All writes are atomic and best-effort; any failure is swallowed so
-the FTS5 memory pipeline is never affected.
-
-Typed edges recognised by evomem (from a page body):
-- explicit blockquote: `> **works_at:** [Acme](entities/acme)` — edge_type is
-  the lowercase label, deterministic.
-- `[[entities/slug]]` wiki-link — creates a `mentions` edge.
-
-Slugs are source_dir-prefixed (e.g. `entities/robin`, `notes/x`); link targets
-must include the prefix.
+All writes are atomic and best-effort; failures are swallowed so the FTS5 memory
+pipeline is never affected.
 """
+
+from __future__ import annotations
 
 import os
 import re
@@ -31,16 +33,28 @@ import unicodedata
 from datetime import datetime, timezone
 
 from backend.agent_runtime.evomem_client import (
-    _get_brain_dir, init_evomem, sync as _evomem_sync, vlog,
+    _get_evomem_dir, init_evomem, sync as _evomem_sync, vlog,
 )
 
 logger = logging.getLogger(__name__)
 
 # Debounce window (seconds) for coalescing a burst of writes into one sync.
-_SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "2"))
+_SYNC_DEBOUNCE_SECONDS = float(os.environ.get("EVOMEM_SYNC_DEBOUNCE", "5"))
 
-# Edge types evomem understands (others fall back to a plain mention).
-EDGE_TYPES = {"founded", "invested_in", "works_at", "advises", "attended", "mentions"}
+# Typed edge labels evomem can carry on a link (used to populate the `recall`
+# graph-traversal edge_type filter). The engine infers these from the sentence
+# around an inline link; any other label is stored as a custom edge type.
+EDGE_TYPES = {
+    "founded", "invested_in", "works_at", "advises", "attended",
+    "located_in", "lives_in", "visited", "born_in", "part_of",
+    "member_of", "owns", "uses", "knows", "related_to", "mentions",
+}
+
+# Doc types accepted by evomem's validator (mirrors Rust validate::VALID_TYPES).
+DOC_TYPES = {
+    "note", "session", "group", "person", "place", "venue", "event",
+    "organization", "company", "product", "contact",
+}
 
 # Per-agent debounced-sync timers, guarded by a lock.
 _sync_timers: dict = {}
@@ -54,7 +68,7 @@ def _now_iso() -> str:
 def slugify(name: str) -> str:
     """Deterministic slug from a name: lowercase ascii, dashes, capped length.
 
-    Same input always yields the same slug, so an entity maps to a stable file
+    Same input always yields the same slug, so a doc maps to a stable file
     (dedup by construction). Returns '' if nothing usable remains.
     """
     if not name:
@@ -67,15 +81,19 @@ def slugify(name: str) -> str:
     return norm[:60].strip("-")
 
 
-def _brain_path(agent_id: str, source_dir: str, slug: str) -> str:
-    """Absolute path to a page file under the agent's brain dir."""
-    bare = slug.split("/", 1)[-1]  # strip any source_dir prefix
-    return os.path.abspath(os.path.join(_get_brain_dir(agent_id), source_dir, f"{bare}.md"))
+def _doc_path(agent_id: str, rel_slug: str) -> str:
+    """Absolute path to a doc file under the agent's brain dir.
+
+    ``rel_slug`` is a knowledge-root-relative slug that may include folder
+    segments (e.g. ``riset-xyz/foo`` -> ``kb/riset-xyz/foo.md``).
+    """
+    rel = (rel_slug or "").strip("/").replace("..", "")
+    return os.path.abspath(os.path.join(_get_evomem_dir(agent_id), f"{rel}.md"))
 
 
 def _ensure_brain(agent_id: str) -> bool:
     """Make sure the brain DB exists (idempotent). Returns False if unavailable."""
-    brain_dir = _get_brain_dir(agent_id)
+    brain_dir = _get_evomem_dir(agent_id)
     if os.path.isdir(brain_dir) and os.path.exists(os.path.join(brain_dir, ".evomem.db")):
         return True
     return init_evomem(agent_id)
@@ -128,154 +146,449 @@ def _parse_frontmatter(text: str):
     return fm, body
 
 
-def _render_entity(fm: dict, body: str) -> str:
-    lines = ["---"]
-    lines.append(f"title: {_yaml_escape(fm.get('title', ''))}")
-    lines.append(f"type: {fm.get('type', 'entity')}")
-    lines.append(f"tags: {_yaml_list(fm.get('tags', []))}")
-    lines.append(f"aliases: {_yaml_list(fm.get('aliases', []))}")
-    lines.append(f"created: {fm.get('created', _now_iso())}")
+def _render_doc(title: str, doc_type: str, description: str, tags, aliases,
+                created: str, updated: str, body: str,
+                thumbnail: str = None) -> str:
+    """Render a full doc (frontmatter + body). Body is used verbatim (its inline
+    [[wiki-links]] are the graph edges)."""
+    lines = ["---",
+             f"title: {_yaml_escape(title)}",
+             f"type: {doc_type if doc_type in DOC_TYPES else 'note'}",
+             f"description: {_yaml_escape(description)}",
+             f"tags: {_yaml_list(tags or [])}"]
+    if aliases:
+        lines.append(f"aliases: {_yaml_list(aliases)}")
+    if thumbnail:
+        lines.append(f"thumbnail: {_yaml_escape(thumbnail)}")
+    lines.append(f"created: {created}")
+    lines.append(f"updated: {updated}")
     lines.append("---")
-    return "\n".join(lines) + "\n" + body.lstrip("\n")
+    return "\n".join(lines) + "\n\n" + (body or "").strip() + "\n"
 
 
-def upsert_entity_page(agent_id: str, name: str, entity_type: str = "entity",
-                       aliases=None, tags=None, summary=None) -> str:
-    """Create or merge an entity page. Returns its slug ('entities/<slug>') or ''.
+def upsert_doc(agent_id: str, title: str, body: str, doc_type: str = "note",
+               description: str = None, folder: str = "", tags=None,
+               aliases=None, slug: str = None, thumbnail: str = None) -> str:
+    """Create or overwrite a doc. Returns its full slug (``<folder>/<slug>``) or ''.
 
-    If the page exists, aliases/tags are merged into existing frontmatter
-    (union) instead of clobbering — this is the dedup mechanism.
+    ``folder`` places the doc inside a collection (e.g. ``riset-xyz``); empty =
+    root. ``body`` is rich prose with inline ``[[Doc Title]]`` links — written
+    verbatim, with no appended link block. On an existing doc the original
+    ``created`` is kept, ``updated`` is refreshed, and tags/aliases are merged
+    (union); the caller supplies the already-merged body.
+
+    ``session``/``group`` are reserved for collection ``index.md`` files (created
+    via :func:`create_collection`); a standalone doc must not carry them, so they
+    are coerced to ``note`` here — otherwise an LLM type guess could mint a flat
+    "session" file that looks like a collection but isn't one.
     """
-    slug = slugify(name)
-    if not slug or not _ensure_brain(agent_id):
+    if doc_type in ("session", "group"):
+        doc_type = "note"
+    base = (slug or slugify(title)).strip("/")
+    if not base or not _ensure_brain(agent_id):
         return ""
-    full_slug = f"entities/{slug}"
-    path = _brain_path(agent_id, "entities", slug)
-    aliases = [a for a in (aliases or []) if a and a != name]
+    folder = (folder or "").strip("/")
+    rel = f"{folder}/{base}" if folder else base
+    path = _doc_path(agent_id, rel)
     tags = list(tags or [])
+    aliases = [a for a in (aliases or []) if a and a != title]
+    created = _now_iso()
+    # A caller-supplied thumbnail wins; otherwise preserve any existing one.
+    thumbnail = (thumbnail or "").strip() or None
+
+    if os.path.exists(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                fm, _old = _parse_frontmatter(f.read())
+            created = fm.get("created") or created
+            tags = sorted(set(tags) | set(fm.get("tags", []) or []))
+            aliases = sorted(set(aliases) | set(fm.get("aliases", []) or []))
+            thumbnail = thumbnail or (fm.get("thumbnail") or None)
+            if description is None:
+                description = fm.get("description")
+            # Don't downgrade a typed doc to a plain note on re-write — but never
+            # adopt a stale session/group type from a mis-typed flat file.
+            existing_type = fm.get("type")
+            if (not doc_type or doc_type == "note") and existing_type \
+                    and existing_type not in ("session", "group"):
+                doc_type = existing_type
+        except Exception:
+            pass
+    description = (description or title).strip()
 
     try:
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                fm, body = _parse_frontmatter(f.read())
-            fm.setdefault("title", name)
-            fm["type"] = fm.get("type") or entity_type
-            fm["aliases"] = sorted(set(fm.get("aliases", []) or []) | set(aliases))
-            fm["tags"] = sorted(set(fm.get("tags", []) or []) | set(tags) | {"entity"})
-            _atomic_write(path, _render_entity(fm, body))
-            vlog("writer[%s]: entity merge %s (aliases=%d)",
-                 agent_id, full_slug, len(fm["aliases"]))
-        else:
-            fm = {
-                "title": name,
-                "type": entity_type,
-                "tags": sorted(set(tags) | {"entity"}),
-                "aliases": sorted(set(aliases)),
-                "created": _now_iso(),
-            }
-            body = f"\n{summary or name}.\n"
-            _atomic_write(path, _render_entity(fm, body))
-            vlog("writer[%s]: entity create %s", agent_id, full_slug)
-        return full_slug
+        _atomic_write(path, _render_doc(title, doc_type, description, tags,
+                                        aliases, created, _now_iso(), body,
+                                        thumbnail=thumbnail))
+        vlog("writer[%s]: upsert_doc %s (type=%s)", agent_id, rel, doc_type)
+        return rel
     except Exception as e:
-        logger.debug("upsert_entity_page failed for %s/%s: %s", agent_id, slug, e)
+        logger.debug("upsert_doc failed for %s/%s: %s", agent_id, rel, e)
         return ""
 
 
-def add_edge(agent_id: str, subject_slug: str, edge_type: str,
-             object_slug: str, anchor: str = None) -> bool:
-    """Append a typed blockquote edge to the subject entity page (idempotent).
+# A YAML frontmatter delimiter followed by a frontmatter key — finding this INSIDE
+# a body means a whole copy of the file was concatenated into it (self-duplication).
+_EMBEDDED_FRONTMATTER_RE = re.compile(
+    r'\n-{3,}[ \t]*\n[ \t]*(?:title|type|aliases|description|tags|created|updated)[ \t]*:')
 
-    `subject_slug`/`object_slug` are full slugs ('entities/...'). Unknown edge
-    types fall back to 'mentions'. Returns True if the edge is present after the
-    call.
+
+def _dedupe_body(body: str, min_block: int = 40) -> str:
+    """Remove self-concatenation duplication from a doc body:
+
+    1. If a second YAML frontmatter block got concatenated in (the whole file was
+       appended to itself), cut it and everything after.
+    2. Drop any later paragraph block that VERBATIM-duplicates an earlier
+       substantial block (>= ``min_block`` chars), keeping the first occurrence.
+
+    Conservative: only exact duplicates of substantial blocks are removed, so
+    legitimate short/again-different content is never touched.
     """
-    edge_type = edge_type if edge_type in EDGE_TYPES else "mentions"
-    subj_bare = subject_slug.split("/", 1)[-1]
-    path = _brain_path(agent_id, "entities", subj_bare)
+    if not body:
+        return body
+    m = _EMBEDDED_FRONTMATTER_RE.search(body)
+    if m:
+        body = body[:m.start()]
+    seen, out = set(), []
+    for block in re.split(r'\n[ \t]*\n', body):
+        key = block.strip()
+        if len(key) >= min_block and key in seen:
+            continue
+        if len(key) >= min_block:
+            seen.add(key)
+        out.append(block.rstrip())
+    return "\n\n".join(b for b in out if b.strip()).strip()
+
+
+def append_to_doc(agent_id: str, slug: str, delta_prose: str,
+                  thumbnail: str = None) -> bool:
+    """Append a new inline-linked paragraph to an existing doc, preserving the
+    body and refreshing ``updated``. Optionally set/refresh the ``thumbnail``
+    frontmatter (a caller-supplied value wins; otherwise the existing one is kept).
+    Returns True if anything was written.
+    """
+    delta = (delta_prose or "").strip()
+    new_thumb = (thumbnail or "").strip() or None
+    path = _doc_path(agent_id, slug)
     if not os.path.exists(path):
-        # Subject must exist as an entity page to host the edge.
-        if not upsert_entity_page(agent_id, subj_bare.replace("-", " ")):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        existing_thumb = fm.get("thumbnail") or None
+        final_thumb = new_thumb or existing_thumb
+        # No-op when there's no new prose and the thumbnail wouldn't change.
+        if not delta and final_thumb == existing_thumb:
             return False
-    anchor = anchor or object_slug.split("/", 1)[-1].replace("-", " ")
-    edge_line = f"> **{edge_type}:** [{anchor}]({object_slug})"
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        # Dedupe the result so a delta that restates existing content can't
+        # concatenate a duplicate copy into the doc.
+        new_body = _dedupe_body(body.rstrip() + "\n\n" + delta) if delta else body
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body,
+                                        thumbnail=final_thumb))
+        vlog("writer[%s]: append_to_doc %s (+%d chars%s)", agent_id, slug, len(delta),
+             ", +thumbnail" if new_thumb and new_thumb != existing_thumb else "")
+        return True
+    except Exception as e:
+        logger.debug("append_to_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Levenshtein edit distance between two strings (iterative, O(len(a)*len(b)))."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[-1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+# Fuzzy-edit safety knobs (env-overridable).
+_EDIT_FUZZY_RATIO = float(os.environ.get("EVOMEM_KB_EDIT_FUZZY_RATIO", "0.85"))
+_EDIT_FUZZY_MARGIN = float(os.environ.get("EVOMEM_KB_EDIT_FUZZY_MARGIN", "0.08"))
+_EDIT_FUZZY_MIN_LEN = 8       # don't fuzzy-match very short needles (too easy to mis-hit)
+_EDIT_FUZZY_MAX_BODY = 20000  # skip fuzzy on very large bodies (perf)
+
+
+def _fuzzy_unique_window(body: str, needle: str):
+    """Find the body span most similar to ``needle`` by Levenshtein ratio.
+
+    Returns ``(start, end)`` ONLY for a high-confidence, UNAMBIGUOUS match:
+    similarity ≥ ratio threshold AND no *other non-overlapping* span scores within
+    ``margin`` of the best. Otherwise None — so a fuzzy edit never clobbers the
+    wrong (or an equally-plausible) region. None for very short needles / huge bodies.
+    """
+    n = len(needle)
+    if n < _EDIT_FUZZY_MIN_LEN or not body or len(body) > _EDIT_FUZZY_MAX_BODY:
+        return None
+    # Bound the Levenshtein scan cost (~ body * needle^2). A long needle on a big
+    # body (e.g. an edit that mistakenly pastes a whole frontmatter block) would be
+    # pathologically slow — and such a non-body needle won't match anyway, so refuse.
+    if len(body) * n * n > 40_000_000:
+        return None
+    lengths = {max(1, n + d) for d in (-1, 0, 1)}   # absorb small indels
+    matches = []  # (ratio, start, end)
+    for wlen in lengths:
+        for start in range(0, len(body) - wlen + 1):
+            window = body[start:start + wlen]
+            ratio = 1.0 - _levenshtein(window, needle) / max(wlen, n)
+            if ratio >= _EDIT_FUZZY_RATIO:
+                matches.append((ratio, start, start + wlen))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    br, bs, be = matches[0]
+    for r, s, e in matches[1:]:
+        if (e <= bs or s >= be) and r >= br - _EDIT_FUZZY_MARGIN:
+            return None   # a different region matches nearly as well → refuse
+    return (bs, be)
+
+
+def replace_in_doc(agent_id: str, slug: str, old_str: str, new_str: str,
+                   fuzzy: bool = True) -> bool:
+    """Surgical edit: replace ``old_str`` with ``new_str`` in a doc's body.
+
+    SAFE BY DESIGN. Resolution order:
+      1. EXACT, unique (``old_str`` occurs exactly once) → replace.
+      2. EXACT but >1 occurrences → refuse (ambiguous).
+      3. Not found → FUZZY: replace the single high-similarity, unambiguous span
+         (Levenshtein ratio, see ``_fuzzy_unique_window``) so a near-miss copy of
+         ``old_str`` (whitespace/typo drift) still lands — but a vague or
+         multiply-matching edit is refused. Returns False on any refusal/no write.
+
+    Body-only; frontmatter is preserved. Used to fix a wrong inline ``[[link]]`` or
+    a factual error in existing prose.
+    """
+    if not old_str or old_str == new_str:
+        return False
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        cnt = body.count(old_str)
+        if cnt == 1:
+            new_body = body.replace(old_str, new_str, 1)
+            how = "exact"
+        elif cnt > 1:
+            return False                       # ambiguous exact → refuse
+        elif fuzzy and (win := _fuzzy_unique_window(body, old_str)):
+            s, e = win
+            new_body = body[:s] + new_str + body[e:]
+            how = "fuzzy"
+        else:
+            return False                       # not found (and no safe fuzzy match)
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body,
+                                        thumbnail=fm.get("thumbnail")))
+        vlog("writer[%s]: replace_in_doc %s (%s)", agent_id, slug, how)
+        return True
+    except Exception as e:
+        logger.debug("replace_in_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
+
+
+def _first_unlinked_span(body: str, text: str):
+    """Span of the FIRST plain-text (not already inside ``[[ ]]``) occurrence of
+    ``text`` in ``body``, or None. Boundaries reject partial-word hits ("ERP" in
+    "ERPNext") and any mention already adjacent to ``[``/``]``/``|`` (i.e. already a
+    link or alias), so a re-link is never attempted on text that's already linked.
+    """
+    m = re.search(r'(?<![\w\[|])' + re.escape(text) + r'(?![\w\]|])', body)
+    return (m.start(), m.end()) if m else None
+
+
+def link_in_doc(agent_id: str, slug: str, text: str, target: str = "") -> bool:
+    """Retro-link: wrap the FIRST un-bracketed mention of ``text`` in a doc's body
+    as an inline ``[[link]]``. Deterministic — the model only names the phrase and
+    its target doc, so (unlike ``edit`` with old_str/new_str) it can never emit a
+    no-op where the replacement equals the target.
+
+    ``target`` is the canonical doc title to link to; defaults to ``text``. When it
+    differs from the visible phrase, an alias link ``[[target|text]]`` is written so
+    the prose still reads naturally. Body-only; frontmatter is preserved. Returns
+    False when ``text`` is empty, the doc is missing, or no un-linked mention exists.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    target = (target or "").strip() or text
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        span = _first_unlinked_span(body, text)
+        if span is None:
+            return False                       # already linked / not present → no-op
+        s, e = span
+        link = f"[[{target}]]" if target == text else f"[[{target}|{text}]]"
+        new_body = body[:s] + link + body[e:]
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        doc_type = fm.get("type") or "note"
+        description = fm.get("description") or title
+        created = fm.get("created") or _now_iso()
+        _atomic_write(path, _render_doc(title, doc_type, description,
+                                        fm.get("tags", []) or [],
+                                        fm.get("aliases", []) or [],
+                                        created, _now_iso(), new_body,
+                                        thumbnail=fm.get("thumbnail")))
+        vlog("writer[%s]: link_in_doc %s -> [[%s]]", agent_id, slug, target)
+        return True
+    except Exception as e:
+        logger.debug("link_in_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
+
+
+def create_collection(agent_id: str, folder: str, title: str,
+                     kind: str = "session", description: str = None) -> str:
+    """Create a collection folder (one level under kb/) with an ``index.md`` of
+    ``type: session|group``. Idempotent. Returns the folder slug or ''.
+    """
+    folder = slugify(folder)
+    if not folder or kind not in ("session", "group") or not _ensure_brain(agent_id):
+        return ""
+    path = _doc_path(agent_id, f"{folder}/index")
+    description = (description or title).strip()
+    if os.path.exists(path):
+        return folder  # idempotent: keep existing index
+    body = f"{description}\n\n## Contents\n"
+    try:
+        _atomic_write(path, _render_doc(title, kind, description, [kind], [],
+                                        _now_iso(), _now_iso(), body))
+        vlog("writer[%s]: create_collection %s (%s)", agent_id, folder, kind)
+        return folder
+    except Exception as e:
+        logger.debug("create_collection failed for %s/%s: %s", agent_id, folder, e)
+        return ""
+
+
+def add_to_collection_index(agent_id: str, folder: str, doc_title: str) -> bool:
+    """Append ``- [[doc_title]]`` under the collection index's ``## Contents``
+    section (idempotent — skips if the link is already present)."""
+    folder = (folder or "").strip("/")
+    doc_title = (doc_title or "").strip()
+    if not folder or not doc_title:
+        return False
+    path = _doc_path(agent_id, f"{folder}/index")
+    if not os.path.exists(path):
+        return False
+    link = f"[[{doc_title}]]"
     try:
         with open(path, encoding="utf-8") as f:
             content = f.read()
-        if edge_line in content:
-            vlog("writer[%s]: edge exists %s --%s--> %s",
-                 agent_id, subject_slug, edge_type, object_slug)
-            return True
-        if "## Relationships" in content:
-            content = content.rstrip() + "\n" + edge_line + "\n"
+        if link in content:
+            return False
+        if "## Contents" in content:
+            content = content.rstrip() + f"\n- {link}\n"
         else:
-            content = content.rstrip() + "\n\n## Relationships\n" + edge_line + "\n"
+            content = content.rstrip() + f"\n\n## Contents\n- {link}\n"
         _atomic_write(path, content)
-        vlog("writer[%s]: edge add %s --%s--> %s",
-             agent_id, subject_slug, edge_type, object_slug)
         return True
     except Exception as e:
-        logger.debug("add_edge failed for %s (%s): %s", agent_id, subject_slug, e)
+        logger.debug("add_to_collection_index failed for %s/%s: %s", agent_id, folder, e)
         return False
 
 
-def write_note(agent_id: str, title: str, body: str, tags=None,
-               mentions=None, memory_id=None, source: str = None) -> str:
-    """Write a note/fact page with [[wiki-link]] mentions. Returns slug or ''.
-
-    `memory_id` is recorded in frontmatter so re-runs upsert the same file
-    (idempotent backfill). `mentions` is a list of full entity slugs appended
-    as `[[entities/...]]` so the note wires `mentions` edges and is graph-adjacent.
+def dedupe_doc(agent_id: str, slug: str) -> bool:
+    """Clean a doc that got self-duplicated (a copy of its content concatenated into
+    the body). Rewrites the body via :func:`_dedupe_body`, preserving frontmatter.
+    Returns True if the doc changed, False if it was already clean / missing.
     """
-    # Stable slug: prefer memory id for idempotency, else derive from title.
-    base = f"mem-{memory_id}" if memory_id is not None else slugify(title)
-    if not base or not _ensure_brain(agent_id):
-        return ""
-    path = _brain_path(agent_id, "notes", base)
-
-    mention_links = ""
-    for m in (mentions or []):
-        if m:
-            mention_links += f"\n[[{m}]]"
-
-    fm = ["---", f"title: {_yaml_escape(title)}", "type: note",
-          f"tags: {_yaml_list(tags or [])}", f"created: {_now_iso()}"]
-    if memory_id is not None:
-        fm.append(f"memory_id: {int(memory_id)}")
-    if source:
-        fm.append(f"source: {_yaml_escape(source)}")
-    fm.append("---")
-    doc = "\n".join(fm) + "\n\n" + body.strip() + mention_links + "\n"
+    path = _doc_path(agent_id, slug)
+    if not os.path.exists(path):
+        return False
     try:
-        _atomic_write(path, doc)
-        vlog("writer[%s]: note write notes/%s (mentions=%d)",
-             agent_id, base, len(mentions or []))
-        return f"notes/{base}"
+        with open(path, encoding="utf-8") as f:
+            fm, body = _parse_frontmatter(f.read())
+        cleaned = _dedupe_body(body)
+        if cleaned.strip() == (body or "").strip():
+            return False  # already clean
+        title = fm.get("title") or slug.rsplit("/", 1)[-1]
+        _atomic_write(path, _render_doc(title, fm.get("type") or "note",
+                                        fm.get("description") or title,
+                                        fm.get("tags", []) or [], fm.get("aliases", []) or [],
+                                        fm.get("created") or _now_iso(), _now_iso(), cleaned,
+                                        thumbnail=fm.get("thumbnail")))
+        vlog("writer[%s]: dedupe_doc %s (%d -> %d chars)", agent_id, slug, len(body), len(cleaned))
+        return True
     except Exception as e:
-        logger.debug("write_note failed for %s: %s", agent_id, e)
-        return ""
+        logger.debug("dedupe_doc failed for %s/%s: %s", agent_id, slug, e)
+        return False
 
 
-def delete_note(agent_id: str, memory_id) -> bool:
-    """Remove a note page (by memory id) from disk so the next sync soft-deletes
-    it in evomem. Returns True if a file was actually removed.
+def read_doc(agent_id: str, slug: str) -> dict | None:
+    """Read a doc: returns ``{title, body, frontmatter}`` or None if missing.
+    Used by the authoring pipeline for dedupe/merge decisions."""
+    path = _doc_path(agent_id, slug)
+    try:
+        with open(path, encoding="utf-8") as f:
+            raw = f.read()
+    except (FileNotFoundError, OSError):
+        return None
+    fm, body = _parse_frontmatter(raw)
+    return {"title": fm.get("title", ""), "body": body.strip(), "frontmatter": fm}
 
-    Pure (does not schedule a sync) — mirror of write_note; the caller marks
-    the brain dirty. Entity pages and edges are left intact (they are shared
-    across facts).
+
+def rename_doc(agent_id: str, old_slug: str, new_title: str, add_alias: bool = True) -> str:
+    """Rename a doc to fix a typo/misspelled name. Returns the new slug, or ''.
+
+    Renames the file (slug follows the new title) inside the same folder and sets
+    the new ``title``, preserving body/type/description/tags/created. The OLD title
+    is kept as an alias (so existing inline ``[[Old Name]]`` links still resolve)
+    unless ``add_alias`` is False. Old file is removed when the slug actually changes.
     """
-    if memory_id is None:
-        return False
-    path = _brain_path(agent_id, "notes", f"mem-{memory_id}")
-    try:
-        if os.path.exists(path):
-            os.remove(path)
-            vlog("writer[%s]: note delete notes/mem-%s", agent_id, memory_id)
-            return True
-        return False
-    except Exception as e:
-        logger.debug("delete_note failed for %s mem-%s: %s", agent_id, memory_id, e)
-        return False
+    doc = read_doc(agent_id, old_slug)
+    if doc is None:
+        return ""
+    fm, body = doc["frontmatter"], doc["body"]
+    old_slug = (old_slug or "").strip("/")
+    folder, _, _base = old_slug.rpartition("/")  # folder == '' when no slash
+    new_base = slugify(new_title)
+    if not new_base:
+        return ""
+    new_rel = f"{folder}/{new_base}" if folder else new_base
+
+    aliases = list(fm.get("aliases") or [])
+    old_title = (fm.get("title") or "").strip()
+    if add_alias and old_title and old_title.casefold() != new_title.strip().casefold() \
+            and old_title not in aliases:
+        aliases.append(old_title)
+
+    rel = upsert_doc(agent_id, title=new_title, body=body,
+                     doc_type=fm.get("type") or "note", description=fm.get("description"),
+                     folder=folder, tags=fm.get("tags") or [], aliases=aliases, slug=new_base)
+    if not rel:
+        return ""
+    if new_rel != old_slug:
+        try:
+            os.remove(_doc_path(agent_id, old_slug))
+        except OSError:
+            pass
+    vlog("writer[%s]: rename_doc %s -> %s", agent_id, old_slug, new_rel)
+    return new_rel
 
 
 def _do_sync(agent_id: str) -> None:
@@ -314,4 +627,5 @@ def sync_now(agent_id: str) -> bool:
     try:
         return _evomem_sync(agent_id)
     except Exception:
+        logger.warning("evomem_writer[%s]: sync_now failed", agent_id, exc_info=True)
         return False

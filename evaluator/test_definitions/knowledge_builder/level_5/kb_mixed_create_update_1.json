@@ -1,0 +1,35 @@
+{
+  "id": "kb_mixed_create_update_1",
+  "name": "Mixed create + update",
+  "description": "One known subject updated, one new subject created, both linked.",
+  "prompt": "EXISTING documents:\n[jakarta] Jakarta :: Capital of Indonesia; User's home city.\n\nSOURCE:\nUser memperkenalkan investornya, Rina, dari Sequoia, dan menyebut bahwa kantornya di Jakarta kini punya 50 karyawan.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Rina",
+          "type": "person"
+        },
+        {
+          "title": "Sequoia",
+          "type": [
+            "company",
+            "organization"
+          ]
+        }
+      ],
+      "update": [
+        {
+          "title": "Jakarta",
+          "type": "place",
+          "slug": "jakarta"
+        }
+      ]
+    },
+    "require_links": true
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

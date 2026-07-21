@@ -5,6 +5,7 @@ Fallback backend: pure-Python implementation that is reliable for all hunk types
 including insertion-only hunks with no surrounding context.
 """
 
+import logging
 import os
 import re
 
@@ -13,12 +14,13 @@ try:
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+logger = logging.getLogger(__name__)
+
 from backend.tools._workspace import resolve_workspace_path
 try:
     from backend.tools.lib.safety_pipeline import should_skip_safety
 except ImportError:
-    import logging
-    logging.getLogger(__name__).warning("safety_pipeline unavailable — safety checks disabled for patch tool")
+    logger.warning("safety_pipeline unavailable — safety checks disabled for patch tool")
     should_skip_safety = lambda agent: True
 SEARCH_WINDOW = 50
 
@@ -564,13 +566,28 @@ def execute(agent, args: dict) -> dict:
 
     # /_self/ path: always route to the agent's local directory on the evonic server.
     # Sub-agents inherit their parent's directory — use effective agent ID.
-    from backend.tools._workspace import is_self_path, resolve_self_path
+    from backend.tools._workspace import is_self_path, resolve_self_path, _self_fuzzy_suggestion
     agent_id = ((agent or {}).get("parent_id") if (agent or {}).get("is_subagent")
                 else (agent or {}).get("id", ""))
     if agent_id and is_self_path(file_path):
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return {'error': "Access denied — path escapes agent directory."}
+        # If the file doesn't exist (and patch isn't creating a new file),
+        # check for similar names (typos).
+        if not os.path.exists(local_path):
+            # Check if this patch is creating a new file
+            creating_new = False
+            try:
+                hunks_temp = parse_hunks(patch_text)
+                creating_new = all(h['old_start'] == 0 and h['old_count'] == 0 for h in hunks_temp)
+            except Exception:
+                pass
+            if not creating_new:
+                suggestion = _self_fuzzy_suggestion(agent_id, file_path)
+                if suggestion:
+                    return {'error': f"File not found: {file_path}. Did you mean: {suggestion}"}
+                return {'error': f"File not found: {file_path}."}
         result = apply_patch(local_path, patch_text)
         if '/kb/' in local_path and result.get('result') == 'success':
             try:
@@ -579,6 +596,14 @@ def execute(agent, args: dict) -> dict:
                 logger.info("patch[%s]: kb edit detected, evomem sync scheduled", agent_id)
             except Exception as e:
                 logger.warning("patch[%s]: failed to schedule evomem sync: %s", agent_id, e)
+            if local_path.endswith('.md'):
+                try:
+                    from backend.agent_runtime.context import kb_frontmatter_warning
+                    _warn = kb_frontmatter_warning(local_path)
+                    if _warn:
+                        result['warning'] = _warn
+                except Exception:
+                    pass
         return result
 
     # Hint when path starts with _self/ but missing leading slash
@@ -623,11 +648,13 @@ def execute(agent, args: dict) -> dict:
 
         return {'result': 'success', 'hunks_applied': result.get('hunks_applied', 0)}
 
-    # When sandbox is enabled or the agent has a workplace, route file I/O
-    # through the execution backend (Docker container, SSH remote, etc.).
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.).
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
-    if sandbox_enabled or has_workplace:
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
         from backend.tools.lib.exec_backend import registry
         session_id = (agent or {}).get('session_id') or 'default'
         backend = registry.get_backend(session_id, agent)

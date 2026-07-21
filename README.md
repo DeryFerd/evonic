@@ -65,11 +65,16 @@ When suspicious activity is detected, the system escalates to a human operator r
 | **Evonet** | Lightweight Go connector for remote execution without SSH or firewall rules |
 | **Scheduler** | Cron-based triggers, recurring tasks, and reminders for agents |
 | **Channels** | Connect agents to Telegram, WhatsApp, Discord, Slack, and custom interfaces |
+| **Knowledge Graph** | Interactive force-directed graph visualization of KB documents with wiki-link connections, thumbnails, search, and node type filters |
+| **KB Organizer** | Autonomous sub-agent that extracts entities, deduplicates documents, and maintains wiki-link connections across the knowledge base |
+| **Memory Engine** | Hybrid semantic + knowledge graph search (Evomem) for long-term memory with per-agent configuration |
+| **Wiki-Links** | Obsidian-style `[[Doc Title]]` links in KB documents and chat messages, rendered as clickable previews |
+| **Messaging ACL** | Per-agent whitelist/blacklist access control for agent-to-agent communication |
 | **Evaluation Engine** | Automated LLM evaluation with customizable regex and heuristic evaluators |
+| **Training Data Archive** | Opt-in capture of byte-exact LLM I/O (system prompt, messages, tools, CoT, tool calls) for building SFT datasets from real agent runs |
 | **Token Compressor** | RTK-based token compression that cuts LLM costs by reducing context without losing meaning |
 | **Agent Artifacts** | Persistent files and outputs agents produce, stored and retrievable across sessions |
 | **Injection Guard** | Multi-layer prompt injection detection that blocks manipulation and unauthorized override attempts |
-| **Supervisor Daemon** | Background supervisor that monitors agent health, restarts on failure, and tracks uptime |
 | **Backup & Restore** | Full backup and restore of all agent configurations, knowledge bases, and data |
 
 ---
@@ -149,6 +154,45 @@ Create and manage agents via the web UI (`/agents`) or CLI:
 
 ---
 
+## Knowledge Base
+
+Each agent has a `kb/` directory that stores markdown reference documents. The agent reads these on demand using `read_file` with `/_self/kb/` paths — files are **not** loaded into the system prompt automatically, keeping context lean.
+
+### Knowledge Graph
+
+KB documents connect via Obsidian-style `[[Doc Title]]` wiki-links. The agent detail page features an interactive force-directed graph visualization with:
+
+- Thumbnail images on nodes (from document frontmatter)
+- Node type filter chips (person, place, organization, event, etc.)
+- Search with auto-pan to matched nodes
+- Incoming/outgoing link counts and staleness indicators
+
+### KB Organizer
+
+An autonomous sub-agent that maintains the knowledge base after each conversation:
+
+- **Entity extraction** — identifies people, places, organizations, and events from conversation turns
+- **Deduplication** — detects and merges duplicate documents using hybrid semantic search
+- **Wiki-linking** — weaves `[[Doc Title]]` links into existing documents to keep the knowledge graph connected
+- **Dangling link reconciliation** — fixes broken links when a document exists under a different name
+
+Configurable per-agent via `kb_organizer_mode`: `agentic` (default), `non-agentic`, or `off`.
+
+---
+
+## Memory
+
+Evonic uses a hybrid memory engine (Evomem) that combines semantic vector search with a knowledge graph:
+
+- **Extract** — LLM-powered fact extraction from conversation turns
+- **Deduplicate** — prevents redundant memories via hybrid search
+- **Store** — persists facts with entity relationships
+- **Retrieve** — agents recall memories via `recall` tool with keyword, semantic, or graph traversal modes
+
+Per-agent `memory_engine` configuration allows overriding the default engine. Falls back to FTS5 (SQLite) when Evomem is unavailable.
+
+---
+
 ## Channels
 
 Connect your agents to the platforms your users already use:
@@ -157,7 +201,7 @@ Connect your agents to the platforms your users already use:
 |---------|--------|---------|
 | **Telegram** | ✅ Implemented | `python-telegram-bot` |
 | **WhatsApp** | ✅ Implemented | `@whiskeysockets/baileys` (Node.js sidecar) |
-| **Discord** | 🔄 Planned | `discord.py` |
+| **Discord** | ✅ Implemented | `discord.py` |
 | **Slack** | 🔄 Planned | `slack-sdk` |
 
 ---
@@ -189,6 +233,23 @@ Plugins are event-driven extensions that hook into Evonic's event stream. Manage
 
 ---
 
+## Workplaces
+
+Workplaces define where an agent's tools execute. Manage them via CLI:
+
+```bash
+./evonic workplace list
+./evonic workplace create --name "prod-server" --type remote
+./evonic workplace status my_workplace
+./evonic workplace connect my_workplace
+./evonic workplace disconnect my_workplace
+./evonic workplace delete my_workplace
+```
+
+Workplace types: **local** (host directory), **ssh** (remote server), or **tunnel** (Evonet connector — no public IP or firewall rules required).
+
+---
+
 ## Models
 
 Manage LLM configurations:
@@ -201,6 +262,105 @@ Manage LLM configurations:
 
 ---
 
+## Training Data Collection
+
+Evonic can archive the **exact data your agents see at inference time** and turn it
+into a training-ready dataset — ideal for fine-tuning a model on your own agentic
+behavior (tool use, reasoning, multi-step workflows).
+
+The archive is **byte-exact ground truth**: it captures the real request payload sent
+to the LLM (system prompt, full message history, and tool schemas — *after* all
+pipeline transformations) together with the raw response (final content,
+chain-of-thought / `reasoning_content`, tool calls, and token usage). It is **not**
+reconstructed from the chat database, so what you train on matches what the model
+actually received.
+
+### 1. Enable archiving
+
+Archiving is **off by default**. Enable it via environment variable:
+
+```bash
+EVONIC_SESSION_ARCHIVE=1 ./evonic start
+```
+
+Or set in `.env` to make Evonic always run in archive session enabled.
+
+When enabled, one record is written **per LLM call** (each tool-loop iteration) to a
+per-session staging file, then committed to `shared/db/session_archive.db` when a
+session is archived:
+
+- **Main agent sessions** are archived when the user runs **`/clear`**.
+- **Sub-agent sessions** (explorers, KB Organizer, and spawned sub-agents) are archived
+  at **turn-end**, as soon as they finish — only when they are **single-turn**. A
+  sub-agent that continues into a second turn is *not* recorded, since its later turns
+  may be unrelated to the first.
+
+> ⚠️ The archive contains full prompts and conversation content. Treat
+> `session_archive.db` as sensitive data and store it accordingly.
+
+### 2. Archive schema
+
+`shared/db/session_archive.db` has two tables:
+
+| Table | Contents |
+|-------|----------|
+| `archive_sessions` | Session metadata: `session_id`, `agent_id`, `agent_kind` (`main`/`sub`/`explorer`/`organizer`), `parent_agent_id`, `external_user_id` |
+| `archive_llm_calls` | One row per LLM call: `request_json` (exact payload), `response_json` (raw response incl. CoT + tool calls), `model`, `turn_index`, `call_index`, token usage, `finish_reason` |
+
+### 3. Build a training dataset
+
+Aggregate into JSONL with one sample **per agent turn**, in OpenAI chat-messages
+format (chain-of-thought preserved as `reasoning_content`). There are **two sources**,
+written to **separate files** so you can treat them differently:
+
+- **`--source db`** → `dataset_archive.jsonl` — curated, committed sessions only.
+- **`--source traces`** → `dataset_traces.jsonl` — raw `llm_traces/` logs, including
+  sessions not yet `/clear`'d and multi-turn sub-agents not kept in the DB.
+
+A **completeness guard** drops any turn whose final call is still a tool call (an
+in-progress turn from a live session), so only turns that ended with a real answer are
+emitted.
+
+```bash
+python scripts/build_training_dataset.py                       # both → two files
+python scripts/build_training_dataset.py --source db           # archive DB only
+python scripts/build_training_dataset.py --source traces       # llm_traces only
+python scripts/build_training_dataset.py --kind explorer,organizer --no-reasoning
+```
+
+Each line is one turn, ready for SFT (apply your model's chat template + loss masking
+downstream as usual):
+
+```json
+{
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "reasoning_content": "CoT...", "tool_calls": [...]},
+    {"role": "tool", "tool_call_id": "...", "content": "..."},
+    {"role": "assistant", "reasoning_content": "CoT...", "content": "final answer"}
+  ],
+  "tools": [ ... ],
+  "meta": {"agent_id": "...", "agent_kind": "main", "session_id": "...",
+           "model": "...", "turn_index": 1, "num_calls": 3, "usage": {...}}
+}
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--source` | `db`, `traces`, or `all` (default `all` → both files) |
+| `--db` | Path to the archive DB (default `shared/db/session_archive.db`) |
+| `--agents-dir` | Agents dir holding `<id>/llm_traces/*.jsonl` (default `agents/`) |
+| `--out-db` | Output JSONL for the archive-DB dataset (default `dataset_archive.jsonl`) |
+| `--out-traces` | Output JSONL for the llm_traces dataset (default `dataset_traces.jsonl`) |
+| `--kind` | Comma-separated `agent_kind` filter (`main,sub,explorer,organizer`); empty = all |
+| `--min-calls` | Skip turns with fewer than N LLM calls |
+| `--no-reasoning` | Strip chain-of-thought (`reasoning_content`) from the output |
+
+---
+
 ## CLI Quick Reference
 
 | Command | Description |
@@ -210,7 +370,6 @@ Manage LLM configurations:
 | `restart` | Restart the server in daemon mode |
 | `status` | Check if the server is running |
 | `setup` | Interactive first-time setup wizard |
-| `reconfigure` | Reconfigure an existing Evonic setup |
 | `pass` | Set or change the admin dashboard password |
 | `doctor` | Run system diagnostics and health checks |
 | `update` | Check for and apply self-updates |
@@ -221,9 +380,9 @@ Manage LLM configurations:
 | `model list/get/add/rm` | Manage LLM models |
 | `skill list/add/get/rm` | Manage skills |
 | `skillset list/get/apply` | Manage skillset templates |
-| `plugin install/uninstall/list/enable/disable` | Manage plugins |
+| `plugin install/uninstall/list/enable/disable/reload` | Manage plugins |
 | `channel approve` | Approve pending channel pairings |
-| `kanban add/rm/update` | Manage kanban tasks |
+| `workplace list/get/create/update/delete/status/connect/disconnect` | Manage workplaces |
 
 ---
 
@@ -305,13 +464,17 @@ Channel (Telegram, Web, WhatsApp, etc.)
 └──────────────────────────────────────────┘
     ↓
 ┌──────────────────────────────────────────┐
-│         Evaluation Engine                │
-│  (optional: regex / heuristic / LLM eval)│
+│         Memory & Knowledge               │
+│  ├─ Evomem hybrid search (semantic +     │
+│  │   knowledge graph)                    │
+│  ├─ KB Organizer (entity extraction,     │
+│  │   dedup, wiki-linking)                │
+│  └─ Knowledge graph traversal            │
 └──────────────────────────────────────────┘
     ↓
 ┌──────────────────────────────────────────┐
-│         Supervisor Daemon                │
-│  (health checks, auto-restart, uptime)   │
+│         Evaluation Engine                │
+│  (optional: regex / heuristic / LLM eval)│
 └──────────────────────────────────────────┘
     ↓
 Response → Channel → User

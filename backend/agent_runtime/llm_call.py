@@ -7,7 +7,7 @@ Part of the diet llm_loop.py refactor (Layout C / Pipeline).
 # ── Tool classification for parallel execution ──────────────────────────────
 
 _READ_ONLY_TOOLS: frozenset = frozenset({
-    'read_file', 'read', 'calculator', 'find', 'stats', 'tree',
+    'read_file', 'calculator', 'find', 'stats', 'tree',
     'which',
 })
 

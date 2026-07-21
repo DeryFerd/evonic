@@ -54,15 +54,22 @@ def _format_llm_error(error_type: str, context: Optional[Dict[str, Any]] = None)
 
 
 def _split_trailing_think_close(text: str) -> Tuple[str, Optional[str]]:
-    """Split text on </think> marker — returns (actual_thinking, trailing_final_response).
+    """Split text on </think> or </thinking> marker — returns (actual_thinking, trailing_final_response).
 
     Some backends accidentally include </think> and the final response inside
     the reasoning_content field. This extracts the trailing response.
-    Returns (original_text, None) if no </think> found or nothing follows it.
+    Returns (original_text, None) if no close tag found or nothing follows it.
     """
-    if not text or "</think>" not in text:
+    if not text:
         return text, None
-    parts = text.split("</think>", 1)
+    close_tag = None
+    if "</thinking>" in text:
+        close_tag = "</thinking>"
+    elif "</think>" in text:
+        close_tag = "</think>"
+    else:
+        return text, None
+    parts = text.split(close_tag, 1)
     actual = parts[0].strip()
     trailing = parts[1].strip() if len(parts) > 1 else ""
     return actual or text, trailing or None
@@ -73,7 +80,7 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     Strip thinking tags from content with auto-format detection.
 
     Supports:
-    - Standard: <think>...</think>
+    - Standard: <think>...</think> or <thinking>...</thinking>
     - Gemma 4: <|channel>thought...<channel|>
 
     Returns:
@@ -85,7 +92,7 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     if is_gemma4_format(content):
         return strip_gemma4_thinking(content)
 
-    thinking_pattern = r"<think>(.*?)</think>"
+    thinking_pattern = r"<(?:think|thinking)>(.*?)</(?:think|thinking)>"
     thinking_matches = re.findall(thinking_pattern, content, re.DOTALL)
     cleaned = re.sub(thinking_pattern, "", content, flags=re.DOTALL).strip()
     thinking_content = "\n".join(thinking_matches) if thinking_matches else None
@@ -96,21 +103,22 @@ def strip_thinking_tags(content: str) -> Tuple[str, Optional[str]]:
     _fix_bold = lambda s: re.sub(r'(^|\s)\*\* ', r'\1**', s) if s else s
     cleaned = _fix_bold(cleaned)
 
-    # Edge case: model put the final response inside <think>...</think>, leaving cleaned empty.
-    # Check if thinking_content itself has an embedded </think> that signals end-of-thinking.
+    # Edge case: model put the final response inside <think>/<thinking> tags, leaving cleaned empty.
+    # Check if thinking_content itself has an embedded </think>/</thinking> that signals end-of-thinking.
     if not cleaned and thinking_content:
         actual_thinking, embedded_final = _split_trailing_think_close(thinking_content)
         if embedded_final:
             return _fix_bold(embedded_final), actual_thinking
 
-    # Fallback: handle missing opening <think> tag (common with vLLM)
-    if not thinking_content and "</think>" in content:
-        parts = content.split("</think>", 1)
+    # Fallback: handle missing opening <think>/<thinking> tag (common with vLLM)
+    if not thinking_content and ("</think>" in content or "</thinking>" in content):
+        close_tag = "</thinking>" if "</thinking>" in content else "</think>"
+        parts = content.split(close_tag, 1)
         thinking_text = parts[0].strip()
         cleaned_text = parts[1].strip() if len(parts) > 1 else ""
         if thinking_text:
             return _fix_bold(cleaned_text) or "", thinking_text
-        return _fix_bold(cleaned_text) or content.replace("</think>", "").strip(), None
+        return _fix_bold(cleaned_text) or content.replace(close_tag, "").strip(), None
 
     return cleaned, thinking_content
 
@@ -203,6 +211,11 @@ class LLMClient:
                          If None, uses the default model from DB or config.py defaults.
         """
         if model_config:
+            try:
+                from models.db import db
+                model_config = db.resolve_model_config(model_config)
+            except Exception:
+                pass
             self.base_url = model_config.get("base_url")
             self.api_key = model_config.get("api_key")
             self.model = model_config.get("model_name")
@@ -218,6 +231,7 @@ class LLMClient:
 
                 dm = db.get_default_model()
                 if dm:
+                    dm = db.resolve_model_config(dm)
                     self.base_url = dm.get("base_url")
                     self.api_key = dm.get("api_key")
                     self.model = dm.get("model_name")
@@ -248,6 +262,7 @@ class LLMClient:
                 self.temperature = None
                 self.api_format = "openai"
         self._cached_model_name = None
+        self._codex_provider_id = model_config.get("provider", "codex") if model_config else "codex"
         # Cache for global LLM settings (avoids repeated DB reads in hot path).
         # TTL-based, simple dict — intentionally lock-free (worst case: 1 extra DB read).
         self._settings_cache = {}
@@ -305,6 +320,8 @@ class LLMClient:
 
     def test_connection(self) -> Dict[str, Any]:
         """Test connection to the model endpoint."""
+        if self.api_format == "codex":
+            return self._test_codex_connection()
         try:
             if self.api_format == "ollama":
                 models_url = f"{self.base_url}/tags"
@@ -332,6 +349,103 @@ class LLMClient:
             return {"success": False, "error": _format_llm_error("connection_error")}
         except Exception as e:
             return {"success": False, "error": _format_llm_error("unknown_error")}
+
+    def _codex_chat_completion(
+        self,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        log_file: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Delegate chat completion to CodexClient (Responses API)."""
+        from models.db import db as _db
+        from backend.provider.oauth_codex import get_valid_token
+        from backend.provider.codex_client import CodexClient
+
+        start_time = time.time()
+        token = get_valid_token(_db, self._codex_provider_id)
+        if not token:
+            return {
+                "response": {"error": _format_llm_error("auth_error")},
+                "duration_ms": 0,
+                "success": False,
+                "error_type": "auth_error",
+                "error_detail": "Codex OAuth token missing or expired. Reconnect in Settings.",
+            }
+
+        client = CodexClient(token, self.base_url)
+        if max_tokens is None:
+            max_tokens = self.max_tokens
+        result = client.send_request(
+            model=self.model,
+            messages=messages,
+            max_tokens=max_tokens or 4096,
+            temperature=temperature if temperature is not None else self.temperature,
+            tools=tools,
+            reasoning=bool(self.thinking),
+            timeout=self.timeout or 120,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+
+        if not result.get("success"):
+            from evaluator.api_logger import log_api_call as _log_call
+            _log_call(messages, None, duration_ms, error=result.get("error", ""), log_file=log_file)
+            return {
+                "response": {"error": _format_llm_error(result.get("error_type", "unknown_error"))},
+                "duration_ms": duration_ms,
+                "success": False,
+                "error_type": result.get("error_type", "unknown_error"),
+                "error_detail": result.get("error", ""),
+            }
+
+        # Extract content for logging
+        choices = result["response"].get("choices", [])
+        response_text = ""
+        thinking_text = ""
+        if choices:
+            msg = choices[0].get("message", {})
+            response_text = msg.get("content", "")
+            thinking_text = msg.get("reasoning_content", "")
+        log_api_call(messages, response_text, duration_ms, log_file=log_file, thinking=thinking_text or None)
+
+        # Usage is mapped by CodexClient from the Responses API's
+        # input_tokens/output_tokens. Hardcoded zeros here previously froze
+        # the context monitor (guarded on prompt_tokens > 0) at whatever the
+        # last non-codex model reported.
+        usage = result["response"].get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        return {
+            "response": result["response"],
+            "request_payload": {"model": self.model, "messages": messages,
+                                "tools": tools},
+            "duration_ms": duration_ms,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": usage.get("total_tokens",
+                                      prompt_tokens + completion_tokens),
+            "success": True,
+        }
+
+    def _test_codex_connection(self) -> Dict[str, Any]:
+        """Test connection to Codex via OAuth token."""
+        try:
+            from models.db import db as _db
+            from backend.provider.oauth_codex import get_valid_token
+            from backend.provider.codex_client import CodexClient
+
+            provider = _db.get_provider(self._codex_provider_id or "codex")
+            if not provider:
+                return {"success": False, "error": "Codex provider not found"}
+            token = get_valid_token(_db, provider["id"])
+            if not token:
+                return {"success": False, "error": "Not connected to Codex. Complete OAuth flow first."}
+            client = CodexClient(token, self.base_url)
+            return client.test_connection()
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def chat_completion(
         self,
@@ -368,6 +482,9 @@ class LLMClient:
             exponential backoff (max 60s between retries). Configurable
             retry count via llm_max_retries setting (DB default: 5).
         """
+        if self.api_format == "codex":
+            return self._codex_chat_completion(messages, tools, temperature, max_tokens, log_file)
+
         is_ollama_fmt = self.api_format == "ollama" or (
             self.base_url and "ollama.com" in self.base_url
         )
@@ -375,6 +492,10 @@ class LLMClient:
             self.base_url and "anthropic.com" in self.base_url
         )
         is_anthropic = self.api_format == "anthropic"
+        # Cerebras is a strict OpenAI-compatible validator: it rejects the
+        # non-standard reasoning_content field on input messages (unlike
+        # OpenCode Go / MiniMax / DeepSeek, which require it round-tripped).
+        is_cerebras = bool(self.base_url and "cerebras.ai" in self.base_url)
         if is_anthropic:
             url = f"{self.base_url}/messages"
         elif is_ollama_fmt:
@@ -456,7 +577,12 @@ class LLMClient:
             for _msg in processed_messages
             if _msg.get("role") == "assistant"
         )
-        if self.thinking or _has_reasoning:
+        if is_cerebras:
+            # Cerebras rejects reasoning_content on input messages entirely —
+            # strip it regardless of thinking mode.
+            for _msg in processed_messages:
+                _msg.pop("reasoning_content", None)
+        elif self.thinking or _has_reasoning:
             # Ensure every assistant message has the field (some APIs require it
             # even on turns where the model produced no reasoning).
             for _msg in processed_messages:
@@ -522,13 +648,6 @@ class LLMClient:
                 payload["temperature"] = effective_temperature
             if tools:
                 payload["tools"] = tools
-            if self.thinking and enable_thinking:
-                budget = (
-                    self.thinking_budget
-                    if self.thinking_budget > 0
-                    else max_tokens // 2
-                )
-                payload["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
         if is_anthropic:
             headers = {
@@ -853,6 +972,7 @@ class LLMClient:
 
                 return {
                     "response": result,
+                    "request_payload": payload,  # byte-exact body POSTed to provider
                     "duration_ms": duration_ms,
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
@@ -896,8 +1016,12 @@ class LLMClient:
                     "error_type": "connection_error",
                     "error_detail": f"Could not connect to LLM server at {self.base_url}.",
                 }
-                if attempt < max_retries:
-                    time.sleep(min(2 ** (attempt + 1), 60))
+                # Connection refused/unreachable means the server is down — the
+                # full llm_max_retries exponential backoff (60s+) won't revive
+                # it. Retry once with a short wait, then return so the caller
+                # (llm_loop) can move to its own retry/fallback path quickly.
+                if attempt < min(max_retries, 1):
+                    time.sleep(2)
                     continue
                 return last_error_result
 
@@ -1022,15 +1146,19 @@ class LLMClient:
 
         reasoning_text = (reasoning_content or "").strip()
         embedded_final = None
-        if reasoning_text and "</think>" in reasoning_text:
+        if reasoning_text and ("</think>" in reasoning_text or "</thinking>" in reasoning_text):
             reasoning_text, embedded_final = _split_trailing_think_close(reasoning_text)
         if reasoning_text:
             cleaned = strip_thinking_tags(content)[0] if content else ""
             if not cleaned and embedded_final:
                 cleaned = embedded_final
             # Check for Qwen-style XML tool calls that may appear in
+            # Fallback: when cleaned is empty and no embedded_final, the model
+            # put its entire response in reasoning_content (e.g. Qwen via llama.cpp).
+            if not cleaned and not embedded_final and not tool_calls:
+                cleaned = reasoning_text
             # reasoning_content instead of content (common with Qwen-based models).
-            # Two forms: (a) trailing after </think> in embedded_final,
+            # Two forms: (a) trailing after </think> or </thinking> in embedded_final,
             # (b) directly in reasoning_text when content is empty.
             xml_source = None
             if embedded_final and "<tool_call>" in embedded_final:

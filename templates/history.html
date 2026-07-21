@@ -5,7 +5,10 @@
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
         <h2 style="margin: 0;">Evaluation History</h2>
         {% if runs and session.get('authenticated') %}
-        <button onclick="clearAllHistory()" class="btn" style="background: #dc2626; color: white; font-size: 0.85rem; padding: 0.5rem 1rem;">Clear All</button>
+        <div style="display: flex; gap: 0.5rem;">
+            <button onclick="clearIncompleteHistory()" class="btn" style="background: #d97706; color: white; font-size: 0.85rem; padding: 0.5rem 1rem;{% if not incomplete_count %} opacity: 0.5; cursor: not-allowed;{% endif %}"{% if not incomplete_count %} disabled{% endif %}>Clear Incomplete{% if incomplete_count %} ({{ incomplete_count }}){% endif %}</button>
+            <button onclick="clearAllHistory()" class="btn" style="background: #dc2626; color: white; font-size: 0.85rem; padding: 0.5rem 1rem;">Clear All</button>
+        </div>
         {% endif %}
     </div>
 
@@ -399,6 +402,17 @@ html.dark .col-summary {
 </style>
 
 <script>
+async function clearIncompleteHistory() {
+    if (!await showConfirm({title: 'Clear Incomplete', message: 'Apakah Anda yakin ingin menghapus semua evaluasi yang tidak lengkap?', confirmText: 'Clear Incomplete'})) return;
+    fetch('/api/history/clear-incomplete', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) location.reload();
+            else alert('Failed: ' + (data.error || 'Unknown error'));
+        })
+        .catch(err => alert('Error: ' + err));
+}
+
 async function clearAllHistory() {
     if (!await showConfirm({title: 'Clear All History', message: 'Delete all {{ total_count }} evaluation runs? This cannot be undone.', confirmText: 'Clear All'})) return;
     fetch('/api/history/clear', { method: 'POST' })

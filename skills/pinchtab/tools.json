@@ -149,7 +149,7 @@
     "type": "function",
     "function": {
       "name": "pinchtab_screenshot",
-      "description": "Take a screenshot of a browser tab. Returns a base64-encoded image of the current page viewport (or the full scrollable page if full_page=true). Note: screenshots are expensive in token consumption — prefer pinchtab_snapshot for content analysis when visuals aren't required.",
+      "description": "Take a screenshot of a browser tab. With output_mode=\"inline\" (default), returns a base64-encoded image. With output_mode=\"file\", saves the screenshot to a temporary file and returns the file path instead — use this to avoid token bloat when the image data is large. Note: screenshots are expensive in token consumption — prefer pinchtab_snapshot for content analysis when visuals aren't required.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -160,6 +160,11 @@
           "full_page": {
             "type": "boolean",
             "description": "If true, capture the full scrollable page instead of just the visible viewport. Default: false."
+          },
+          "output_mode": {
+            "type": "string",
+            "enum": ["inline", "file"],
+            "description": "Output mode. \"inline\" (default) returns base64-encoded image data in the response. \"file\" saves the screenshot to a temporary file and returns only the file path. Use \"file\" when the image is large or when you need to avoid flooding the context with base64 data."
           }
         },
         "required": ["tab_id"]

@@ -48,6 +48,21 @@ Your answer (ya/tidak only):""",
             "expected_format": "boolean"
         },
         
+        "2_boolean": {
+            "template": """You are given a question and an AI's response that answers with "ya" or "tidak". Extract ONLY the final answer: "ya" or "tidak".
+
+---BEGIN RESPONSE---
+{response}
+---END RESPONSE---
+
+Rules:
+1. Return ONLY "ya" or "tidak" (one word, lowercase)
+2. No explanation, no reasoning, no other text
+
+Your answer (ya/tidak only):""",
+            "expected_format": "boolean"
+        },
+
         2: {
             "template": """You are given a question asking to sort numbers, and an AI's response. Extract ONLY the sorted numbers as a comma-separated list.
 
@@ -96,6 +111,23 @@ Your answer (statement numbers only):""",
             "expected_format": "statements"
         },
         
+        "4_boolean": {
+            "template": """You are given a question and an AI's response that evaluates whether alternative explanations or options were considered. Extract ONLY the final answer: "ya" or "tidak".
+
+---BEGIN RESPONSE---
+{response}
+---END RESPONSE---
+
+Rules:
+1. Return ONLY "ya" or "tidak" (one word, lowercase)
+2. "ya" means alternatives were considered
+3. "tidak" means alternatives were not considered
+4. No explanation, no reasoning, no other text
+
+Your answer (ya/tidak only):""",
+            "expected_format": "boolean"
+        },
+
         5: {
             "template": """You are given a question and an AI's response. Extract ONLY the final answer (number or single word).
 
@@ -218,7 +250,7 @@ class AnswerExtractor:
             pass
         return getattr(config, 'TWO_PASS_ENABLED', True)
     
-    def extract(self, domain: str, level: int, response: str, question: str = "") -> Dict[str, Any]:
+    def extract(self, domain: str, level: int, response: str, question: str = "", expected: Any = None) -> Dict[str, Any]:
         """
         Extract final answer using LLM with strict format instructions.
         
@@ -232,6 +264,8 @@ class AnswerExtractor:
             level: Test level (1-5)
             response: Raw LLM response from PASS 1
             question: Original question/prompt from PASS 1 (for context)
+            expected: Expected answer value, used to select the correct extraction 
+                      template for reasoning levels with multiple answer types
             
         Returns:
             {
@@ -257,7 +291,7 @@ class AnswerExtractor:
             }
         
         # Get extraction prompt (include question for context)
-        prompt_data = self._get_extraction_prompt(domain, level, response, question)
+        prompt_data = self._get_extraction_prompt(domain, level, response, question, expected)
         
         if not prompt_data:
             return {
@@ -275,12 +309,19 @@ class AnswerExtractor:
         
         # LAYER 1: PASS 2 - Call LLM to extract clean answer
         messages = [{"role": "user", "content": prompt}]
-        
+
         try:
+            # max_tokens is mandatory here: the prompt embeds the FULL pass-1
+            # response, so when pass 1 ran away the extraction inherits a huge
+            # repetitive context and (at temperature 0.0, no cap) runs to the
+            # model's thinking-doubled budget too. Four of these in parallel
+            # were observed occupying every llama-server slot, queueing the
+            # whole eval behind them. The extracted answer is short by design.
             llm_response = self.client.chat_completion(
                 messages,
                 temperature=self.temperature,
-                tools=None
+                tools=None,
+                max_tokens=1024
             )
             
             # Use extract_content_with_thinking to handle both:
@@ -423,7 +464,7 @@ class AnswerExtractor:
         # No fallback worked
         return {"success": False, "extracted": response, "method": "no_fallback"}
     
-    def _get_extraction_prompt(self, domain: str, level: int, response: str, question: str = "") -> Optional[Dict]:
+    def _get_extraction_prompt(self, domain: str, level: int, response: str, question: str = "", expected: Any = None) -> Optional[Dict]:
         """Get extraction prompt and expected format for domain/level
         
         Args:
@@ -431,6 +472,8 @@ class AnswerExtractor:
             level: Test level
             response: Model response from PASS 1
             question: Original question for context
+            expected: Expected answer value, used to select the correct template
+                      for reasoning levels 2 and 4 (which have multiple answer types)
         """
         
         # Build question context section if available
@@ -446,8 +489,21 @@ class AnswerExtractor:
         if domain == "reasoning":
             # Reasoning has level-specific prompts
             level_prompts = EXTRACTION_PROMPTS.get("reasoning", {})
-            if level in level_prompts:
-                data = level_prompts[level]
+            
+            # Determine prompt key: use boolean variant for levels 2/4 when
+            # the expected answer type indicates a boolean ("ya"/"tidak") answer
+            prompt_key = level
+            if level == 2 and expected is not None:
+                # Level 2: boolean for string or dict with string answer; sequence for list
+                if isinstance(expected, str) or (isinstance(expected, dict) and isinstance(expected.get("answer"), str)):
+                    prompt_key = "2_boolean"
+            elif level == 4 and expected is not None:
+                # Level 4: boolean for dict with consider_alternatives; statements for list
+                if isinstance(expected, dict) and "consider_alternatives" in expected:
+                    prompt_key = "4_boolean"
+            
+            if prompt_key in level_prompts:
+                data = level_prompts[prompt_key]
                 template = data["template"]
                 # Replace {response} placeholder, add question context before it
                 prompt = question_context + template.format(response=response)

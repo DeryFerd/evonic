@@ -1,0 +1,20 @@
+{
+  "id": "kb_dedupe_1",
+  "name": "Dedupe a self-duplicated doc",
+  "description": "A doc whose content was concatenated onto itself should be deduped.",
+  "prompt": "EXISTING documents:\n[borobudur] Borobudur :: Candi; its body was accidentally duplicated (concatenated onto itself).\n\nSOURCE:\nDokumen Borobudur isinya muncul dua kali (ter-append ke dirinya sendiri) — rapikan duplikasinya.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "dedupe": [
+        {
+          "slug": "borobudur"
+        }
+      ]
+    },
+    "require_links": false
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

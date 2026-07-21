@@ -175,13 +175,23 @@ def execute(agent, args: dict) -> dict:
 
     # /_self/ path: always route to the agent's local directory on the evonic server.
     # Sub-agents inherit their parent's directory — use effective agent ID.
-    from backend.tools._workspace import is_self_path, resolve_self_path
+    from backend.tools._workspace import is_self_path, resolve_self_path, list_self_dir, _self_fuzzy_suggestion
     agent_id = ((agent or {}).get("parent_id") if (agent or {}).get("is_subagent")
                 else (agent or {}).get("id", ""))
     if agent_id and is_self_path(file_path):
         local_path = resolve_self_path(agent_id, file_path)
         if not local_path:
             return "Error: Access denied — path escapes agent directory."
+        # If the resolved path is a directory, return a listing so agents
+        # can verify what files exist without relying on bash ls.
+        if os.path.isdir(local_path):
+            return list_self_dir(agent_id, file_path)
+        # If the file doesn't exist, check for similar names (typos).
+        if not os.path.exists(local_path):
+            suggestion = _self_fuzzy_suggestion(agent_id, file_path)
+            if suggestion:
+                return f"Error: File not found: {file_path}. Did you mean: {suggestion}"
+            return f"Error: File not found: {file_path}."
         return read_file(local_path, offset=offset)
 
     # Hint when path starts with _self/ but missing leading slash
@@ -241,11 +251,13 @@ def execute(agent, args: dict) -> dict:
             return f"{header}\n\n{content_block}{footer}"
         return f"{header}\n\n{content_block}"
 
-    # When sandbox is enabled or the agent has a workplace, route file I/O
-    # through the execution backend (Docker container, SSH remote, etc.).
+    # When sandbox is enabled, the agent has a workplace, or run-as-user is
+    # set, route file I/O through the execution backend (Docker container,
+    # SSH remote, sudo -u <user>, etc.).
     sandbox_enabled = (agent or {}).get('sandbox_enabled', 1)
     has_workplace = bool((agent or {}).get('workplace_id'))
-    if sandbox_enabled or has_workplace:
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+    if sandbox_enabled or has_workplace or run_as_user:
         from backend.tools.lib.exec_backend import registry
         session_id = (agent or {}).get('session_id') or 'default'
         backend = registry.get_backend(session_id, agent)

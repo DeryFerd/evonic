@@ -60,6 +60,12 @@ func RunGUI(store *config.Store) {
 	w := a.NewWindow("Evonet v" + version.Version)
 	w.Resize(fyne.NewSize(700, 420))
 
+	w.SetMainMenu(fyne.NewMainMenu(
+		fyne.NewMenu("Evonet",
+			fyne.NewMenuItem("About Evonet", func() { showAboutDialog(w) }),
+		),
+	))
+
 	root := container.NewStack()
 	w.SetContent(root)
 
@@ -121,12 +127,14 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 
 	var client *ws.Client
 	var running bool
+	var gen int
 
 	startClient := func() {
 		cfg = store.ActiveConfig()
 		exec := executor.New(workDir(cfg), true) // GUI always verbose
 		client = ws.New(cfg, exec)
 		running = true
+		gen++
 		connectedText.Hide()
 		statusLabel.Show()
 		statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
@@ -134,14 +142,22 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 		toggleBtn.Importance = widget.DangerImportance
 		toggleBtn.Refresh()
 
+		myGen := gen
+		myClient := client
 		client.OnConnected = func() {
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				statusLabel.Hide()
 				connectedText.Show()
 			})
 		}
 		client.OnDisconnected = func() {
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				connectedText.Hide()
 				statusLabel.Show()
 				statusLabel.SetText("Connecting to " + cfg.ServerURL + "...")
@@ -150,8 +166,11 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 
 		go func() {
 			log.Printf("[evonet] Connecting to %s...", cfg.ServerURL)
-			client.Run()
+			myClient.Run()
 			fyne.Do(func() {
+				if myGen != gen {
+					return
+				}
 				running = false
 				connectedText.Hide()
 				statusLabel.Show()
@@ -183,8 +202,9 @@ func showConnectorView(a fyne.App, w fyne.Window, root *fyne.Container, store *c
 		startClient()
 	}
 
+	selectBox := container.NewGridWrap(fyne.NewSize(220, serverSelect.MinSize().Height), serverSelect)
 	topBar := container.NewBorder(nil, nil,
-		container.NewHBox(aboutBtn, serverSelect),
+		container.NewHBox(aboutBtn, selectBox),
 		container.NewHBox(serversBtn, clearBtn, toggleBtn),
 		container.NewStack(statusLabel, container.NewPadded(connectedText)),
 	)
@@ -363,8 +383,6 @@ func showAboutDialog(w fyne.Window) {
 
 	versionLabel := widget.NewLabelWithStyle("Version "+version.Version+" (GUI Mac)", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
 
-	separator := widget.NewSeparator()
-
 	creator := widget.NewLabelWithStyle("Created by Robin Syihab (@anvie)", fyne.TextAlignCenter, fyne.TextStyle{})
 
 	xLink := widget.NewHyperlink("X (Twitter): @anvie", xURL)
@@ -375,16 +393,17 @@ func showAboutDialog(w fyne.Window) {
 
 	content := container.NewVBox(
 		title,
-		separator,
+		widget.NewSeparator(),
 		desc,
 		versionLabel,
-		separator,
 		creator,
 		xLink,
 		ghLink,
 	)
 
-	dialog.ShowCustom("About Evonet", "Close", container.NewPadded(content), w)
+	d := dialog.NewCustom("About Evonet", "Close", container.NewPadded(content), w)
+	d.Resize(fyne.NewSize(420, 380))
+	d.Show()
 }
 
 // showPairingView renders the pairing form into root. On success the paired

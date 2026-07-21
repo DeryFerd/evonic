@@ -5,7 +5,8 @@ system prompt, and tools, confined to the target path, and reports its findings
 back to the caller's session via agent messaging.
 """
 
-import os
+import json
+import posixpath
 import logging
 import threading
 
@@ -49,7 +50,7 @@ def execute(agent: dict, args: dict) -> dict:
     from backend.agent_runtime import explorer
     from backend.agent_runtime.notifier import notify_agent
     from backend.agent_report_to import resolve_report_to_for_subagent_spawn
-    from backend.tools._workspace import resolve_workspace_path
+    from backend.tools.lib.exec_backend import registry
 
     parent_id = agent.get('id', '')
     if not parent_id:
@@ -67,8 +68,27 @@ def execute(agent: dict, args: dict) -> dict:
     # relative paths map to the caller's workspace; absolute host paths pass
     # through unchanged (exploring outside the workspace is the whole point).
     caller_ws = agent.get('workspace') or ''
-    path = os.path.abspath(resolve_workspace_path(agent, raw_path, caller_ws))
-    if not os.path.isdir(path):
+    if raw_path == '/workspace' or raw_path.startswith('/workspace/'):
+        path = posixpath.join(caller_ws, raw_path[len('/workspace'):].lstrip('/'))
+    elif caller_ws and not posixpath.isabs(raw_path):
+        path = posixpath.join(caller_ws, raw_path)
+    else:
+        path = raw_path
+    path = posixpath.abspath(path)
+    backend = registry.get_backend(agent.get('session_id') or 'default', agent)
+    path = backend.resolve_path(path)
+    check = backend.run_python(
+        f'import json, os; p={path!r}; print(json.dumps({{"path": os.path.realpath(p), "is_dir": os.path.isdir(p)}}))',
+        30, {},
+    )
+    if check.get('error') or check.get('exit_code', 0) != 0:
+        return {'error': f"cannot validate path in execution workplace: {check.get('error') or check.get('stderr', 'unknown error')}"}
+    try:
+        path_info = json.loads(check.get('stdout', '').strip())
+    except json.JSONDecodeError:
+        return {'error': 'cannot validate path in execution workplace: invalid backend response'}
+    path = path_info.get('path', path)
+    if not path_info.get('is_dir'):
         suffix = f' (resolved to: {path})' if path != raw_path else ''
         return {'error': f'path is not an existing directory: {raw_path}{suffix}'}
 
@@ -113,11 +133,26 @@ def execute(agent: dict, args: dict) -> dict:
         return {'error': str(e)}
 
     parent_name = parent_agent.get('name', parent_id)
-    report_to_id, report_to_channel_id = resolve_report_to_for_subagent_spawn(
+    report_to_id, report_to_channel_id, _ = resolve_report_to_for_subagent_spawn(
         parent_id,
         agent.get('user_id', ''),
         agent.get('channel_id', '') or '',
     )
+
+    sync = bool(skill_cfg.get('sync', False))
+
+    metadata = {
+        'agent_message': True,
+        'from_agent_id': parent_id,
+        'from_agent_name': parent_name,
+        'agent_message_depth': 1,
+        'subagent_spawn': True,
+        'injected_system_vars': injected_vars,
+        'report_to_id': report_to_id,
+        'report_to_channel_id': report_to_channel_id,
+    }
+    if sync:
+        metadata['skip_auto_forward'] = True
 
     result = notify_agent(
         agent_id=explorer_id,
@@ -127,16 +162,7 @@ def execute(agent: dict, args: dict) -> dict:
         channel_id=None,
         dedup=False,
         trigger_llm=True,
-        metadata={
-            'agent_message': True,
-            'from_agent_id': parent_id,
-            'from_agent_name': parent_name,
-            'agent_message_depth': 1,
-            'subagent_spawn': True,
-            'injected_system_vars': injected_vars,
-            'report_to_id': report_to_id,
-            'report_to_channel_id': report_to_channel_id,
-        },
+        metadata=metadata,
     )
 
     session_id = result.get('session_id')
@@ -147,7 +173,6 @@ def execute(agent: dict, args: dict) -> dict:
     )
 
     # --- Sync mode: block until the explorer finishes and return findings directly ---
-    sync = bool(skill_cfg.get('sync', False))
     if sync:
         if not result.get('success'):
             return {
@@ -167,6 +192,7 @@ def execute(agent: dict, args: dict) -> dict:
         answer_data = {}
 
         from backend.event_stream import event_stream
+        from backend.agent_runtime.concurrency import paused_model_gate
 
         def _on_explorer_done(data):
             if data.get('agent_id') == explorer_id:
@@ -178,7 +204,11 @@ def execute(agent: dict, args: dict) -> dict:
         event_stream.on('final_answer', _on_explorer_done)
 
         try:
-            if not done.wait(timeout=timeout):
+            # Release our turn's model-gate while blocked so the explorer (which needs
+            # the same gate) can run — otherwise parent↔explorer deadlock until timeout.
+            with paused_model_gate():
+                finished = done.wait(timeout=timeout)
+            if not finished:
                 return {
                     'explorer_id': explorer_id,
                     'path': path,

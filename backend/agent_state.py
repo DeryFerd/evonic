@@ -37,7 +37,7 @@ import re
 _PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Maximum characters of plan file content injected into each LLM call
-_PLAN_FILE_MAX_CHARS = 4000
+_PLAN_FILE_MAX_CHARS = 15000
 
 GUARDED_TOOLS = {"write_file", "str_replace", "patch"}
 
@@ -99,7 +99,8 @@ class AgentState:
     def __init__(self, mode: str = "plan", tasks: list = None, next_task_id: int = 1,
                  plan_file: str = None, states: dict = None,
                  focus: bool = False, focus_reason: str = None,
-                 auto_trivial: bool = False):
+                 auto_trivial: bool = False, atg: dict = None,
+                 cmp: dict = None):
         self.mode = mode
         self.tasks: list[dict] = tasks or []
         self._next_task_id = next_task_id
@@ -114,6 +115,13 @@ class AgentState:
         # the runtime's _busy_agents flag is used instead.
         self.focus: bool = focus
         self.focus_reason: str | None = focus_reason
+        # ATG (Atomic Task Graph) state, set by backend.agent_runtime.atg when
+        # the enable_atg flag is on: {status, dag, history, repair_attempts, stats}
+        self.atg: dict | None = atg
+        # CMP (Context Memory Path) session-path store, set by
+        # backend.agent_runtime.cmp when enable_cmp is on:
+        # {version, active_id, next_id, paths: {P1: {...card+segments+snapshot}}, stats}
+        self.cmp: dict | None = cmp
 
     # ── Blocking ────────────────────────────────────────────────────────────
 
@@ -257,19 +265,34 @@ class AgentState:
 
     # ── Rendering ────────────────────────────────────────────────────────────
 
-    def render(self, agent_id: str = None) -> str:
+    def render(self, agent_id: str = None, atg_enabled: bool = False,
+               cmp_enabled: bool = False, agent_name: str = None) -> str:
         """Render state as a markdown system message for LLM injection.
 
         Args:
             agent_id: If provided, plan file path is resolved relative to
                       agents/<agent-id>/ (with fallback to project root for
                       backward compatibility with old centralized plans).
+            atg_enabled: When True, plan-mode instructions steer the agent to
+                      compile_task_graph() instead of a free-form save_plan().
+            cmp_enabled: When True and cmp state exists, render the session
+                      path map + cards section.
         """
         if self.mode == "plan":
-            mode_note = (
-                "plan — write tools are **blocked** until user approves. "
-                "You MUST call save_plan() before set_mode('execute')."
-            )
+            if atg_enabled:
+                mode_note = (
+                    "plan — write tools are **blocked** until user approves. "
+                    "After exploring, you MUST call compile_task_graph(goal, context) "
+                    "to compile this task into an executable task graph "
+                    "(it becomes your plan file) before set_mode('execute'). "
+                    "Only use save_plan() instead if the task truly cannot be "
+                    "expressed as tool steps."
+                )
+            else:
+                mode_note = (
+                    "plan — write tools are **blocked** until user approves. "
+                    "You MUST call save_plan() before set_mode('execute')."
+                )
         else:
             mode_note = "execute — write tools are **allowed**"
 
@@ -297,6 +320,24 @@ class AgentState:
                 lines.append(plan_content)
         else:
             lines.append("**Plan file**: _none — use save_plan(filename, content) to create one_")
+
+        if self.atg:
+            lines.append("")
+            lines.append("### Atomic Task Graph")
+            lines.append(self._render_atg_summary())
+
+        if self.cmp and cmp_enabled:
+            try:
+                from backend.agent_runtime.cmp import render_cmp_section
+                aname = (agent_name
+                         or (agent_id.replace('_', ' ').title() if agent_id else "Agent"))
+                section = render_cmp_section(self.cmp, aname)
+            except Exception:
+                section = ""
+            if section:
+                lines.append("")
+                lines.append("### Session Paths (CMP)")
+                lines.append(section)
 
         if self.tasks:
             lines.append("")
@@ -328,8 +369,26 @@ class AgentState:
 
         return "\n".join(lines)
 
-    def _read_plan_file(self, agent_id: str = None) -> str:
-        """Read plan file content from disk, capped at _PLAN_FILE_MAX_CHARS.
+    def _render_atg_summary(self) -> str:
+        """Compact one-line ATG status (never the full graph JSON)."""
+        atg = self.atg or {}
+        status = atg.get("status", "unknown")
+        nodes = ((atg.get("dag") or {}).get("nodes") or {})
+        if not nodes:
+            return f"**Status**: {status}"
+        counts = {}
+        for nd in nodes.values():
+            s = nd.get("status", "pending")
+            counts[s] = counts.get(s, 0) + 1
+        counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+        return f"**Status**: {status} — {len(nodes)} nodes ({counts_str})"
+
+    def _read_plan_file(self, agent_id: str = None, max_chars: int = _PLAN_FILE_MAX_CHARS) -> str:
+        """Read plan file content from disk, capped at max_chars.
+
+        Pass max_chars=None to read the full file without truncation (used by
+        the UI plan viewer); the default cap keeps the plan small when injected
+        into the LLM system-state context.
 
         Resolution order:
         1. If agent_id is provided, try agents/<agent-id>/<plan_file> first
@@ -363,8 +422,8 @@ class AgentState:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                if len(content) > _PLAN_FILE_MAX_CHARS:
-                    content = content[:_PLAN_FILE_MAX_CHARS] + f"\n\n_[truncated — {len(content) - _PLAN_FILE_MAX_CHARS} chars omitted]_"
+                if max_chars is not None and len(content) > max_chars:
+                    content = content[:max_chars] + f"\n\n_[truncated — {len(content) - max_chars} chars omitted]_"
                 return content
             except FileNotFoundError:
                 last_error = f"_[plan file not found: {self.plan_file}]_"
@@ -387,6 +446,8 @@ class AgentState:
             "focus": self.focus,
             "focus_reason": self.focus_reason,
             "auto_trivial": self.auto_trivial,
+            "atg": self.atg,
+            "cmp": self.cmp,
         })
 
     @classmethod
@@ -403,6 +464,8 @@ class AgentState:
                 focus=obj.get("focus", False),
                 focus_reason=obj.get("focus_reason"),
                 auto_trivial=obj.get("auto_trivial", False),
+                atg=obj.get("atg"),
+                cmp=obj.get("cmp"),
             )
         except (json.JSONDecodeError, TypeError, AttributeError):
             return cls()

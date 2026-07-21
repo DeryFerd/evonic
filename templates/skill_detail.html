@@ -11,9 +11,39 @@
             <span id="skill-version" class="text-xs bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 px-2 py-0.5 rounded font-mono"></span>
         </div>
         <div class="flex items-center gap-3">
-            <label class="inline-flex items-center cursor-pointer gap-2">
+            <!-- Actions Dropdown Menu -->
+            <div class="relative" id="skill-actions-dropdown">
+                <button id="skill-actions-btn" onclick="toggleActionsMenu()" aria-expanded="false" aria-haspopup="true"
+                        class="px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-600 rounded-md text-sm font-medium transition-colors flex items-center gap-1.5"
+                        title="Skill actions">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z"/></svg>
+                    Actions
+                </button>
+                <div id="skill-actions-menu" class="hidden absolute right-0 mt-1 w-52 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg shadow-lg z-50 py-1" role="menu" aria-labelledby="skill-actions-btn">
+                    <button onclick="toggleEnabledFromMenu(); closeActionsMenu()" id="menu-toggle-skill"
+                            class="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 11V7a4 4 0 118 0m-4 8v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                        <span id="menu-toggle-label">Enable</span>
+                    </button>
+                    <button onclick="exportSkill(); closeActionsMenu()"
+                            class="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                        Export
+                    </button>
+                    <hr class="my-1 border-gray-200 dark:border-gray-600">
+                    <button onclick="deleteSkillFromDetail(); closeActionsMenu()" id="menu-delete-skill"
+                            class="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 flex items-center gap-2.5 transition-colors"
+                            role="menuitem">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                        Delete
+                    </button>
+                </div>
+            </div>
+            <label class="inline-flex items-center cursor-pointer gap-2" id="skill-enabled-label">
                 {{ toggle_widget(id='skill-enabled', onchange='toggleEnabled(this.checked)') }}
-                <span class="text-sm text-gray-600 dark:text-gray-400">Enabled</span>
+                <span class="text-sm text-gray-600 dark:text-gray-400" id="skill-enabled-text">Enabled</span>
             </label>
         </div>
     </div>
@@ -21,10 +51,10 @@
     <!-- Meta -->
     <div id="skill-meta" class="text-sm text-gray-500 dark:text-gray-400 mb-6"></div>
 
-    <!-- Two-column layout -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Settings + System Prompt side-by-side -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <!-- Left: Settings -->
-        <div>
+        <div id="settings-column">
             <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
                 <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4">Settings</h3>
                 <div id="settings-form">
@@ -43,9 +73,15 @@
                         <p class="text-sm">This skill has no configurable settings</p>
                     </div>
                 </div>
-                <!-- SYSTEM.md Editor -->
-                <div id="system-md-editor" class="hidden mt-6 pt-6 border-t border-gray-200 dark:border-gray-700">
-                    <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">System Prompt (SYSTEM.md)</h4>
+            </div>
+        </div>
+
+        <!-- Right: System Prompt + Tools stacked -->
+        <div class="flex flex-col gap-6">
+            <!-- System Prompt -->
+            <div id="system-md-editor" class="hidden">
+                <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
+                    <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-4">System Prompt (SYSTEM.md)</h3>
                     <textarea id="system-md-content" rows="12"
                               class="w-full p-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 rounded-md text-xs font-mono focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10"
                               placeholder="Loading SYSTEM.md..."></textarea>
@@ -59,24 +95,24 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- Right: Tools -->
-        <div>
-            <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Tools <span id="tool-count" class="text-sm font-normal text-gray-400 dark:text-gray-500"></span></h3>
-                </div>
-                <div class="mb-3">
-                    <input type="text" id="tool-filter" placeholder="Filter tools..."
-                           oninput="filterTools()"
-                           class="w-full p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
-                </div>
-                <div id="tools-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-1">
-                    <p class="text-sm text-gray-400 dark:text-gray-500">Loading...</p>
-                </div>
-                <div id="tools-empty-filter" class="hidden text-center py-6 text-gray-400 dark:text-gray-500">
-                    <p class="text-sm">No tools match your filter</p>
+            <!-- Tools -->
+            <div>
+                <div class="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-600 p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-base font-semibold text-gray-800 dark:text-gray-100">Tools <span id="tool-count" class="text-sm font-normal text-gray-400 dark:text-gray-500"></span></h3>
+                    </div>
+                    <div class="mb-3">
+                        <input type="text" id="tool-filter" placeholder="Filter tools..."
+                               oninput="filterTools()"
+                               class="w-full p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500 rounded-md text-sm focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/10">
+                    </div>
+                    <div id="tools-list" class="space-y-2 max-h-[600px] overflow-y-auto pr-1">
+                        <p class="text-sm text-gray-400 dark:text-gray-500">Loading...</p>
+                    </div>
+                    <div id="tools-empty-filter" class="hidden text-center py-6 text-gray-400 dark:text-gray-500">
+                        <p class="text-sm">No tools match your filter</p>
+                    </div>
                 </div>
             </div>
         </div>
@@ -149,6 +185,23 @@ async function loadSkill() {
     document.getElementById('skill-title').textContent = skillData.name || skillData.id;
     document.getElementById('skill-version').textContent = 'v' + (skillData.version || '?');
     document.getElementById('skill-enabled').checked = skillData.enabled;
+
+    // Core skills cannot be disabled — lock the toggle and label it accordingly.
+    if (skillData.protected) {
+        const toggle = document.getElementById('skill-enabled');
+        toggle.disabled = true;
+        const label = document.getElementById('skill-enabled-label');
+        label.classList.remove('cursor-pointer');
+        label.classList.add('opacity-60', 'cursor-not-allowed');
+        label.title = 'Core skill — required by the Explore agent and cannot be disabled.';
+        document.getElementById('skill-enabled-text').textContent = 'Core skill (always on)';
+        // Disable toggle & delete in dropdown
+        const menuToggle = document.getElementById('menu-toggle-skill');
+        const menuDelete = document.getElementById('menu-delete-skill');
+        if (menuToggle) { menuToggle.disabled = true; menuToggle.classList.add('opacity-40', 'cursor-not-allowed'); }
+        if (menuDelete) { menuDelete.disabled = true; menuDelete.classList.add('opacity-40', 'cursor-not-allowed'); }
+    }
+    updateActionsMenuLabel();
 
     const meta = [];
     if (skillData.author) meta.push('by ' + esc(skillData.author));
@@ -386,6 +439,7 @@ async function toggleEnabled(enabled) {
         }
     } else {
         skillData.enabled = enabled;
+        updateActionsMenuLabel();
     }
 }
 
@@ -460,6 +514,94 @@ async function saveSystemPrompt() {
 
 loadSkill();
 loadSystemPrompt();
+
+function exportSkill() {
+    const link = document.createElement('a');
+    link.href = `/api/skills/${SKILL_ID}/export`;
+    link.download = `${SKILL_ID}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
+// ==================== Actions Dropdown Menu ====================
+
+function toggleActionsMenu() {
+    const menu = document.getElementById('skill-actions-menu');
+    const btn = document.getElementById('skill-actions-btn');
+    const isOpen = !menu.classList.contains('hidden');
+    if (isOpen) {
+        closeActionsMenu();
+    } else {
+        menu.classList.remove('hidden');
+        btn.setAttribute('aria-expanded', 'true');
+    }
+}
+
+function closeActionsMenu() {
+    const menu = document.getElementById('skill-actions-menu');
+    const btn = document.getElementById('skill-actions-btn');
+    menu.classList.add('hidden');
+    btn.setAttribute('aria-expanded', 'false');
+}
+
+function updateActionsMenuLabel() {
+    const label = document.getElementById('menu-toggle-label');
+    if (!label || !skillData) return;
+    label.textContent = skillData.enabled ? 'Disable' : 'Enable';
+}
+
+function toggleEnabledFromMenu() {
+    if (!skillData) return;
+    if (skillData.protected) {
+        toast.show('Core skills cannot be disabled.', 'error');
+        return;
+    }
+    toggleEnabled(!skillData.enabled);
+}
+
+async function deleteSkillFromDetail() {
+    if (!skillData) return;
+    if (skillData.protected) {
+        toast.show('Core skills cannot be deleted.', 'error');
+        return;
+    }
+    const name = skillData.name || skillData.id;
+    const confirmed = await showConfirm({
+        title: `Delete "${name}"?`,
+        message: 'This will uninstall the skill and remove all its files. This cannot be undone.',
+        confirmText: 'Delete',
+        danger: true
+    });
+    if (!confirmed) return;
+
+    const res = await fetch(`/api/skills/${SKILL_ID}`, {method: 'DELETE'});
+    if (!res.ok) {
+        const err = await res.json();
+        toast.show(err.error || 'Failed to delete skill', 'error');
+    } else {
+        window.location.href = '/skills';
+    }
+}
+
+// Close dropdown when clicking outside
+document.addEventListener('click', function(e) {
+    const dropdown = document.getElementById('skill-actions-dropdown');
+    if (dropdown && !dropdown.contains(e.target)) {
+        closeActionsMenu();
+    }
+});
+
+// Close dropdown on Escape key
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const menu = document.getElementById('skill-actions-menu');
+        if (menu && !menu.classList.contains('hidden')) {
+            closeActionsMenu();
+            document.getElementById('skill-actions-btn').focus();
+        }
+    }
+});
 
 // ==================== Tool Modal ====================
 

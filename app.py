@@ -91,6 +91,8 @@ from routes.skills import skills_bp
 from routes.plugins import plugins_bp
 from routes.scheduler import scheduler_bp
 from routes.models import models_bp
+from routes.providers import providers_bp
+from routes.codex import codex_bp
 from routes.health import health_bp
 from routes.workplaces import workplaces_bp
 from routes.logs import logs_bp
@@ -236,6 +238,8 @@ app.register_blueprint(settings_bp)
 app.register_blueprint(sessions_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(models_bp)
+app.register_blueprint(providers_bp)
+app.register_blueprint(codex_bp)
 app.register_blueprint(health_bp)
 app.register_blueprint(workplaces_bp)
 app.register_blueprint(logs_bp)
@@ -573,6 +577,20 @@ def inject_plugin_nav():
 
 
 @app.context_processor
+def inject_plugin_agent_tabs():
+    """Inject plugin-declared agent tabs for agent detail pages only.
+
+    Scoped via g.agent_id (set in routes/agents.py agent_detail() before
+    render). Returns empty list for non-agent pages (dashboard, settings,
+    login, etc.) to avoid unnecessary computation.
+    """
+    agent_id = getattr(_g, 'agent_id', None)
+    if agent_id:
+        return {'plugin_agent_tabs': plugin_manager.get_agent_tabs(agent_id)}
+    return {'plugin_agent_tabs': []}
+
+
+@app.context_processor
 def inject_version():
     return {'evonic_version': get_version()}
 
@@ -585,6 +603,21 @@ def _close_db_connection(exc):
     SQLite connections accumulate until GC runs → "Too many open files".
     """
     db.close()
+    # The same per-thread SQLite leak applies to the rate-limit stores: the
+    # before_request hook opens a thread-local connection (3 FDs each in WAL
+    # mode: db + -wal + -shm) on every /api/* request, and with thread-per-
+    # request these pile up until GC — the dominant source of the FD-watchdog
+    # self-shutdown. Close them alongside the main DB connection.
+    try:
+        from models.api_rate_limit import close as _close_api_rl
+        _close_api_rl()
+    except Exception:
+        pass
+    try:
+        from models.rate_limit import close as _close_rl
+        _close_rl()
+    except Exception:
+        pass
 
 def _csrf_exempt(path):
     """Return True if the path should skip CSRF validation."""

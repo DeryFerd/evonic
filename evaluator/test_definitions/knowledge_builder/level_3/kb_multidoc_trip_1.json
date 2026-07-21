@@ -1,0 +1,36 @@
+{
+  "id": "kb_multidoc_trip_1",
+  "name": "Multiple docs from a trip",
+  "description": "A richer narrative should yield several linked docs.",
+  "prompt": "EXISTING documents:\n(none yet)\n\nSOURCE:\nUser berlibur ke Yogyakarta, mengunjungi Candi Borobudur, dan makan gudeg di Warung Bu Tjitro bersama temannya Andi.\n\nReturn only the JSON object:",
+  "expected": {
+    "expect_actions": {
+      "create": [
+        {
+          "title": "Yogyakarta",
+          "type": "place"
+        },
+        {
+          "title": "Candi Borobudur",
+          "type": [
+            "place",
+            "venue"
+          ]
+        },
+        {
+          "title": "Warung Bu Tjitro",
+          "type": "venue"
+        },
+        {
+          "title": "Andi",
+          "type": "person"
+        }
+      ]
+    },
+    "require_links": true
+  },
+  "evaluator_id": "knowledge_builder",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

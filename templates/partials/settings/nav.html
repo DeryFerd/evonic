@@ -1,0 +1,38 @@
+{# Settings console nav rail — search + section items.
+   Desktop: sticky vertical rail. Mobile: sticky horizontal pill bar.
+   Routing handled by SettingsNav in static/js/settings-core.js. #}
+
+<aside class="settings-nav" aria-label="Settings sections">
+    <div class="settings-search">
+        <i data-lucide="search"></i>
+        <input type="text" id="settings-search-input"
+               placeholder="Search settings…" autocomplete="off"
+               aria-label="Search settings" />
+        <kbd>/</kbd>
+        <div id="settings-search-results" class="settings-search-results hidden"></div>
+    </div>
+
+    <div class="settings-nav-label">Sections</div>
+
+    <button type="button" class="settings-nav-item" data-section="general">
+        <i data-lucide="sliders-horizontal"></i><span>General</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="tools">
+        <i data-lucide="wrench"></i><span>Tools</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="models">
+        <i data-lucide="brain-circuit"></i><span>Models</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="hmads">
+        <i data-lucide="shield-alert"></i><span>HMADS</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="users">
+        <i data-lucide="users"></i><span>Users</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="shared_channel">
+        <i data-lucide="share-2"></i><span>Shared Channel</span>
+    </button>
+    <button type="button" class="settings-nav-item" data-section="logs">
+        <i data-lucide="scroll-text"></i><span>Logs</span>
+    </button>
+</aside>

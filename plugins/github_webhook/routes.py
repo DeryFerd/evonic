@@ -41,6 +41,9 @@ EVENT_HANDLERS = {
     "pull_request": ("PR_AGENT_ID", "PR_PROMPT", "_extract_pr", ("opened", "reopened", "closed", "edited"), "PR_FILTERS"),
     "issues": ("ISSUES_AGENT_ID", "ISSUES_PROMPT", "_extract_issues", ("opened", "reopened", "closed", "edited"), "ISSUES_FILTERS"),
     "push": ("PUSH_AGENT_ID", "PUSH_PROMPT", "_extract_push", None, "PUSH_FILTERS"),
+    "workflow_run": ("WORKFLOW_RUN_AGENT_ID", "WORKFLOW_RUN_PROMPT", "_extract_workflow_run", None, "WORKFLOW_RUN_FILTERS"),
+    "check_suite": ("CHECK_SUITE_AGENT_ID", "CHECK_SUITE_PROMPT", "_extract_check_suite", None, "CHECK_SUITE_FILTERS"),
+    "status": ("STATUS_AGENT_ID", "STATUS_PROMPT", "_extract_status", None, "STATUS_FILTERS"),
 }
 
 
@@ -214,6 +217,50 @@ def _extract_push(data: dict) -> dict:
     }
 
 
+def _extract_workflow_run(data: dict) -> dict:
+    """Extract template variables from a workflow_run event."""
+    run = data.get("workflow_run", {})
+    repo = data.get("repository", {})
+    return {
+        "workflow_name": run.get("name", ""),
+        "status": run.get("status", ""),
+        "conclusion": run.get("conclusion", ""),
+        "head_branch": run.get("head_branch", ""),
+        "head_sha": run.get("head_sha", ""),
+        "html_url": run.get("html_url", ""),
+        "repository": repo.get("full_name", ""),
+    }
+
+
+def _extract_check_suite(data: dict) -> dict:
+    """Extract template variables from a check_suite event."""
+    cs = data.get("check_suite", {})
+    repo = data.get("repository", {})
+    app = cs.get("app", {})
+    return {
+        "app_name": app.get("name", ""),
+        "status": cs.get("status", ""),
+        "conclusion": cs.get("conclusion", ""),
+        "head_branch": cs.get("head_branch", ""),
+        "head_sha": cs.get("head_sha", ""),
+        "html_url": cs.get("html_url", ""),
+        "repository": repo.get("full_name", ""),
+    }
+
+
+def _extract_status(data: dict) -> dict:
+    """Extract template variables from a status event."""
+    repo = data.get("repository", {})
+    return {
+        "sha": data.get("sha", ""),
+        "state": data.get("state", ""),
+        "context": data.get("context", ""),
+        "description": data.get("description", ""),
+        "target_url": data.get("target_url", ""),
+        "repository": repo.get("full_name", ""),
+    }
+
+
 # ==================== Dispatch ====================
 
 def _handle_event(event: str, data: dict):
@@ -235,7 +282,7 @@ def _handle_event(event: str, data: dict):
     # Get config
     agent_id = _get_config(agent_key)
     if not agent_id:
-        _log("info", "Event %s — %s not configured, skipping" % (event, agent_key))
+        #_log("info", "Event %s — %s not configured, skipping" % (event, agent_key))
         return
 
     # Evaluate custom filters (if configured)

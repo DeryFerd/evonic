@@ -21,6 +21,8 @@ DB_PATH = os.path.join(PLUGIN_DB_DIR, 'token_monitor.db')
 
 _SUBAGENT_RE = re.compile(r'_sub_\d+$')
 _EXPLORER_RE = re.compile(r'_explorer_\d+$')
+_ORGANIZER_RE = re.compile(r'_organizer_\d+$')
+_TEST_RE = re.compile(r'^test_')
 
 
 def _now() -> str:
@@ -115,24 +117,45 @@ class UsageDB:
                 GROUP BY agent_id
                 ORDER BY total_tokens DESC
             """, params).fetchall()]
-        # Flag explorer sub-agents (id like "parent_explorer_1") so the UI can
-        # render them distinctly.
         for r in rows:
-            r['is_explorer'] = bool(_EXPLORER_RE.search(r.get('agent_id') or ''))
-        # Explorers are always grouped by delegator agent ID.
-        # Regular sub-agents only roll up when rollup_subagents=True.
+            aid = r.get('agent_id') or ''
+            r['is_explorer'] = bool(_EXPLORER_RE.search(aid))
+            r['is_organizer'] = bool(_ORGANIZER_RE.search(aid))
+            r['is_test'] = bool(_TEST_RE.match(aid))
         merged: Dict[str, Dict[str, Any]] = {}
         standalone: List[Dict[str, Any]] = []
         for r in rows:
             aid = r.get('agent_id') or ''
             if _EXPLORER_RE.search(aid):
-                # Group by delegator agent ID: siwa_explorer_1 -> siwa
                 delegator = _EXPLORER_RE.sub('', aid)
                 acc = merged.setdefault(delegator, {
                     'agent_id': delegator,
                     'agent_name': r.get('agent_name'),
                     'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
-                    'total_tokens': 0, 'is_explorer': True,
+                    'total_tokens': 0, 'is_explorer': True, 'is_organizer': False,
+                    'is_test': False,
+                })
+                for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    acc[f] += r.get(f, 0)
+            elif _ORGANIZER_RE.search(aid):
+                delegator = _ORGANIZER_RE.sub('', aid)
+                acc = merged.setdefault(delegator + '_org', {
+                    'agent_id': delegator,
+                    'agent_name': r.get('agent_name'),
+                    'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
+                    'total_tokens': 0, 'is_explorer': False, 'is_organizer': True,
+                    'is_test': False,
+                })
+                for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
+                    acc[f] += r.get(f, 0)
+            elif _TEST_RE.match(aid):
+                # Roll all test_* agents into a single "test_*" group
+                acc = merged.setdefault('test_*', {
+                    'agent_id': 'test_*',
+                    'agent_name': 'test agents',
+                    'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
+                    'total_tokens': 0, 'is_explorer': False, 'is_organizer': False,
+                    'is_test': True,
                 })
                 for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                     acc[f] += r.get(f, 0)
@@ -143,7 +166,8 @@ class UsageDB:
                     'agent_id': parent,
                     'agent_name': r.get('agent_name'),
                     'calls': 0, 'prompt_tokens': 0, 'completion_tokens': 0,
-                    'total_tokens': 0, 'is_explorer': False,
+                    'total_tokens': 0, 'is_explorer': False, 'is_organizer': False,
+                    'is_test': False,
                 })
                 for f in ('calls', 'prompt_tokens', 'completion_tokens', 'total_tokens'):
                     acc[f] += r.get(f, 0)

@@ -39,6 +39,17 @@ def execute(agent: dict, args: dict) -> dict:
             "message": "id is required. Example: use_skill({id: 'hello_world'})"
         }
 
+    # Check if the skill exists
+    skill = skills_manager.get_skill(skill_id)
+    if not skill:
+        available = _enabled_skill_ids()
+        return {
+            "status": "error",
+            "id": skill_id,
+            "message": f"Skill '{skill_id}' not found.",
+            "available_skills": available
+        }
+
     # Check if the skill is enabled (DB-authoritative whitelist)
     if not skills_manager.is_skill_enabled(skill_id):
         available = _enabled_skill_ids()
@@ -64,17 +75,6 @@ def execute(agent: dict, args: dict) -> dict:
                 "message": f"Skill '{skill_id}' is not in your allowed skills list.",
                 "available_skills": allowed_available
             }
-
-    # Check if the skill exists
-    skill = skills_manager.get_skill(skill_id)
-    if not skill:
-        available = _enabled_skill_ids()
-        return {
-            "status": "error",
-            "id": skill_id,
-            "message": f"Skill '{skill_id}' not found or not enabled.",
-            "available_skills": available
-        }
 
     # Enforce super_only restriction
     skill_dir = skill.get('_dir', os.path.join(

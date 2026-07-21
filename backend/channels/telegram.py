@@ -120,7 +120,7 @@ async def _ingest_non_photo_attachment(message, context, agent_id, session_id,
 
     file_id, original_filename, mime_type, size_bytes, file_type = non_photo
     cfg = db.get_agent_attachment_config(agent_id)
-    if not cfg['enabled'] or not cfg['supported']:
+    if not cfg['enabled']:
         await message.reply_text(
             "Attachments are not enabled for this assistant."
         )
@@ -173,6 +173,10 @@ async def _ingest_non_photo_attachment(message, context, agent_id, session_id,
         f"{_human_size(real_size)}) "
         f"id={attachment_id} path={target_path}]"
     )
+    if file_type in ('voice', 'audio'):
+        agent = db.get_agent(agent_id)
+        if agent and agent.get('audio_enabled'):
+            info_line += "\nUse the `transcribe_audio` tool to listen to this audio."
     return info_line, False
 
 
@@ -233,7 +237,7 @@ async def _ingest_photo(message, context, agent_id, session_id, user_id,
 
     info_line = None
     cfg = db.get_agent_attachment_config(agent_id)
-    if cfg['enabled'] and cfg['supported']:
+    if cfg['enabled']:
         try:
             max_bytes = cfg['max_size_mb'] * 1024 * 1024
             if photo_size and photo_size > max_bytes:
@@ -287,69 +291,6 @@ async def _ingest_photo(message, context, agent_id, session_id, user_id,
             )
 
     return image_url, info_line
-
-
-async def _ingest_audio(message, context, agent_id, session_id, user_id,
-                        channel_id, db):
-    """Handle audio/voice messages: multimodal conversion when audio_enabled.
-
-    Returns ``(audio_url, info_line)``: either or both may be ``None``.
-    """
-    has_audio = bool(getattr(message, 'audio', None))
-    has_voice = bool(getattr(message, 'voice', None))
-    if not (has_audio or has_voice):
-        return None, None
-
-    if has_voice:
-        obj = message.voice
-        audio_mime = getattr(obj, 'mime_type', None) or 'audio/ogg'
-        audio_orig_name = 'voice.ogg'
-        audio_file_type = 'voice'
-    else:
-        obj = message.audio
-        audio_mime = getattr(obj, 'mime_type', None) or 'audio/mpeg'
-        audio_orig_name = getattr(obj, 'file_name', None) or 'audio.mp3'
-        audio_file_type = 'audio'
-
-    audio_file_id = obj.file_id
-    audio_size = getattr(obj, 'file_size', None)
-    audio_url = None
-
-    agent = db.get_agent(agent_id)
-    if agent and agent.get('audio_enabled'):
-        # Size guard: skip base64 for files > 10 MB
-        if not audio_size or audio_size <= 10 * 1024 * 1024:
-            try:
-                file = await context.bot.get_file(audio_file_id)
-                audio_bytes = await file.download_as_bytearray()
-                raw_bytes = bytes(audio_bytes)
-
-                # Convert OGG voice messages to WAV for multimodal LLM APIs
-                # that only accept WAV or MP3 input_audio format.
-                if has_voice and audio_mime in ('audio/ogg', 'audio/ogg; codecs=opus'):
-                    try:
-                        from backend.audio_utils import convert_ogg_to_wav
-                        raw_bytes = convert_ogg_to_wav(raw_bytes)
-                        audio_mime = 'audio/wav'
-                        audio_orig_name = 'voice.wav'
-                    except Exception as conv_err:
-                        _logger.error(
-                            "OGG→WAV conversion failed for agent %s: %s — "
-                            "audio will be attachment-only (no multimodal)",
-                            agent_id, conv_err,
-                        )
-                        return None, None
-
-                b64 = base64.b64encode(raw_bytes).decode('utf-8')
-                audio_url = f"data:{audio_mime};base64,{b64}"
-            except Exception as e:
-                _logger.error(
-                    "Failed to convert audio to base64 for agent %s: %s",
-                    agent_id, e, exc_info=True,
-                )
-
-    # info_line is handled by _ingest_non_photo_attachment (audio is a non-photo type)
-    return audio_url, None
 
 
 async def _ingest_video(message, context, agent_id, session_id, user_id,
@@ -630,11 +571,8 @@ class TelegramChannel(BaseChannel):
                     user_id, channel_id, db,
                 )
 
-                # Audio/video multimodal ingestion
-                audio_url, _ = await _ingest_audio(
-                    update.message, context, agent_id, session_id,
-                    user_id, channel_id, db,
-                )
+                # Video multimodal ingestion. Audio is attachment-only —
+                # agents listen to it via the transcribe_audio tool instead.
                 video_url, _ = await _ingest_video(
                     update.message, context, agent_id, session_id,
                     user_id, channel_id, db,
@@ -647,13 +585,13 @@ class TelegramChannel(BaseChannel):
                     text = info_line + (f"\n{text}" if text else '')
 
                 # Drop empty updates per legacy behavior.
-                has_any_media = image_url or audio_url or video_url
+                has_any_media = image_url or video_url
                 if has_photo or has_image_doc:
                     if image_url is None and not text:
                         return
                 elif has_any_media:
                     if not text:
-                        text = '[Audio]' if audio_url else '[Video]'
+                        text = '[Video]'
                 elif not text:
                     return
 
@@ -687,7 +625,7 @@ class TelegramChannel(BaseChannel):
 
                 result = agent_runtime.handle_message(
                     agent_id, user_id, final_text, channel_id,
-                    image_url=image_url, audio_url=audio_url, video_url=video_url,
+                    image_url=image_url, video_url=video_url,
                 )
                 if result.get('buffered'):
                     return  # message buffered, response will come from the first caller
@@ -784,6 +722,8 @@ class TelegramChannel(BaseChannel):
         _pending_approval_msgs: dict = {}  # approval_id -> (chat_id, message_id)
 
         def _on_approval_required(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             user_id = data.get('external_user_id')
@@ -827,6 +767,8 @@ class TelegramChannel(BaseChannel):
                 _logger.error("Failed to send approval prompt: %s", e)
 
         def _on_approval_resolved(data):
+            if not self._is_super_agent_channel():
+                return
             if data.get('channel_id') != channel_id:
                 return
             approval_id = data.get('approval_id', '')

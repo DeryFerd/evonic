@@ -36,6 +36,7 @@ type Client struct {
 	mu             sync.Mutex
 	running        atomic.Bool
 	stopCh         chan struct{}
+	stopOnce       sync.Once
 	inflight       atomic.Int64 // requests currently executing / awaiting reply
 	lastRecv       atomic.Int64 // unixnano of the last frame received
 	OnConnected    func()       // called after successful connect (from Run's goroutine)
@@ -105,7 +106,7 @@ func (c *Client) RunOnce() error {
 // Stop signals the client to disconnect and stop reconnecting.
 func (c *Client) Stop() {
 	c.running.Store(false)
-	close(c.stopCh)
+	c.stopOnce.Do(func() { close(c.stopCh) })
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn != nil {

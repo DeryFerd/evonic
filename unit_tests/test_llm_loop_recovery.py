@@ -116,7 +116,7 @@ def _make_messages(with_summary=True, n_conv=10):
     ]
     if with_summary:
         msgs.append({"role": "system", "content": "## Prior conversation summary\n- User asked about dark mode\n- Agent implemented CSS changes"})
-    msgs.append({"role": "system", "content": "## Long-term Memory\n- User name: Gus Robin"})
+    msgs.append({"role": "system", "content": "## Long-term Memory\n- User name: Andi Wijaya"})
 
     for i in range(n_conv):
         msgs.append({"role": "user", "content": f"User message {i}"})

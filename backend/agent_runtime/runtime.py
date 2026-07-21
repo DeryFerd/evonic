@@ -32,7 +32,6 @@ from backend.agent_runtime import llm_loop as _loop
 from backend.agent_runtime import summarizer as _sum
 from backend.agent_runtime.concurrency import ConcurrencyManager
 from backend.agent_state import AgentState
-from backend.agent_runtime.memory_manager import get_memories_for_context
 from backend.channels.registry import channel_manager
 from backend.channels.base import BaseChannel
 from backend.event_stream import event_stream
@@ -50,6 +49,41 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 _LOGS_DIR = os.path.join(_BASE_DIR, 'logs')
 
 _logger = logging.getLogger(__name__)
+
+
+def _append_attachment_context(content: str, attachment_infos, attachment_info,
+                               agent: dict, has_describe_image: bool) -> str:
+    """Append context notes for plural attachments with a legacy singular fallback."""
+    if not isinstance(attachment_infos, list):
+        attachment_infos = []
+    attachment_infos = [info for info in attachment_infos if isinstance(info, dict)]
+    if not attachment_infos and isinstance(attachment_info, dict):
+        attachment_infos = [attachment_info]
+
+    notes = []
+    for index, info in enumerate(attachment_infos, 1):
+        fp = info.get('file_path', '')
+        if fp and not os.path.isabs(fp):
+            fp = os.path.abspath(os.path.join(_BASE_DIR, fp))
+        fn = info.get('filename', '')
+        mt = info.get('mime_type', '')
+        sb = int(info.get('size_bytes', 0) or 0)
+        is_img = bool(mt and mt.startswith('image/'))
+        is_audio = bool(mt and mt.startswith('audio/'))
+        if sb >= 1048576:
+            sz = f"{sb / 1048576:.1f} MB"
+        elif sb >= 1024:
+            sz = f"{sb / 1024:.1f} KB"
+        else:
+            sz = f"{sb} B"
+        label = f"Attachment #{index}" if len(attachment_infos) > 1 else "Attachment"
+        note = f"\n\n[{label}: {fn} ({mt}, {sz})]\nFile path: {fp}"
+        if is_img and has_describe_image:
+            note += "\nUse the `describe_image` tool to view and analyze this image."
+        if is_audio and agent.get('audio_enabled'):
+            note += "\nUse the `transcribe_audio` tool to listen to this audio."
+        notes.append(note)
+    return content.rstrip() + ''.join(notes) if notes else content
 
 
 # --- Configuration constants ---
@@ -70,7 +104,7 @@ def _llm_log_path(agent_id: str) -> str:
 WRAPPER_PREFIX = (
         """[Pre-response check: Before you answer or reply to the user's request, first verify the following:
 
-1. Does the message contain explicit or implicit information—such as instructions, or shared personal details, facts, preferences, phone numbers, secret keys, addresses, PINs, etc.? If yes, save it to memory using the `remember()` tool. If the message contains style notes, rules, or procedures that don't always need to be applied, record them in the `notes.md` knowledge base. If the message contains a request to change style or rules that is highly critical and must be applied on every turn, write it to `SYSTEM.md`.
+1. Does the message contain explicit or implicit information—such as instructions, or shared personal details, facts, preferences, phone numbers, secret keys, addresses, PINs, etc.? If yes, save it to memory using the `remember()` tool. If the message contains style notes, rules, or procedures that don't always need to be applied, record them via `remember()` for non-factual style notes. If the message contains a request to change style or rules that is highly critical and must be applied on every turn, write it to `SYSTEM.md`.
 2. Does the message relate to a specific project or task? If so, read the relevant knowledge base files first—there may be an existing KB containing per-item/per-project procedures.
 3. Only after completing these steps, reply to the user naturally.]
 
@@ -100,7 +134,8 @@ def _should_wrap_user_message(agent: dict) -> bool:
 
 def _apply_wrapper_prefix(messages: list, enabled: bool,
                           is_stale: bool = False,
-                          stale_threshold: int = 25200) -> None:
+                          stale_threshold: int = 25200,
+                          loaded_skills_count: int = 0) -> None:
     """Apply message wrapper prefix to user messages in-place.
 
     Wraps: (a) the LAST (current) user message when it has >= 4 words,
@@ -110,11 +145,14 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
     When is_stale is True, appends a staleness-awareness note to the wrapper
     prefix prompting the agent to assess whether conversation history is
     still relevant.
+
+    When loaded_skills_count > 0, replaces point 3 with a dynamic reminder
+    to check loaded skills before responding.
     """
     if not enabled or not messages:
         return
 
-    # Build effective wrapper prefix — may include staleness notice
+    # Build effective wrapper prefix — may include staleness notice or skill reminder
     effective_prefix = WRAPPER_PREFIX
     if is_stale:
         hours = max(1, stale_threshold // 3600)
@@ -126,6 +164,22 @@ def _apply_wrapper_prefix(messages: list, enabled: bool,
             f"context.\n\n"
         )
         effective_prefix = WRAPPER_PREFIX + staleness_note
+
+    # Dynamic point 3: if agent has loaded skills, occasionally remind it to check/unload them
+    # 1:3 probability — injects ~25% of the time to avoid redundancy
+    if loaded_skills_count and loaded_skills_count > 0:
+        import random
+        if random.random() < 0.25:
+            options = [
+                f"[SKILL — {loaded_skills_count} loaded] Use a relevant one if this fits. Otherwise unload it — it's no longer needed.",
+                f"[SKILL — {loaded_skills_count} loaded] Check if any loaded skill applies to this request. If not, unload it before replying.",
+                f"[SKILL — {loaded_skills_count} loaded] Got skills loaded. Use one if relevant, or unload it if it's stale. Then reply naturally.",
+                f"[SKILL — {loaded_skills_count} loaded] Loaded skills ready. Pick the right one or unload the irrelevant ones. Then respond.",
+            ]
+            effective_prefix = WRAPPER_PREFIX + f"\n\n{random.choice(options)}"
+    else:
+        if is_stale:
+            effective_prefix = WRAPPER_PREFIX + staleness_note
 
     for i, msg in enumerate(messages):
         if msg.get('role') == 'user':
@@ -611,6 +665,20 @@ class AgentRuntime:
         sig_name = signal.Signals(signum).name
         _logger.info("\nReceived %s, initiating graceful shutdown...", sig_name)
         cls.graceful_shutdown()
+        # sys.exit() only raises SystemExit in the main thread. When the signal
+        # arrives while the main thread is blocked in the threaded WSGI server's
+        # accept loop, that SystemExit gets swallowed by the server — the runtime
+        # ends up drained (queue workers + executor stopped) but the process
+        # stays alive serving requests. systemd still sees it as active, so
+        # Restart=always never fires and the FD-watchdog's SIGTERM produces a
+        # half-dead "zombie" instead of a restart. Arm a daemon backstop that
+        # force-exits if the clean exit doesn't take, then attempt the clean
+        # exit (which runs atexit Docker cleanup) first.
+        forcer = threading.Timer(
+            WORKER_JOIN_TIMEOUT_SECONDS + 3.0, lambda: os._exit(0)
+        )
+        forcer.daemon = True
+        forcer.start()
         # Use sys.exit to allow normal Python shutdown — this triggers
         # atexit handlers (including Docker container cleanup) and
         # thread cleanup, whereas os.kill hard-terminates the process.
@@ -747,6 +815,14 @@ class AgentRuntime:
                 _resp = result.get('response', '')
                 if task.send_via_channel and _resp and _resp != "(No response)" and task.ctx.channel_id:
                     instance = channel_manager._active.get(task.ctx.channel_id)
+                    # DIAGNOSTIC (shared-channel reply loss): confirm the buffered
+                    # worker resolves a running channel instance and attempts the send.
+                    _logger.info(
+                        "[buffered-send] channel_id=%s instance=%s running=%s user=%s session=%s",
+                        task.ctx.channel_id,
+                        type(instance).__name__ if instance else None,
+                        getattr(instance, 'is_running', None) if instance else None,
+                        task.ctx.external_user_id, task.ctx.session_id)
                     if instance and instance.is_running:
                         try:
                             instance.send_message(task.ctx.external_user_id, result['response'])
@@ -760,6 +836,15 @@ class AgentRuntime:
                                     )
                         except Exception as e:
                             _logger.error("Channel send error for session %s: %s", task.ctx.session_id, e)
+                elif task.send_via_channel:
+                    # DIAGNOSTIC (shared-channel reply loss): the reply was generated
+                    # and saved (so it shows in the web session) but the channel send
+                    # was skipped. Log exactly which precondition failed.
+                    _logger.warning(
+                        "[buffered-send] SKIPPED for session %s user=%s: "
+                        "resp_empty=%s resp_placeholder=%s channel_id=%s",
+                        task.ctx.session_id, task.ctx.external_user_id,
+                        not bool(_resp), _resp == "(No response)", task.ctx.channel_id)
             except Exception as e:
                 _logger.error("Worker error for session %s: %s", task.ctx.session_id, e, exc_info=True)
                 task.result = {
@@ -1306,7 +1391,7 @@ class AgentRuntime:
         # No buffering — queue immediately and wait for result
         task = _QueueTask(agent, SessionContext(session_id, external_user_id, channel_id,
                                                 session_db_agent_id=db_agent_id if is_subagent else None),
-                          send_via_channel=False)
+                          send_via_channel=bool(channel_id))
         self._message_queue.put(task)
         task.event.wait()
         return task.result
@@ -1504,6 +1589,8 @@ class AgentRuntime:
 
         # Clear any stale stop flag so a previous /stop doesn't kill this new request
         self._get_stop_event(ctx.session_id).clear()
+        from backend.tools.lib.process_tracker import process_tracker
+        process_tracker.clear_stop(ctx.session_id)
 
         # Send typing indicator now that processing is actually starting
         if ctx.channel_id:
@@ -1529,12 +1616,52 @@ class AgentRuntime:
         if _early_reply:
             return _early_reply
 
-        # Build messages for LLM (summary-aware)
-        # Try prefetched context from the previous turn's background warmup
-        # (only when disable_turn_prefetch is not set).
+        # ── CMP early boundary hook (offload-aware) ──────────────────────────
+        # Runs BEFORE context assembly so a switch/branch decision shapes this
+        # turn's history window, and gates the prefetch hit (prefetch builds
+        # under the continue assumption). State is persisted immediately so
+        # _restore_agent_state below re-reads consistent post-switch fields.
+        # Rule 0 in the detector guarantees approval-like messages classify
+        # `continue`, so the plan-approval check later is never bypassed.
+        _cmp_early_handled = False
+        _cmp_filter_state = None
+        _cmp_switched_this_turn = False
+        if (agent.get('enable_cmp') and agent.get('enable_agent_state')
+                and not agent.get('is_subagent')):
+            try:
+                _cmp_ms = self._restore_agent_state(db_agent_id, session_id=ctx.session_id)
+                if _cmp_ms is not None:
+                    from backend.agent_runtime import cmp as _cmp_pkg
+                    _cmp_chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
+                    _cmp_user = _cmp_chatlog.get_last_entry(types=frozenset({'user'}))
+                    _cmp_res = _cmp_pkg.on_turn_boundary(
+                        agent, _cmp_ms, _cmp_chatlog,
+                        (_cmp_user or {}).get('content', ''))
+                    if _cmp_res is not None:
+                        _cmp_early_handled = True
+                        from backend.agent_runtime.llm_loop import _persist_agent_state_split
+                        _persist_agent_state_split(_cmp_ms, agent_id, ctx.session_id, db_agent_id)
+                        _cmp_filter_state = _cmp_ms.cmp
+                        if _cmp_res.get('decision') not in ('continue', 'init'):
+                            _cmp_switched_this_turn = True
+                            _logger.info(
+                                "CMP boundary(early): %s -> %s (layer %s) for session %s",
+                                _cmp_res.get('decision'), _cmp_res.get('target'),
+                                _cmp_res.get('layer'), ctx.session_id)
+            except Exception:
+                _logger.exception("CMP early boundary hook failed — full-history turn")
+                _cmp_filter_state = None
+
+        # Build messages for LLM (summary-aware). A prefetch is valid only if
+        # it was assembled under the current summary watermark; summarization
+        # can advance asynchronously after the background warmup completes.
+        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
+        summary_watermark = (summary_record.get('last_message_ts')
+                             if summary_record else None)
         _prefetch = None
-        if not agent.get('disable_turn_prefetch', 0):
-            _prefetch = self._prefetcher.try_get(ctx.session_id)
+        if not agent.get('disable_turn_prefetch', 0) and not _cmp_switched_this_turn:
+            _prefetch = self._prefetcher.try_get(
+                ctx.session_id, summary_watermark=summary_watermark)
         if _prefetch and _prefetch.agent_id == agent_id:
             system_prompt = _prefetch.system_prompt
             tools = _prefetch.tools
@@ -1580,65 +1707,41 @@ class AgentRuntime:
         _has_describe_image = False
 
         def _apply_multimodal(msg: dict) -> dict:
-            """Apply multimodal formatting for user messages with audio/video if agent supports it.
+            """Apply multimodal formatting for user messages with video if agent supports it.
 
             Images are NEVER auto-fed to the main LLM — images are always accessed via
-            the ``describe_image`` tool instead.
+            the ``describe_image`` tool instead. Audio is likewise never auto-fed —
+            agents listen to it via the ``transcribe_audio`` tool.
             """
             if msg.get('role') != 'user':
                 return msg
-            # Always pop _image_url but NEVER feed it to the LLM.
+            # Always pop _image_url/_audio_url but NEVER feed them to the LLM.
             msg.pop('_image_url', None)
-            # Append attachment_info note so agents see file path metadata.
+            msg.pop('_audio_url', None)
+            # Append authoritative structured metadata, including the numeric ID
+            # required by read_attachment. This also repairs legacy message text
+            # that omitted the ID when restored from JSONL.
             _att = msg.pop('attachment_info', None) or msg.get('attachment_info')
             if _att and isinstance(_att, dict):
-                fp = _att.get('file_path', '')
-                fn = _att.get('filename', '')
-                mt = _att.get('mime_type', '')
-                sb = int(_att.get('size_bytes', 0) or 0)
-                is_img = bool(mt and mt.startswith('image/'))
-                if sb >= 1048576:
-                    sz = f"{sb / 1048576:.1f} MB"
-                elif sb >= 1024:
-                    sz = f"{sb / 1024:.1f} KB"
-                else:
-                    sz = f"{sb} B"
-                note = (
-                    f"\n\n[Attachment: {fn} ({mt}, {sz})]"
-                    f"\nFile path: {fp}"
+                _ctx.append_attachment_note(
+                    msg,
+                    _att,
+                    has_describe_image=_has_describe_image,
+                    audio_enabled=bool(agent.get('audio_enabled')),
                 )
-                if is_img and _has_describe_image:
-                    note += "\nUse the `describe_image` tool to view and analyze this image."
-                content = msg.get('content', '') or ''
-                msg['content'] = content.rstrip() + note
-            audio = msg.pop('_audio_url', None) if agent.get('audio_enabled') else msg.pop('_audio_url', None) and None
             video = msg.pop('_video_url', None) if agent.get('video_enabled') else msg.pop('_video_url', None) and None
-            if not audio and not video:
+            if not video:
                 return msg
             parts = []
             text_content = msg.get('content', '')
             if text_content and text_content not in ('[Image]', '[Audio]', '[Video]'):
                 parts.append({"type": "text", "text": text_content})
-            if audio:
-                # OpenAI-compatible input_audio format
-                # Extract base64 data and format from data URL
-                if audio.startswith("data:"):
-                    try:
-                        header, b64data = audio.split(",", 1)
-                        # e.g. data:audio/ogg;base64 → ogg
-                        fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                    except (ValueError, IndexError):
-                        fmt, b64data = "wav", audio
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-                else:
-                    parts.append({"type": "input_audio", "input_audio": {"data": audio, "format": "wav"}})
             if video:
                 parts.append({"type": "video_url", "video_url": {"url": video}})
             if not parts or parts[0].get('type') != 'text':
                 parts.insert(0, {"type": "text", "text": "What is in this media?"})
             return {**msg, 'content': parts}
 
-        summary_record = db.get_summary(ctx.session_id, agent_id=db_agent_id)
         chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
 
         # Compute whether describe_image is assigned so the _apply_multimodal
@@ -1670,21 +1773,33 @@ class AgentRuntime:
                     _img = _cur_meta.get('image_url')
                     if _img:
                         _cur_msg['_image_url'] = _img
-                    _aud = _cur_meta.get('audio_url')
-                    if _aud:
-                        _cur_msg['_audio_url'] = _aud
                     _vid = _cur_meta.get('video_url')
                     if _vid:
                         _cur_msg['_video_url'] = _vid
+                    _atts = _cur_meta.get('attachment_infos')
+                    if isinstance(_atts, list):
+                        _cur_msg['attachment_infos'] = _atts
                     _att = _cur_meta.get('attachment_info')
                     if _att:
                         _cur_msg['attachment_info'] = _att
                     messages.append(_apply_multimodal(_cur_msg))
         else:
-            # Prefer JSONL-based context if the log has entries for this session
-            _jsonl_entries = chatlog.get_entries_for_llm(
-                after_ts=summary_record.get('last_message_ts') if summary_record else None,
-            )
+            # Prefer JSONL-based context if the log has entries for this session.
+            # CMP offload: with multiple paths, scope the history window to the
+            # active path's segments (shared builder — same as prefetch).
+            _jsonl_entries = None
+            try:
+                from backend.agent_runtime.cmp import assembler as _cmp_asm
+                if _cmp_asm.should_filter(_cmp_filter_state):
+                    _jsonl_entries = _cmp_asm.build_history(
+                        chatlog, summary_record, _cmp_filter_state)
+            except Exception:
+                _logger.exception("CMP history filter failed — using full history")
+                _jsonl_entries = None
+            if _jsonl_entries is None:
+                _jsonl_entries = chatlog.get_entries_for_llm_trail(
+                    after_ts=summary_record.get('last_message_ts') if summary_record else None,
+                )
             # NOTE: The second condition handles an edge case where _jsonl_entries is empty
             # but the chatlog still has entries for this session. This happens when ALL
             # messages after the summary are themselves covered by the summary (after_ts
@@ -1746,11 +1861,6 @@ class AgentRuntime:
         # Ensure messages don't end with assistant role (causes prefill error with some APIs)
         while len(messages) > 1 and messages[-1].get('role') == 'assistant':
             messages.pop()
-
-        # Inject long-term memories (position 1, right after system prompt)
-        memory_section = get_memories_for_context(db_agent_id, messages)
-        if memory_section:
-            messages.insert(1, {"role": "system", "content": memory_section})
 
         # Inject inter-agent session context so the agent is aware of the situation
         if ctx.external_user_id.startswith("__agent__"):
@@ -1834,13 +1944,20 @@ class AgentRuntime:
                     if _tid not in _existing:
                         assigned_tool_ids.append(_tid)
 
-            # Agents with save_artifact automatically get list_artifacts + fetch_artifact.
-            # No DB assignment needed — every artifacts-enabled agent can search and fetch their files.
+            # Auto-assign save_artifact to all agents so they can save files.
+            # No DB assignment needed — every agent can create and store artifacts.
+            if 'save_artifact' not in assigned_tool_ids:
+                assigned_tool_ids.append('save_artifact')
+
+            # Agents with save_artifact automatically get list_artifacts.
+            # fetch_artifact is only auto-assigned for agents with workplace or sandbox;
+            # local agents can access artifacts directly via bash/runpy.
             if 'save_artifact' in assigned_tool_ids:
                 if 'list_artifacts' not in assigned_tool_ids:
                     assigned_tool_ids.append('list_artifacts')
-                if 'fetch_artifact' not in assigned_tool_ids:
-                    assigned_tool_ids.append('fetch_artifact')
+                if agent.get('workplace_id') or agent.get('sandbox_enabled', 0):
+                    if 'fetch_artifact' not in assigned_tool_ids:
+                        assigned_tool_ids.append('fetch_artifact')
 
             # Auto-assign send_file to all agents so they can send files via channels.
             # No DB assignment needed — every agent can send file attachments.
@@ -1852,11 +1969,20 @@ class AgentRuntime:
             if agent.get('vision_enabled', 1) and 'describe_image' not in assigned_tool_ids:
                 assigned_tool_ids.append('describe_image')
 
+            # Agents with audio_enabled automatically get transcribe_audio.
+            if agent.get('audio_enabled') and 'transcribe_audio' not in assigned_tool_ids:
+                assigned_tool_ids.append('transcribe_audio')
+
             # Resolve workspace: workplace config takes priority over agent.workspace.
             # For tunnel workplaces, never fall back to the agent's /workspace path —
             # Evonet runs on the remote device and has its own working directory.
+            # EXPLORERS: their workspace is set by explorer.build_config to the
+            # user-requested absolute path (the 'path' parameter of Explore).
+            # Use it directly — the workplace_id is only for SSH backend routing.
             _workplace_id = agent.get('workplace_id') or None
-            if _workplace_id:
+            if agent.get('is_explorer'):
+                _workspace = agent.get('workspace') or None
+            elif _workplace_id:
                 try:
                     import json as _json
                     _workplace = db.get_workplace(_workplace_id)
@@ -1894,6 +2020,11 @@ class AgentRuntime:
                 'run_as_user': agent.get('run_as_user'),
                 'vision_model_id': agent.get('vision_model_id'),
                 'vision_enabled': agent.get('vision_enabled', 1),
+                'audio_enabled': agent.get('audio_enabled', 0),
+                'messaging_acl': agent.get('messaging_acl'),
+                'messaging_acl_mode': agent.get('messaging_acl_mode', 'whitelist'),
+                'enable_atg': bool(agent.get('enable_atg')) and bool(agent.get('enable_agent_state')),
+                'enable_cmp': bool(agent.get('enable_cmp')) and bool(agent.get('enable_agent_state')),
             }
         # Propagate agent_message_depth and from_agent_id from incoming message metadata
         if ctx.external_user_id.startswith("__agent__"):
@@ -1964,6 +2095,54 @@ class AgentRuntime:
                         # so the agent can start a new plan cycle for this task
                         # instead of being stuck in a stale plan from a previous task.
                         ms = AgentState()
+            # Cross-task boundary handling. CMP (when enabled) owns it: the
+            # detector routes the turn (continue/return/branch) and a branch
+            # IS the ATG re-arm — a fresh plan cycle on its own path. Agents
+            # with ATG but not CMP keep the original 2-way re-arm.
+            _boundary_text = ""
+            if not agent.get('is_subagent'):
+                for _msg in reversed(messages):
+                    if _msg.get('role') == 'user':
+                        _c = _msg.get('content', '')
+                        _boundary_text = (
+                            next((p.get('text', '') for p in _c
+                                  if isinstance(p, dict) and p.get('type') == 'text'), '')
+                            if isinstance(_c, list) else _c)
+                        break
+            # The early hook (before context assembly) normally owns CMP; this
+            # late slot only covers turns it skipped — e.g. brand-new sessions
+            # where agent state didn't exist yet at assembly time (first-path
+            # init happens here, after the classifier created ms).
+            _cmp_handled = _cmp_early_handled
+            if (not _cmp_early_handled
+                    and agent.get('enable_cmp') and agent.get('enable_agent_state')
+                    and not agent.get('is_subagent')):
+                try:
+                    from backend.agent_runtime import cmp as _cmp_pkg
+                    _cmp_chatlog = chatlog_manager.get(db_agent_id, ctx.session_id)
+                    _cmp_res = _cmp_pkg.on_turn_boundary(agent, ms, _cmp_chatlog,
+                                                         _boundary_text)
+                    _cmp_handled = _cmp_res is not None
+                    if _cmp_res and _cmp_res.get('decision') not in ('continue', 'init'):
+                        _logger.info("CMP boundary: %s -> %s (layer %s) for session %s",
+                                     _cmp_res.get('decision'), _cmp_res.get('target'),
+                                     _cmp_res.get('layer'), ctx.session_id)
+                except Exception:
+                    _logger.exception("CMP boundary check failed — keeping current state")
+
+            # ATG re-arm (atg-only agents): when the previous task graph is
+            # finished and this message is a brand-new complex task, re-enter
+            # the plan/compile cycle so the new task gets its own graph.
+            if (not _cmp_handled and not is_new_session and ms.mode == 'execute'
+                    and agent.get('enable_atg') and not agent.get('is_subagent')):
+                try:
+                    from backend.agent_runtime import atg as _atg_pkg
+                    if _atg_pkg.maybe_rearm_atg(agent, ms, _boundary_text):
+                        _logger.info("ATG re-armed for session %s — new complex task detected",
+                                     ctx.session_id)
+                except Exception:
+                    _logger.exception("ATG re-arm check failed — keeping current state")
+
             # Sub-agents receive delegated tasks from their parent and
             # should never require plan/approval cycles. Force execute mode.
             if agent.get('is_subagent'):
@@ -2007,7 +2186,8 @@ class AgentRuntime:
 
         # Apply preference wrapper prefix to user messages if enabled
         _apply_wrapper_prefix(messages, _should_wrap_user_message(agent),
-                              is_stale=is_stale, stale_threshold=stale_threshold)
+                              is_stale=is_stale, stale_threshold=stale_threshold,
+                              loaded_skills_count=len(self._session_skill_tools.get(ctx.session_id, {})))
 
         # Sub-agents run delegated tasks with plan/approval disabled (see force-execute
         # above). Tell the LLM explicitly so it doesn't emit a plan and stop.
@@ -2040,7 +2220,12 @@ class AgentRuntime:
 
         try:
             from backend.llm_usage_events import usage_context
-            _usage_source = 'explorer' if agent.get('is_explorer') else 'agent_turn'
+            if agent.get('is_kb_organizer'):
+                _usage_source = 'kb_organizer'   # distinct usage category for the token monitor
+            elif agent.get('is_explorer'):
+                _usage_source = 'explorer'
+            else:
+                _usage_source = 'agent_turn'
             with usage_context(_usage_source, agent_id, agent.get('name'), ctx.session_id):
                 response_raw, tool_trace, timeline = _loop.run_tool_loop(
                     agent=agent,
@@ -2171,30 +2356,16 @@ class AgentRuntime:
         """
         entry = {"role": msg["role"]}
         _msg_meta = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
-        msg_image = _msg_meta.get("image_url") if _msg_meta else None
-        msg_audio = _msg_meta.get("audio_url") if _msg_meta else None
         msg_video = _msg_meta.get("video_url") if _msg_meta else None
         # Images are NEVER auto-fed — use describe_image tool instead.
-        has_audio = msg_audio and agent.get("audio_enabled")
+        # Audio is likewise never auto-fed — use transcribe_audio tool instead.
         has_video = msg_video and agent.get("video_enabled")
-        if has_audio or has_video:
+        if has_video:
             parts = []
             text_content = msg.get("content", "")
             if text_content and text_content not in ("[Image]", "[Audio]", "[Video]"):
                 parts.append({"type": "text", "text": text_content})
-            # NOTE: Images are never auto-fed — use describe_image tool instead.
-            if has_audio:
-                if msg_audio.startswith("data:"):
-                    try:
-                        header, b64data = msg_audio.split(",", 1)
-                        fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                    except (ValueError, IndexError):
-                        fmt, b64data = "wav", msg_audio
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-                else:
-                    parts.append({"type": "input_audio", "input_audio": {"data": msg_audio, "format": "wav"}})
-            if has_video:
-                parts.append({"type": "video_url", "video_url": {"url": msg_video}})
+            parts.append({"type": "video_url", "video_url": {"url": msg_video}})
             if not parts or parts[0].get("type") != "text":
                 parts.insert(0, {"type": "text", "text": "What is in this media?"})
             entry["content"] = parts
@@ -2501,6 +2672,24 @@ class AgentRuntime:
                 _cl.append({'type': 'system', 'session_id': session_id, 'content': response,
                             'metadata': {'slash_command': True}})
                 agent = db.get_agent(agent_id)
+                # Check for any attachments created by the handler (e.g. /dump)
+                attachment_info = None
+                try:
+                    attachments = db.list_session_attachments(session_id, agent_id)
+                    if attachments:
+                        att = attachments[0]
+                        guessed_mime = att.get('mime_type') or 'application/octet-stream'
+                        att_info = {
+                            'attachment_id': att['id'],
+                            'filename': att.get('filename', ''),
+                            'mime_type': guessed_mime,
+                            'size_bytes': att.get('size_bytes', 0),
+                            'is_image': guessed_mime.startswith('image/'),
+                            'file_path': att.get('file_path', ''),
+                        }
+                        attachment_info = att_info
+                except Exception:
+                    pass
                 # Emit turn_complete so SSE client shows the response
                 event_stream.emit('turn_complete', {
                     'agent_id': agent_id,
@@ -2513,6 +2702,7 @@ class AgentRuntime:
                     'is_error': False,
                     'thinking_duration': 0.0,
                     'slash_command': True,
+                    'attachment_info': attachment_info,
                 })
                 # Signal the client to clear the chat UI when the clear command was used
                 if cmd_name == 'clear':

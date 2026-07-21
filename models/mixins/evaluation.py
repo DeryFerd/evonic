@@ -177,6 +177,62 @@ class EvaluationMixin:
             conn.commit()
             return count
 
+    def get_incomplete_count(self) -> int:
+        """Get count of evaluation runs where completed_at IS NULL (incomplete)."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM evaluation_runs WHERE completed_at IS NULL"
+            )
+            return cursor.fetchone()[0]
+
+    def clear_incomplete_runs(self) -> int:
+        """Delete all incomplete evaluation runs (completed_at IS NULL) and related data.
+        Returns count of deleted runs."""
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT run_id FROM evaluation_runs WHERE completed_at IS NULL"
+            )
+            incomplete_ids = [row[0] for row in cursor.fetchall()]
+            count = len(incomplete_ids)
+
+            if count == 0:
+                return 0
+
+            placeholders = ",".join("?" for _ in incomplete_ids)
+
+            # Delete related data in dependency order
+            cursor.execute(
+                f"DELETE FROM generated_training_data WHERE cycle_id IN "
+                f"(SELECT cycle_id FROM improvement_cycles "
+                f" WHERE base_run_id IN ({placeholders}) OR improved_run_id IN ({placeholders}))",
+                incomplete_ids + incomplete_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM improvement_cycles "
+                f"WHERE base_run_id IN ({placeholders}) OR improved_run_id IN ({placeholders})",
+                incomplete_ids + incomplete_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM individual_test_results WHERE run_id IN ({placeholders})",
+                incomplete_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM level_scores WHERE run_id IN ({placeholders})",
+                incomplete_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM test_results WHERE run_id IN ({placeholders})",
+                incomplete_ids,
+            )
+            cursor.execute(
+                f"DELETE FROM evaluation_runs WHERE run_id IN ({placeholders})",
+                incomplete_ids,
+            )
+            conn.commit()
+            return count
+
     def update_run_notes(self, run_id: int, notes: str) -> bool:
         """Update notes for an evaluation run"""
         with self._connect() as conn:

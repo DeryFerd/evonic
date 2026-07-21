@@ -1,0 +1,23 @@
+{
+  "id": "conv_capital_en_2",
+  "name": "Capital City Knowledge (English)",
+  "description": "Test knowledge about Indonesian capital city in English",
+  "prompt": "What is the capital city of Indonesia, and why is it important?",
+  "expected": {
+    "keywords": [
+      "jakarta",
+      "capital",
+      "indonesia",
+      "government",
+      "center",
+      "nusantara",
+      "ikn"
+    ],
+    "type": "factual",
+    "language": "en"
+  },
+  "evaluator_id": "keyword",
+  "timeout_ms": 30000,
+  "weight": 1.0,
+  "enabled": true
+}

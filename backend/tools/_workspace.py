@@ -11,6 +11,17 @@ _SHARED_AGENTS_DIR = os.path.join(_BASE_DIR, 'shared', 'agents')
 _SELF_PREFIX = '/_self/'
 
 
+def scratch_dir(agent_id: str) -> str:
+    """Per-agent scratchpad for throwaway scripts and temp files.
+
+    A sandbox/container path (tmpfs) — NOT under the workspace mount.  The
+    $SCRATCH env var, the sandbox cwd redirect, and sub-agent relative-write
+    redirection all resolve here so an agent's scripts and their output stay
+    together and never clutter the project workspace.
+    """
+    return f"/tmp/evonic-temp/{agent_id or 'default'}-scratchpad"
+
+
 def effective_agent_id(agent: dict) -> str:
     """Return the effective agent ID for /_self/ path resolution.
 
@@ -66,6 +77,110 @@ def resolve_self_path(agent_id: str, file_path: str) -> Optional[str]:
     return resolved
 
 
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    """Compute the Levenshtein edit distance between two strings.
+
+    Used for fuzzy path suggestions when an LLM makes a single-char typo
+    in a /_self/ path component (e.g. 'jakarta-kemeneu' vs 'jakarta-kemenkeu').
+    """
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            # Insertion, deletion, substitution
+            curr_row.append(min(
+                curr_row[-1] + 1,          # insert
+                prev_row[j + 1] + 1,       # delete
+                prev_row[j] + (c1 != c2)   # substitute
+            ))
+        prev_row = curr_row
+    return prev_row[-1]
+
+
+def list_self_dir(agent_id: str, rel_path: str) -> str:
+    """Return a formatted directory listing for a /_self/ path.
+
+    Allows agents to verify what files exist in /_self/kb/ etc. without
+    relying on bash ls (which cannot resolve /_self/ virtual paths).
+    """
+    local_path = resolve_self_path(agent_id, rel_path)
+    if not local_path:
+        return f"Error: Access denied — path {rel_path}."
+    try:
+        entries = sorted(os.listdir(local_path))
+    except OSError as e:
+        return f"Error: Cannot list directory {rel_path}: {e}"
+
+    lines = [f"[Directory listing for {rel_path}]"]
+    for entry in entries:
+        full = os.path.join(local_path, entry)
+        if os.path.isdir(full):
+            lines.append(f"  {entry}/")
+        else:
+            lines.append(f"  {entry}")
+    return "\n".join(lines)
+
+
+def _self_fuzzy_suggestion(agent_id: str, file_path: str) -> Optional[str]:
+    """Return a 'Did you mean: X (edit distance: N)?' hint for /_self/ path typos.
+
+    When an LLM hallucinates a typo (e.g. 'jakarta-kemeneu' instead of
+    'jakarta-kemenkeu'), this walks up the path hierarchy to find the
+    first existing parent, then suggests corrections for the next
+    component using Levenshtein distance ≤ 3.
+    """
+    if not file_path.startswith(_SELF_PREFIX):
+        return None
+    rel = file_path[len(_SELF_PREFIX):]
+    components = rel.split('/')
+
+    # Walk components from right to left, finding the first existing parent.
+    for i in range(len(components), 0, -1):
+        prefix_path = '/'.join(components[:i])
+        parent_self = _SELF_PREFIX + prefix_path
+        parent_local = resolve_self_path(agent_id, parent_self)
+
+        if parent_local and os.path.exists(parent_local):
+            # Found existing parent. The next component (if any) is the typo.
+            if i < len(components):
+                typo_component = components[i]
+                try:
+                    siblings = os.listdir(parent_local)
+                except OSError:
+                    return None
+
+                best = None
+                best_dist = 999
+                for sib in siblings:
+                    dist = _levenshtein_distance(typo_component, sib)
+                    if dist <= 3 and dist < best_dist:
+                        best = sib
+                        best_dist = dist
+
+                if best:
+                    # Reconstruct the suggested full path
+                    suggested_components = components[:i] + [best] + components[i+1:]
+                    suggested_path = _SELF_PREFIX + '/'.join(suggested_components)
+                    return f"{suggested_path} (edit distance: {best_dist})?"
+
+                # If no close sibling, suggest available entries
+                if siblings:
+                    return (
+                        f"Cannot find '{typo_component}' in {parent_self}. "
+                        f"Available: {', '.join(sorted(siblings)[:10])}"
+                        f"{'...' if len(siblings) > 10 else ''}?"
+                    )
+                return None
+            # Full path exists — no typo
+            return None
+
+    return None
+
+
 def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> str:
     """Resolve a file path to an absolute path, honoring the agent's workspace.
 
@@ -83,6 +198,11 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
     """
     if not file_path:
         return file_path
+
+    # Expand ~ and ~user — bash/shell does this automatically, but Python's
+    # os.path.isabs() returns False for tilde-prefixed paths, causing them to
+    # be treated as relative and joined with the workspace base (wrong).
+    file_path = os.path.expanduser(file_path)
 
     if file_path.startswith('/workspace'):
         workspace_root = (agent or {}).get('workspace') or fallback_workspace
@@ -102,15 +222,22 @@ def resolve_workspace_path(agent, file_path: str, fallback_workspace: str) -> st
         return resolved
 
     if not os.path.isabs(file_path):
+        # Sub-agents are delegated, throwaway tasks — contain their relative-path
+        # writes inside the per-agent scratchpad (tmpfs, outside the workspace) so
+        # they never clutter the project and stay alongside bash/runpy output.
+        # Absolute paths pass through unchanged (mirrors the shell cwd redirect).
+        if (agent or {}).get('is_subagent') and not (agent or {}).get('is_explorer'):
+            base = scratch_dir((agent or {}).get('id', ''))
+            resolved = os.path.normpath(os.path.join(base, file_path))
+            # Keep the write inside the scratchpad (block ../ escape).  Uses
+            # normpath, not realpath: this is a container path that need not
+            # exist on the host, and realpath would rewrite /tmp on some hosts.
+            if resolved == base or resolved.startswith(base + os.sep):
+                return resolved
+            return file_path  # block: return unresolvable path
         workspace = (agent or {}).get('workspace')
         if workspace:
-            # Sub-agents are delegated, throwaway tasks — contain their
-            # relative-path writes inside the gitignored .scratch/ dir so they
-            # never clutter the project root.  Absolute paths pass through
-            # unchanged (mirrors the shell cwd redirect for sub-agents).
             base = os.path.abspath(workspace)
-            if (agent or {}).get('is_subagent'):
-                base = os.path.join(base, '.scratch')
             resolved = os.path.join(base, file_path)
             # Boundary check for relative path traversal (e.g. ../../etc/passwd)
             try:
@@ -172,7 +299,8 @@ def root_pollution_nudge(agent, host_path: Optional[str]) -> Optional[str]:
     name = os.path.basename(host_path)
     return (
         f"Refused: '{name}' would be written to the project root, which must stay clean. "
-        f"Write throwaway scripts and temp files to /workspace/.scratch (gitignored, "
-        f"available as the $SCRATCH env var). Durable project scripts belong in scripts/ "
-        f"(migrations in scripts/migrations/). Re-issue the write with one of those paths."
+        f"Write throwaway scripts and temp files to your scratchpad "
+        f"({scratch_dir((agent or {}).get('id', ''))}, available as the $SCRATCH env var). "
+        f"Durable project scripts belong in scripts/ (migrations in scripts/migrations/). "
+        f"Re-issue the write with one of those paths."
     )

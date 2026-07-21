@@ -42,7 +42,7 @@ def execute(agent: dict, args: dict) -> dict:
 
     from backend.agent_report_to import resolve_report_to_for_subagent_spawn
 
-    report_to_id, report_to_channel_id = resolve_report_to_for_subagent_spawn(
+    report_to_id, report_to_channel_id, _ = resolve_report_to_for_subagent_spawn(
         parent_id,
         agent.get('user_id', ''),
         agent.get('channel_id', '') or '',

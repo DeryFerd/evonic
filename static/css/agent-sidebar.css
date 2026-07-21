@@ -233,6 +233,14 @@ html.dark .sidebar-toggle-btn:hover {
     }
 }
 
+/* Cancel the header's 1rem side padding for the toggle button so its 64px
+   width sits flush above the 64px avatar sidebar column. */
+@media (max-width: 768px) {
+    .sidebar-toggle-btn {
+        margin-left: -1rem;
+    }
+}
+
 /* ── Bubble Popup (turn-complete notification) ── */
 .agent-bubble-popup {
     position: fixed;

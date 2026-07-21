@@ -16,7 +16,7 @@ from backend.agent_runtime import evomem_writer as W
 def brain(tmp_path, monkeypatch):
     """Point the writer at a temp brain dir and skip the DB-existence check."""
     root = tmp_path / "agents" / "a1" / "brain"
-    monkeypatch.setattr(W, "_get_brain_dir", lambda agent_id: str(root))
+    monkeypatch.setattr(W, "_get_evomem_dir", lambda agent_id: str(root))
     monkeypatch.setattr(W, "_ensure_brain", lambda agent_id: True)
     return root
 
@@ -34,82 +34,96 @@ class TestSlugify:
         assert W.slugify("!!!") == ""
 
 
-class TestUpsertEntity:
-    def test_creates_page(self, brain):
-        slug = W.upsert_entity_page("a1", "Acme Corp", aliases=["Acme"],
-                                    tags=["organization"])
-        assert slug == "entities/acme-corp"
-        path = brain / "entities" / "acme-corp.md"
-        assert path.exists()
-        text = path.read_text()
-        assert "title: \"Acme Corp\"" in text
-        assert "Acme" in text  # alias
-        assert "organization" in text
+class TestUpsertDoc:
+    def test_creates_doc_with_frontmatter_and_inline_links(self, brain):
+        slug = W.upsert_doc("a1", title="Jakarta",
+                            body="Ibu kota Indonesia; dekat [[Monas]].",
+                            doc_type="place", description="Ibu kota Indonesia",
+                            tags=["place"], aliases=["DKI Jakarta"])
+        assert slug == "jakarta"
+        text = (brain / "jakarta.md").read_text()
+        assert 'title: "Jakarta"' in text
+        assert "type: place" in text
+        assert 'description: "Ibu kota Indonesia"' in text
+        assert "[[Monas]]" in text             # inline link kept in the body
+        assert "DKI Jakarta" in text           # alias
+        assert "## Relationships" not in text  # no blockquote-edge section
 
-    def test_merges_aliases_without_clobber(self, brain):
-        W.upsert_entity_page("a1", "Acme Corp", aliases=["Acme"])
-        W.upsert_entity_page("a1", "Acme Corp", aliases=["ACME Inc"], tags=["org"])
-        text = (brain / "entities" / "acme-corp.md").read_text()
-        assert "Acme" in text and "ACME Inc" in text  # both aliases preserved
+    def test_places_doc_in_collection_folder(self, brain):
+        slug = W.upsert_doc("a1", title="Monas", body="Tugu di [[Jakarta]].",
+                            doc_type="place", description="Monas", folder="riset-jkt")
+        assert slug == "riset-jkt/monas"
+        assert (brain / "riset-jkt" / "monas.md").exists()
 
-
-class TestAddEdge:
-    def test_appends_typed_edge(self, brain):
-        W.upsert_entity_page("a1", "Robin")
-        ok = W.add_edge("a1", "entities/robin", "works_at", "entities/acme-corp",
-                        anchor="Acme Corp")
-        assert ok
-        text = (brain / "entities" / "robin.md").read_text()
-        assert "## Relationships" in text
-        assert "> **works_at:** [Acme Corp](entities/acme-corp)" in text
-
-    def test_idempotent(self, brain):
-        W.upsert_entity_page("a1", "Robin")
-        W.add_edge("a1", "entities/robin", "works_at", "entities/acme")
-        W.add_edge("a1", "entities/robin", "works_at", "entities/acme")
-        text = (brain / "entities" / "robin.md").read_text()
-        assert text.count("**works_at:**") == 1
-
-    def test_unknown_edge_falls_back_to_mentions(self, brain):
-        W.upsert_entity_page("a1", "Robin")
-        W.add_edge("a1", "entities/robin", "bogus_rel", "entities/x")
-        text = (brain / "entities" / "robin.md").read_text()
-        assert "**mentions:**" in text
+    def test_rewrite_preserves_created_and_merges_tags(self, brain):
+        import re
+        W.upsert_doc("a1", title="X", body="a", doc_type="note",
+                     description="d", tags=["t1"])
+        created = re.search(r"created: (\S+)", (brain / "x.md").read_text()).group(1)
+        W.upsert_doc("a1", title="X", body="b", doc_type="note",
+                     description="d", tags=["t2"])
+        text = (brain / "x.md").read_text()
+        assert f"created: {created}" in text          # created preserved
+        assert "t1" in text and "t2" in text          # tags merged (union)
 
 
-class TestWriteNote:
-    def test_writes_note_with_mentions_and_memory_id(self, brain):
-        slug = W.write_note("a1", "Lang preference",
-                            "User prefers English.", tags=["preference"],
-                            mentions=["entities/user"], memory_id=7)
-        assert slug == "notes/mem-7"
-        text = (brain / "notes" / "mem-7.md").read_text()
-        assert "memory_id: 7" in text
-        assert "[[entities/user]]" in text
-        assert "User prefers English." in text
+class TestSessionGroupCoercion:
+    """session/group are reserved for collection index.md; a standalone doc that
+    asks for them is coerced to `note` (prevents stray flat 'session' files)."""
 
-    def test_memory_id_makes_idempotent_path(self, brain):
-        W.write_note("a1", "v1", "first", memory_id=3)
-        W.write_note("a1", "v2", "second", memory_id=3)
-        # same memory_id → same file (upsert, not duplicate)
-        notes = list((brain / "notes").glob("*.md"))
-        assert len(notes) == 1
-        assert "second" in notes[0].read_text()
+    def test_session_coerced_to_note(self, brain):
+        W.upsert_doc("a1", title="Trip", body="x", doc_type="session", description="d")
+        text = (brain / "trip.md").read_text()
+        assert "type: note" in text and "type: session" not in text
+
+    def test_group_coerced_to_note(self, brain):
+        W.upsert_doc("a1", title="Grp", body="x", doc_type="group", description="d")
+        assert "type: note" in (brain / "grp.md").read_text()
 
 
-class TestDeleteNote:
-    def test_removes_note_file(self, brain):
-        W.write_note("a1", "t", "body", memory_id=9)
-        path = brain / "notes" / "mem-9.md"
-        assert path.exists()
-        assert W.delete_note("a1", 9) is True
-        assert not path.exists()
+class TestAppendToDoc:
+    def test_appends_paragraph_preserving_body(self, brain):
+        W.upsert_doc("a1", title="Jakarta", body="Paragraf satu.",
+                     doc_type="place", description="d")
+        assert W.append_to_doc("a1", "jakarta", "Paragraf dua dengan [[Monas]].")
+        text = (brain / "jakarta.md").read_text()
+        assert "Paragraf satu." in text and "Paragraf dua" in text
+        assert "[[Monas]]" in text
 
-    def test_returns_false_when_absent(self, brain):
-        assert W.delete_note("a1", 123) is False
+    def test_returns_false_when_doc_missing(self, brain):
+        assert W.append_to_doc("a1", "nope", "x") is False
 
-    def test_returns_false_for_none_id(self, brain):
-        assert W.delete_note("a1", None) is False
+
+class TestCollections:
+    def test_create_collection_writes_typed_index(self, brain):
+        folder = W.create_collection("a1", folder="Riset XYZ", title="Riset XYZ",
+                                     kind="session", description="riset")
+        assert folder == "riset-xyz"
+        idx = (brain / "riset-xyz" / "index.md").read_text()
+        assert "type: session" in idx and "## Contents" in idx
+
+    def test_create_collection_rejects_bad_kind(self, brain):
+        assert W.create_collection("a1", "X", "X", kind="bogus", description="d") == ""
+
+    def test_add_to_collection_index_idempotent(self, brain):
+        W.create_collection("a1", "Riset", "Riset", kind="group", description="d")
+        assert W.add_to_collection_index("a1", "riset", "Monas") is True
+        assert "[[Monas]]" in (brain / "riset" / "index.md").read_text()
+        # second add of the same title is a no-op
+        assert W.add_to_collection_index("a1", "riset", "Monas") is False
+
+
+class TestReadDoc:
+    def test_reads_frontmatter_and_body(self, brain):
+        W.upsert_doc("a1", title="Jakarta", body="Body dengan [[Monas]].",
+                     doc_type="place", description="d")
+        doc = W.read_doc("a1", "jakarta")
+        assert doc["title"] == "Jakarta"
+        assert doc["frontmatter"]["type"] == "place"
+        assert "[[Monas]]" in doc["body"]
+
+    def test_missing_returns_none(self, brain):
+        assert W.read_doc("a1", "nope") is None
 
 
 class TestMarkDirty:

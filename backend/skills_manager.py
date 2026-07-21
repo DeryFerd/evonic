@@ -22,6 +22,11 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKILLS_DIR = os.path.join(BASE_DIR, 'skills')
 CONFIG_PATH = os.path.join(SKILLS_DIR, 'config.json')
 
+# Core skills that power the Explore agent. They cannot be uninstalled or
+# disabled: explorer provides the Explore() tool, direxplorer provides the
+# read-only Grep/Read/Glob worker tools the explorer sub-agent depends on.
+CORE_SKILL_IDS = {"explorer", "direxplorer"}
+
 
 def _load_global_config() -> Dict[str, Any]:
     """Load the global skills config (disabled_skills list)."""
@@ -64,6 +69,19 @@ class SkillsManager:
             self._json_file_cache[path] = cached
         return copy.deepcopy(cached[1])
 
+    def _is_core_skill(self, skill_id: str) -> bool:
+        """Check if a skill is a core skill.
+
+        Reads the ``core`` flag from the skill manifest first, then falls
+        back to the hardcoded ``CORE_SKILL_IDS`` set so that legacy skills
+        without the manifest marker are still protected.
+        """
+        if skill_id in CORE_SKILL_IDS:
+            return True
+        manifest_path = os.path.join(SKILLS_DIR, skill_id, 'skill.json')
+        manifest = self._read_json_cached(manifest_path)
+        return bool(isinstance(manifest, dict) and manifest.get('core', False))
+
     def is_skill_enabled(self, skill_id: str) -> bool:
         """Check if a skill is enabled.
 
@@ -103,10 +121,33 @@ class SkillsManager:
                 manifest['_dir'] = skill_dir
                 manifest['tool_count'] = len(self._load_tool_defs(skill_dir, manifest))
                 manifest['enabled'] = self.is_skill_enabled(name)
+                manifest['protected'] = self._is_core_skill(name)
                 skills.append(manifest)
             except KeyError:
                 continue
         return skills
+
+    def get_skill_stats(self) -> Dict[str, int]:
+        """Return total and enabled skill counts without loading tool defs.
+
+        Much lighter than list_skills() — no JSON parsing of manifests,
+        no tool-def loading. Only checks skill.json existence and enabled status.
+        """
+        total = 0
+        enabled = 0
+        if not os.path.isdir(SKILLS_DIR):
+            return {"total": 0, "enabled": 0}
+        for name in os.listdir(SKILLS_DIR):
+            skill_dir = os.path.join(SKILLS_DIR, name)
+            if not os.path.isdir(skill_dir):
+                continue
+            manifest_path = os.path.join(skill_dir, 'skill.json')
+            if not os.path.isfile(manifest_path):
+                continue
+            total += 1
+            if self.is_skill_enabled(name):
+                enabled += 1
+        return {"total": total, "enabled": enabled}
 
     def get_skill(self, skill_id: str) -> Optional[Dict[str, Any]]:
         """Get a single skill's metadata, tool list, variables, and config."""
@@ -117,6 +158,7 @@ class SkillsManager:
         with open(manifest_path, encoding='utf-8') as f:
             manifest = json.load(f)
         manifest['enabled'] = self.is_skill_enabled(skill_id)
+        manifest['protected'] = self._is_core_skill(skill_id)
         tool_defs = self._load_tool_defs(skill_dir, manifest)
         manifest['_dir'] = skill_dir
         manifest['tools'] = [
@@ -127,6 +169,28 @@ class SkillsManager:
         manifest['variables'] = manifest.get('variables', [])
         manifest['config'] = self.get_skill_config(skill_id)
         return manifest
+
+    def get_skill_stats(self) -> Dict[str, int]:
+        """Return total and enabled skill counts without loading tool defs.
+
+        Much lighter than list_skills() — no JSON parsing of manifests,
+        no tool-def loading. Only checks skill.json existence and enabled status.
+        """
+        total = 0
+        enabled = 0
+        if not os.path.isdir(SKILLS_DIR):
+            return {"total": 0, "enabled": 0}
+        for name in os.listdir(SKILLS_DIR):
+            skill_dir = os.path.join(SKILLS_DIR, name)
+            if not os.path.isdir(skill_dir):
+                continue
+            manifest_path = os.path.join(skill_dir, 'skill.json')
+            if not os.path.isfile(manifest_path):
+                continue
+            total += 1
+            if self.is_skill_enabled(name):
+                enabled += 1
+        return {"total": total, "enabled": enabled}
 
     def get_skill_name(self, skill_id: str) -> str:
         """Read only the manifest name from skill.json — no tool defs, no DB queries."""
@@ -295,6 +359,9 @@ class SkillsManager:
         if not re.match(r'^[a-zA-Z0-9_-]+$', skill_id):
             return {'error': 'Invalid skill id'}
 
+        if self._is_core_skill(skill_id):
+            return {'error': f'Cannot uninstall core skill "{skill_id}" (required by the Explore agent).'}
+
         skill_dir = os.path.join(SKILLS_DIR, skill_id)
         if not os.path.isdir(skill_dir):
             return {'error': f'Skill not found: {skill_id}'}
@@ -335,6 +402,9 @@ class SkillsManager:
         manifest_path = os.path.join(skill_dir, 'skill.json')
         if not os.path.isfile(manifest_path):
             return {'error': f'Skill not found: {skill_id}'}
+
+        if not enabled and self._is_core_skill(skill_id):
+            return {'error': f'Cannot disable core skill "{skill_id}" (required by the Explore agent).'}
 
         with open(manifest_path, encoding='utf-8') as f:
             manifest = json.load(f)

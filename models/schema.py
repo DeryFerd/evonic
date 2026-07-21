@@ -385,6 +385,8 @@ class SchemaMixin:
                 ("attachment_max_size_mb", "INTEGER DEFAULT 20"),
                 ("audio_enabled", "BOOLEAN DEFAULT 0"),
                 ("video_enabled", "BOOLEAN DEFAULT 0"),
+                ("enable_atg", "BOOLEAN DEFAULT 0"),
+                ("enable_cmp", "BOOLEAN DEFAULT 0"),
             ]:
                 try:
                     cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
@@ -529,6 +531,29 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # Migration: add messaging_acl and messaging_acl_mode for per-agent outbound ACL
+            for col, defn in [
+                ("messaging_acl", "TEXT DEFAULT NULL"),
+                ("messaging_acl_mode", "TEXT DEFAULT 'whitelist'"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: per-agent memory settings. NULL = inherit global env
+            # (EVONIC_MEMORY_ENGINE / EVOMEM_KB_ORGANIZER), preserving prior behavior.
+            #   memory_engine     : '' | 'evomem' | 'fts5'
+            #   kb_organizer_mode : '' | 'agentic' | 'non-agentic' | 'sefton' | 'off'
+            for col, defn in [
+                ("memory_engine", "TEXT DEFAULT NULL"),
+                ("kb_organizer_mode", "TEXT DEFAULT NULL"),
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE agents ADD COLUMN {col} {defn}")
+                except sqlite3.OperationalError:
+                    pass
+
             # Agent Variables (per-agent key-value config used by tools/skills)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS agent_variables (
@@ -561,11 +586,12 @@ class SchemaMixin:
                 )
             """)
 
-            # Channels table (per-agent channel configs)
+            # Channels table (per-agent channel configs; agent_id is NULL for
+            # shared channels that serve multiple agents, e.g. whatsapp_shared)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS channels (
                     id TEXT PRIMARY KEY,
-                    agent_id TEXT NOT NULL,
+                    agent_id TEXT,
                     type TEXT NOT NULL,
                     name TEXT,
                     config TEXT DEFAULT '{}',
@@ -576,6 +602,49 @@ class SchemaMixin:
                     UNIQUE(agent_id, name)
                 )
             """)
+
+            # Migration: drop NOT NULL from channels.agent_id so shared channels
+            # can exist without a host agent. Guarded by sqlite_master so it only
+            # runs while the existing table still has the constraint. Uses
+            # create-new/copy/drop/rename (not rename-old-first) so REFERENCES
+            # channels clauses in other tables are not rewritten by SQLite.
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='channels'"
+            ).fetchone()
+            if row and 'agent_id TEXT NOT NULL' in row[0]:
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS channels_new")
+                    cursor.execute("""
+                        CREATE TABLE channels_new (
+                            id TEXT PRIMARY KEY,
+                            agent_id TEXT,
+                            type TEXT NOT NULL,
+                            name TEXT,
+                            config TEXT DEFAULT '{}',
+                            enabled BOOLEAN DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+                            UNIQUE(agent_id, name)
+                        )
+                    """)
+                    cursor.execute("""
+                        INSERT INTO channels_new (id, agent_id, type, name, config, enabled, created_at, updated_at)
+                        SELECT id, agent_id, type, name, config, enabled, created_at, updated_at
+                        FROM channels
+                    """)
+                    cursor.execute("DROP TABLE channels")
+                    cursor.execute("ALTER TABLE channels_new RENAME TO channels")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: detach shared channels from their v1 host agent —
+            # they are managed centrally (System Settings → Shared Channel).
+            try:
+                cursor.execute(
+                    "UPDATE channels SET agent_id = NULL WHERE type = 'whatsapp_shared' AND agent_id IS NOT NULL")
+            except sqlite3.OperationalError:
+                pass
 
             # Channel pending approvals (pairing code allowlist)
             cursor.execute("""\
@@ -590,6 +659,46 @@ class SchemaMixin:
                     FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
                 )
             """)
+
+            # Shared-channel inbox: unmapped senders captured for admin
+            # assignment (capture-and-assign flow — LIDs are unknowable until
+            # a message arrives, so admins annotate instead of typing IDs)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS shared_channel_inbox (
+                    id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    external_user_id TEXT NOT NULL,
+                    alt_user_id TEXT,
+                    push_name TEXT,
+                    is_group BOOLEAN DEFAULT 0,
+                    group_name TEXT,
+                    last_message TEXT,
+                    message_count INTEGER DEFAULT 1,
+                    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+                    UNIQUE(channel_id, external_user_id)
+                )
+            """)
+
+            # Pending tool-call approvals (for snapshot on SSE reconnect)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_tool_approvals (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    tool_args TEXT NOT NULL DEFAULT '{}',
+                    approval_info TEXT NOT NULL DEFAULT '{}',
+                    reasons TEXT NOT NULL DEFAULT '[]',
+                    score INTEGER,
+                    source_agent_id TEXT,
+                    source_agent_name TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_pending_tool_approvals_session ON pending_tool_approvals(session_id)")
 
             # App-level settings (key-value store)
             cursor.execute("""
@@ -644,6 +753,33 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
+            # ==================== Providers Table ====================
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS providers (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL DEFAULT 'remote',
+                    base_url TEXT,
+                    api_key TEXT,
+                    api_format TEXT DEFAULT 'openai',
+                    enabled BOOLEAN DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Migrations: add OAuth columns to providers for Codex support
+            for col in [
+                "auth_type TEXT DEFAULT 'api_key'",
+                "refresh_token TEXT",
+                "token_expires_at INTEGER",
+            ]:
+                try:
+                    cursor.execute(f"ALTER TABLE providers ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
+
             # ==================== LLM Models Table ====================
 
             cursor.execute("""
@@ -675,7 +811,7 @@ class SchemaMixin:
 
             # Migration: add model_max_concurrent column to llm_models if missing
             try:
-                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 1")
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN model_max_concurrent INTEGER DEFAULT 3")
             except sqlite3.OperationalError:
                 pass
 
@@ -691,11 +827,35 @@ class SchemaMixin:
             except sqlite3.OperationalError:
                 pass
 
-            # Migration: add attachments_supported column to llm_models if missing
+            # Migration: add legacy_id column to llm_models if missing
             try:
-                cursor.execute("ALTER TABLE llm_models ADD COLUMN attachments_supported BOOLEAN DEFAULT 0")
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN legacy_id TEXT")
             except sqlite3.OperationalError:
                 pass
+
+            # Migration: add shortcode column to llm_models if missing
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN shortcode INTEGER")
+            except sqlite3.OperationalError:
+                pass
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_models_shortcode ON llm_models(shortcode)")
+
+            # Migration: add context_window column to llm_models if missing
+            # (0 = unknown; max_tokens is the OUTPUT budget, this is the full window)
+            try:
+                cursor.execute("ALTER TABLE llm_models ADD COLUMN context_window INTEGER DEFAULT 0")
+            except sqlite3.OperationalError:
+                pass
+
+
+            # One-shot migration: rewrite model ids to 'provider/model_name'
+            # format (v2). Old ids are kept in legacy_id so stale references
+            # still resolve via get_model_by_id. Guarded by a marker so later
+            # provider/model_name edits never re-rename ids.
+            self._migrate_model_ids_v2(cursor)
+
+            # One-shot migration: seed providers table + assign shortcodes
+            self._migrate_seed_providers(cursor)
 
             # ==================== Attachments Table ====================
             cursor.execute("""
@@ -755,7 +915,7 @@ class SchemaMixin:
                 CREATE TABLE IF NOT EXISTS workplaces (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel')),
+                    type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel', 'bwrap')),
                     config TEXT NOT NULL DEFAULT '{}',
                     status TEXT DEFAULT 'disconnected',
                     error_msg TEXT,
@@ -796,6 +956,40 @@ class SchemaMixin:
                         FROM workplaces_old
                     """)
                     cursor.execute("DROP TABLE workplaces_old")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Migration: add 'bwrap' to the workplaces.type CHECK constraint.
+            # Guarded by sqlite_master so it only runs while the existing table's
+            # CHECK does not yet include 'bwrap'. Uses create-new/copy/drop/rename
+            # (instead of renaming the old table first) so REFERENCES workplaces
+            # clauses in tunnel_connectors/agents are not rewritten by SQLite.
+            row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='workplaces'"
+            ).fetchone()
+            if row and "'bwrap'" not in row[0]:
+                try:
+                    cursor.execute("DROP TABLE IF EXISTS workplaces_new")
+                    cursor.execute("""
+                        CREATE TABLE workplaces_new (
+                            id TEXT PRIMARY KEY,
+                            name TEXT NOT NULL,
+                            type TEXT NOT NULL CHECK(type IN ('local', 'remote', 'tunnel', 'bwrap')),
+                            config TEXT NOT NULL DEFAULT '{}',
+                            status TEXT DEFAULT 'disconnected',
+                            error_msg TEXT,
+                            last_connected_at TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    cursor.execute("""
+                        INSERT INTO workplaces_new (id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at)
+                        SELECT id, name, type, config, status, error_msg, last_connected_at, created_at, updated_at
+                        FROM workplaces
+                    """)
+                    cursor.execute("DROP TABLE workplaces")
+                    cursor.execute("ALTER TABLE workplaces_new RENAME TO workplaces")
                 except sqlite3.OperationalError:
                     pass
 
@@ -965,6 +1159,19 @@ class SchemaMixin:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_index_updated ON session_index(updated_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_session_index_external ON session_index(external_user_id)")
 
+            # ==================== System Alerts Table ====================
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS system_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    category TEXT NOT NULL UNIQUE,
+                    agent_id TEXT,
+                    message TEXT NOT NULL,
+                    level TEXT NOT NULL DEFAULT 'error',
+                    created_at REAL NOT NULL,
+                    dismissed_at REAL DEFAULT NULL
+                )
+            """)
+
             conn.commit()
 
         # Migrate chat data from main DB to per-agent DBs
@@ -975,6 +1182,124 @@ class SchemaMixin:
 
         # Populate session_index from per-agent chat DBs (idempotent one-time migration)
         self._populate_session_index()
+
+    def _migrate_model_ids_v2(self, cursor):
+        """One-shot rename of llm_models ids to 'provider/model_name' format.
+
+        Cascades to agents model columns and app_settings model-id keys.
+        Old ids are preserved in llm_models.legacy_id. Guarded by the
+        app_settings marker 'model_id_format' = 'v2'.
+        """
+        cursor.execute("SELECT value FROM app_settings WHERE key = 'model_id_format'")
+        row = cursor.fetchone()
+        if row and row[0] == 'v2':
+            return
+
+        cursor.execute("SELECT id, provider, model_name FROM llm_models")
+        rows = cursor.fetchall()
+        all_old_ids = {r[0] for r in rows}
+        used = set()
+        renames = []
+        # Pass 1: rows already in final form keep their id (reserve it)
+        for old_id, provider, model_name in rows:
+            if old_id == f"{provider or 'custom'}/{model_name or ''}".rstrip('/'):
+                used.add(old_id)
+        # Pass 2: assign new ids, avoiding reserved/assigned ids AND other
+        # rows' current ids (SQLite checks the PK per UPDATE statement)
+        for old_id, provider, model_name in rows:
+            base = f"{provider or 'custom'}/{model_name or ''}".rstrip('/')
+            if old_id == base:
+                continue
+            candidate, n = base, 2
+            while candidate in used or candidate in (all_old_ids - {old_id}):
+                candidate = f"{base}-{n}"
+                n += 1
+            used.add(candidate)
+            renames.append((old_id, candidate))
+
+        for old_id, new_id in renames:
+            cursor.execute(
+                "UPDATE llm_models SET id = ?, legacy_id = ? WHERE id = ?",
+                (new_id, old_id, old_id),
+            )
+            for col in ("model_id", "fallback_model_id", "vision_model_id", "default_model_id"):
+                try:
+                    cursor.execute(
+                        f"UPDATE agents SET {col} = ? WHERE {col} = ?",
+                        (new_id, old_id),
+                    )
+                except sqlite3.OperationalError:
+                    pass  # legacy column may have been dropped
+            for key in ("vision_model_id", "kb_organizer_model_id",
+                        "task_classifier_model_id", "audio_model_id"):
+                cursor.execute(
+                    "UPDATE app_settings SET value = ? WHERE key = ? AND value = ?",
+                    (new_id, key, old_id),
+                )
+
+        cursor.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('model_id_format', 'v2') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        # Raw SQL above bypasses set_setting's cache invalidation
+        self.invalidate_settings_cache()
+
+    def _migrate_seed_providers(self, cursor):
+        """One-shot: seed providers table from PROVIDER_DEFAULTS + existing models,
+        and assign shortcodes to models that don't have one."""
+        cursor.execute("SELECT value FROM app_settings WHERE key = 'providers_seeded'")
+        row = cursor.fetchone()
+        if row and row[0] == '1':
+            return
+
+        _BUILTIN_PROVIDERS = {
+            "openrouter": ("OpenRouter", "remote", "https://openrouter.ai/api/v1", "openai"),
+            "togetherai": ("Together AI", "remote", "https://api.together.xyz/v1", "openai"),
+            "ollama": ("Ollama", "local", "http://localhost:11434/v1", "openai"),
+            "ollama_cloud": ("Ollama Cloud", "remote", "https://ollama.com/api", "ollama"),
+            "opencode_zen": ("OpenCode Zen", "remote", "https://opencode.ai/zen/v1", "openai"),
+            "opencode_go": ("OpenCode Go", "remote", "https://opencode.ai/zen/go/v1", "openai"),
+            "deepseek": ("DeepSeek", "remote", "https://api.deepseek.com", "openai"),
+            "llama.cpp": ("llama.cpp", "local", "http://localhost:8080/v1", "openai"),
+            "custom": ("Custom", "remote", "", "openai"),
+        }
+
+        for pid, (name, ptype, base_url, api_fmt) in _BUILTIN_PROVIDERS.items():
+            cursor.execute(
+                "INSERT OR IGNORE INTO providers (id, name, type, base_url, api_format) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (pid, name, ptype, base_url, api_fmt),
+            )
+
+        # Create provider rows for any provider values in existing models
+        # that aren't in PROVIDER_DEFAULTS (e.g. user-created "custom" entries)
+        cursor.execute("SELECT DISTINCT provider FROM llm_models WHERE provider NOT IN (SELECT id FROM providers)")
+        for (prov,) in cursor.fetchall():
+            cursor.execute(
+                "INSERT OR IGNORE INTO providers (id, name, type) VALUES (?, ?, 'remote')",
+                (prov, prov),
+            )
+
+        # Assign shortcodes to existing models ordered by provider, then name
+        cursor.execute(
+            "SELECT id FROM llm_models WHERE shortcode IS NULL ORDER BY provider, name"
+        )
+        model_ids = [r[0] for r in cursor.fetchall()]
+        if model_ids:
+            cursor.execute("SELECT COALESCE(MAX(shortcode), 0) FROM llm_models")
+            next_code = cursor.fetchone()[0] + 1
+            for mid in model_ids:
+                cursor.execute(
+                    "UPDATE llm_models SET shortcode = ? WHERE id = ?",
+                    (next_code, mid),
+                )
+                next_code += 1
+
+        cursor.execute(
+            "INSERT INTO app_settings (key, value) VALUES ('providers_seeded', '1') "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        self.invalidate_settings_cache()
 
     def _populate_session_index(self):
         """One-time migration: populate session_index from all per-agent chat DBs.

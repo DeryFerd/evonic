@@ -23,6 +23,11 @@ except ImportError:
     get_safety_pipeline = None
     should_skip_safety = lambda agent: True
 
+try:
+    from backend.tools.lib.heuristic_safety import check_root_filesystem_scan
+except ImportError:
+    check_root_filesystem_scan = lambda script: None
+
 
 def _get_long_running_setting() -> bool:
     """Check whether the long-running command guard is enabled.
@@ -81,21 +86,32 @@ def execute(agent: dict, args: dict) -> dict:
                 f"Do NOT retry the command directly — it will be blocked again.\n\n"
                 f"REQUIRED: Copy and execute this exact script as your next bash call:\n"
                 f"```\n{lr['run_script']}\n```\n\n"
-                f"After it starts, monitor with: {lr['monitor_script']}\n"
-                f"Check completion with: {lr['check_status_script']}\n"
-                f"Check exit code with: {lr['check_exit_code_script']}"
+                f"Once started, the process is monitored automatically — you will "
+                f"receive a system notification when it finishes, so do NOT poll "
+                f"for completion in a loop. Continue with other work or end your "
+                f"turn. To peek at output meanwhile: {lr['monitor_script']}"
             ),
         }
 
-    # Register a background job when the agent runs a long-running guard wrapper
-    # (BYPASS_MARKER). This lets /detach hand the process off to a watcher.
-    try:
-        from backend.agent_runtime.background_jobs import parse_wrapper_script, background_jobs
-        _wrap = parse_wrapper_script(script)
-        if _wrap:
-            background_jobs.register(session_id, **_wrap)
-    except Exception:
-        pass  # Never let job tracking break command execution
+    # ------------------------------------------------------------------
+    # Root filesystem scan guard (performance concern, e.g. `find /`, `tree /`).
+    # Independent of the safety pipeline on purpose: it fires for ALL agents —
+    # including super agents and agents with safety_checker_enabled=0 — because a
+    # full-root scan is a performance hazard regardless of trust. We still honour
+    # `_skip_safety` (set on the post-approval re-execution) so an approved scan
+    # runs instead of re-prompting forever.
+    # ------------------------------------------------------------------
+    if not should_skip_safety(agent):
+        _rfs = check_root_filesystem_scan(script)
+        if _rfs:
+            return {
+                'error': 'Script requires manual approval before execution',
+                'level': 'requires_approval',
+                'score': _rfs['score'],
+                'reasons': _rfs['reasons'],
+                'blocked_patterns': _rfs['blocked_patterns'],
+                'approval_info': _rfs['approval_info'],
+            }
 
     # ------------------------------------------------------------------
     # HMADS safety check (pipeline: system rules + custom user rules)
@@ -152,7 +168,46 @@ def execute(agent: dict, args: dict) -> dict:
     # Dispatch to active backend
     # ------------------------------------------------------------------
     backend = registry.get_backend(session_id, agent)
-    return backend.run_bash(script, timeout, env)
+    result = backend.run_bash(script, timeout, env)
+
+    # Track background spawns (guard wrapper or manual tmux/screen/nohup) and
+    # start the completion watcher so the agent is notified when they finish.
+    try:
+        _track_background_spawn(agent, session_id, script, result)
+    except Exception:
+        pass  # Never let job tracking break command execution
+    return result
+
+
+def _track_background_spawn(agent: dict, session_id: str, script: str,
+                            result: dict) -> None:
+    """Register a background spawn after successful execution and auto-watch it.
+
+    Handles both long_running_guard wrapper scripts (BYPASS_MARKER) and the
+    agent's own tmux/screen/nohup spawns. Only fires when the spawning script
+    itself succeeded — a failed spawn has nothing to watch.
+    """
+    if result.get('error') or result.get('exit_code', 0) != 0:
+        return
+
+    from backend.agent_runtime.background_jobs import (
+        parse_wrapper_script, parse_manual_spawn, background_jobs, auto_watch)
+
+    _wrap = parse_wrapper_script(script)
+    if _wrap:
+        job = background_jobs.register(session_id, **_wrap)
+    else:
+        _spawn = parse_manual_spawn(script)
+        if not _spawn:
+            return
+        job = background_jobs.register(session_id, **_spawn)
+
+    auto_watch(
+        job,
+        agent_id=(agent or {}).get('agent_id') or (agent or {}).get('id', ''),
+        external_user_id=(agent or {}).get('user_id'),
+        channel_id=(agent or {}).get('channel_id'),
+    )
 
 
 # ---------------------------------------------------------------------------

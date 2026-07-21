@@ -151,12 +151,11 @@ export class ChatUI {
             onTrigger:       (evtName, data) => {
                 this._log.debug('turn event', evtName, data);
                 this.$bus.trigger(evtName, [data]);
-                // agent-state bridge: fire document-level event for tool:executed
-                if (evtName === 'tool:executed') {
-                    const toolName = data && data.tool;
-                    if (['save_plan', 'set_mode', 'update_tasks', 'state', 'use_skill', 'unload_skill'].includes(toolName)) {
-                        document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
-                    }
+                if (evtName === 'state:changed') {
+                    document.dispatchEvent(new CustomEvent('evonic:state-changed', { detail: data }));
+                    // Keep the established page-level event for consumers that have
+                    // not migrated to the more specific SSE event name yet.
+                    document.dispatchEvent(new CustomEvent('evonic:agent-state-changed', { detail: data }));
                 }
                 if (evtName === 'approval:required') {
                     document.dispatchEvent(new CustomEvent('evonic:approval-required', { detail: data }));
@@ -260,7 +259,10 @@ export class ChatUI {
                 // If we built the timeline from streaming events, don't also render it
                 // from metadata — that would create a duplicate thinking bubble.
                 const msgMeta = hadStreamingTurn ? Object.assign({}, meta, { timeline: [] }) : meta;
-                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, { metadata: msgMeta });
+                this.appendMessage(meta.error ? 'error' : 'assistant', entry.content, {
+                    metadata: msgMeta,
+                    timestamp: entry.ts || entry.created_at || null,
+                });
                 continue;
             }
             if (entry.type === 'error') {
@@ -363,6 +365,32 @@ export class ChatUI {
                 $el.css('transition', 'opacity 0.5s').css('opacity', '0');
                 setTimeout(() => $el.remove(), 500);
             }, 2000);
+        });
+    }
+
+    // ── Public: upload progress indicators ──────────────────────────────────
+
+    markMessageUploading($msgEl) {
+        if (!$msgEl || !$msgEl.length) return;
+        if ($msgEl.find('.upload-indicator').length) return;
+        const isRight = $msgEl.hasClass('md:justify-end') || $msgEl.hasClass('justify-end');
+        const $indicator = $('<div class="upload-indicator flex items-center gap-1.5 mt-1 px-1">').addClass(isRight ? 'justify-end' : 'justify-start');
+        $indicator.html('<span class="tool-spinner" style="width:10px;height:10px;border-width:1.5px;border-color:rgba(255,255,255,0.3);border-top-color:rgba(255,255,255,0.9)"></span><span class="upload-indicator-text" style="font-size:10px;color:rgba(255,255,255,0.7)">Uploading…</span>');
+        $msgEl.find('div').first().append($indicator);
+    }
+
+    updateUploadProgress($msgEl, percent) {
+        if (!$msgEl || !$msgEl.length) return;
+        const $text = $msgEl.find('.upload-indicator-text');
+        if ($text.length) $text.text('Uploading… ' + percent + '%');
+    }
+
+    markMessageUploadDone($msgEl) {
+        if (!$msgEl || !$msgEl.length) return;
+        $msgEl.find('.upload-indicator').each(function() {
+            const $el = $(this);
+            $el.css('transition', 'opacity 0.5s').css('opacity', '0');
+            setTimeout(() => $el.remove(), 500);
         });
     }
 
@@ -603,5 +631,7 @@ window.SSEAdapter = SSEAdapter;
 window.PollingAdapter = PollingAdapter;
 window.ReplayAdapter = ReplayAdapter;
 window.Lightbox = Lightbox;
+window.renderKBDocPreview = renderKBDocPreview;
+window.showWikilinkPreview = showWikilinkPreview;
 
 log('ui').info('chat-ui v2 loaded');

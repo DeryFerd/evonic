@@ -174,8 +174,11 @@ function _buildCard(item, agentIdFallback, imageUrls) {
  * Open an artifact: lightbox for images, modal viewer for everything else.
  * @param {object} [gallery] - { urls: string[], index: number } to enable
  *   prev/next navigation across sibling image artifacts. Optional.
+ * @param {object} [opts] - { downloadUrl, allowDelete } forwarded to the viewer
+ *   modal. Defaults preserve artifact behavior (download from the view URL,
+ *   delete enabled). Attachments pass a separate downloadUrl and allowDelete:false.
  */
-export function openSavedArtifact(url, filename, category, gallery) {
+export function openSavedArtifact(url, filename, category, gallery, opts = {}) {
     if (category === 'image') {
         const urls = (gallery && gallery.urls && gallery.urls.length) ? gallery.urls : [url];
         let idx = (gallery && typeof gallery.index === 'number') ? gallery.index : 0;
@@ -184,15 +187,100 @@ export function openSavedArtifact(url, filename, category, gallery) {
         lb.open(urls, idx);
         return;
     }
-    _openViewerModal(url, filename, category);
+    _openViewerModal(url, filename, category, opts);
+}
+
+/**
+ * Build a card for a file delivered via the send_file tool (a stored
+ * attachment), mirroring the saved-artifact card so agent-sent files can be
+ * previewed before download. Reuses the shared viewer/lightbox.
+ * @param {{attachment_id, filename, size_bytes, is_image}} info
+ * @returns {jQuery}
+ */
+export function buildAttachmentCard(info) {
+    const filename = info.filename || 'file';
+    const viewUrl = `/api/attachments/${encodeURIComponent(info.attachment_id)}/view`;
+    const downloadUrl = `/api/attachments/${encodeURIComponent(info.attachment_id)}/download`;
+    const category = info.is_image ? 'image' : categorizeArtifact(filename);
+    const sizeStr = _formatSize(info.size_bytes);
+
+    const open = () => openSavedArtifact(viewUrl, filename, category, null, {
+        downloadUrl, allowDelete: false,
+    });
+
+    const $card = $('<div class="bg-gray-50 dark:bg-gray-700/50 border border-gray-200 dark:border-gray-600 rounded-lg p-2 hover:border-indigo-300 dark:hover:border-indigo-500 transition-colors flex items-center gap-2.5 group max-w-sm">');
+
+    let $thumb;
+    if (category === 'image') {
+        $thumb = $('<div class="w-10 h-10 rounded-md overflow-hidden flex-shrink-0 bg-gray-100 dark:bg-gray-800 flex items-center justify-center cursor-pointer">');
+        const $img = $('<img class="w-full h-full object-cover" alt="">').attr('src', viewUrl);
+        $img.on('error', function () {
+            $(this).remove();
+            $thumb.append(_iconEl('image', 'w-10 h-10').addClass('rounded-md'));
+        });
+        $thumb.append($img);
+    } else {
+        $thumb = _iconEl(category, 'w-10 h-10').addClass('cursor-pointer');
+    }
+    $thumb.on('click', open);
+    $card.append($thumb);
+
+    const $meta = $('<div class="flex-1 min-w-0 cursor-pointer">');
+    $meta.append(
+        $('<p class="text-sm font-medium text-gray-800 dark:text-gray-200 truncate">').attr('title', filename).text(filename),
+        $('<p class="text-xs text-gray-400">').text(sizeStr)
+    );
+    $meta.on('click', open);
+    $card.append($meta);
+
+    const $dl = $('<a class="p-1.5 text-indigo-500 hover:text-indigo-700 rounded hover:bg-indigo-50 dark:hover:bg-indigo-900/20 transition-colors opacity-0 group-hover:opacity-100 flex-shrink-0" title="Download">')
+        .attr({ href: downloadUrl, download: filename })
+        .html(_DOWNLOAD_SVG);
+    $dl.on('click', (e) => e.stopPropagation());
+    $card.append($dl);
+
+    return $card;
 }
 
 let _escHandler = null;
+let _viewerRawContent = null;
 
 function _closeViewerModal() {
     const modal = document.getElementById('chat-artifact-viewer-modal');
     if (modal) modal.remove();
     if (_escHandler) { document.removeEventListener('keydown', _escHandler); _escHandler = null; }
+}
+
+async function _copyViewerContent() {
+    const $btn = $(this);
+    if (!_viewerRawContent) {
+        (window.toast?.warning || console.warn)('No content to copy.');
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(_viewerRawContent);
+    } catch(e) {
+        // Fallback for older browsers or non-HTTPS
+        const textarea = document.createElement('textarea');
+        textarea.value = _viewerRawContent;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+    }
+    // Visual feedback
+    const $span = $btn.find('span');
+    const origText = $span.text();
+    $btn.find('svg').replaceWith('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>');
+    $span.text(' Copied!');
+    $btn.removeClass('text-indigo-600 dark:text-indigo-400').addClass('text-green-600 dark:text-green-400');
+    setTimeout(() => {
+        $btn.find('svg').replaceWith('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>');
+        $span.text(origText);
+        $btn.removeClass('text-green-600 dark:text-green-400').addClass('text-indigo-600 dark:text-indigo-400');
+    }, 2000);
 }
 
 async function _deleteArtifactFromViewer(url, filename) {
@@ -231,8 +319,10 @@ async function _deleteArtifactFromViewer(url, filename) {
     }
 }
 
-function _openViewerModal(url, filename, category) {
+function _openViewerModal(url, filename, category, opts = {}) {
     _closeViewerModal();
+    const downloadUrl = opts.downloadUrl || url;
+    const allowDelete = opts.allowDelete !== false;
 
     const $overlay = $('<div id="chat-artifact-viewer-modal" class="fixed inset-0 flex items-center justify-center p-4" style="z-index:200;background:rgba(0,0,0,0.6);">');
     $overlay.on('click', (e) => { if (e.target === $overlay[0]) _closeViewerModal(); });
@@ -247,14 +337,21 @@ function _openViewerModal(url, filename, category) {
     );
     const $actions = $('<div class="flex items-center gap-2 flex-shrink-0">');
     const $dl = $('<a class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Download">')
-        .attr({ href: url, download: filename })
+        .attr({ href: downloadUrl, download: filename })
         .html(_DOWNLOAD_SVG + '<span>Download</span>');
+    const $copy = $('<button class="flex items-center gap-1.5 px-3 py-1.5 text-xs text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/20 rounded-md transition-colors" title="Copy content">')
+        .html('<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg><span>Copy</span>');
+    $copy.on('click', _copyViewerContent);
     const $close = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Close">')
         .html('<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>');
     $close.on('click', _closeViewerModal);
-    const $delete = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors" title="Delete">').html(_TRASH_SVG);
-    $delete.on('click', (e) => { e.stopPropagation(); _deleteArtifactFromViewer(url, filename); });
-    $actions.append($dl, $delete, $close);
+    $actions.append($dl, $copy);
+    if (allowDelete) {
+        const $delete = $('<button class="flex items-center justify-center w-8 h-8 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors" title="Delete">').html(_TRASH_SVG);
+        $delete.on('click', (e) => { e.stopPropagation(); _deleteArtifactFromViewer(url, filename); });
+        $actions.append($delete);
+    }
+    $actions.append($close);
     $head.append($title, $actions);
 
     const $body = $('<div class="flex-1 overflow-y-auto p-6">');
@@ -275,6 +372,7 @@ async function _renderViewerContent($body, url, filename, category) {
     try {
         if (ext === 'md') {
             const text = await (await fetch(url)).text();
+            _viewerRawContent = text;
             $body.html('<div class="recap-prose max-w-none">' + sanitize(marked.parse(text)) + '</div>');
         } else if (ext === 'pdf') {
             $body.html(`<iframe src="${url}" class="w-full rounded-md border border-gray-200 dark:border-gray-600" style="min-height:70vh;"></iframe>`);
@@ -288,6 +386,7 @@ async function _renderViewerContent($body, url, filename, category) {
             $body.html(`<div class="flex justify-center"><img src="${url}" alt="${_escape(filename)}" class="max-w-full max-h-[70vh] rounded-md shadow-lg object-contain"></div>`);
         } else if (_TEXT_EXTS.includes(ext) || category === 'text') {
             const text = await (await fetch(url)).text();
+            _viewerRawContent = text;
             $body.html(`<pre class="bg-gray-50 dark:bg-gray-900 rounded-md p-4 text-sm text-gray-800 dark:text-gray-200 overflow-x-auto max-h-[70vh] whitespace-pre-wrap font-mono">${_escape(text)}</pre>`);
         } else {
             $body.html(

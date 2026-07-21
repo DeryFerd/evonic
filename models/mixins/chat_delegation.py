@@ -1,5 +1,6 @@
 import functools
 import os
+import re
 from typing import Dict, Any, List, Optional, Tuple
 
 import sqlite3
@@ -114,18 +115,22 @@ class ChatDelegationMixin:
     def get_session_state(self, session_id: str, agent_id: str) -> Optional[str]:
         return self._chat_db(agent_id).get_session_state(session_id)
 
-    def clear_session(self, session_id: str, agent_id: str = None):
+    def clear_session(self, session_id: str, agent_id: str = None, no_archive: bool = False):
         agent_id = agent_id or self._find_agent_for_session(session_id)
         if agent_id:
             # Archive session data before clearing (background, non-blocking)
             import config
-            if config.SESSION_ARCHIVE:
+            if config.SESSION_ARCHIVE and not no_archive:
                 from models.session_archive import SessionArchiver
                 SessionArchiver.archive_session(agent_id, session_id)
 
             self._chat_db(agent_id).clear_session(session_id)
             from models.chatlog import chatlog_manager
             chatlog_manager.get(agent_id, session_id).clear()
+            # Drop the byte-exact LLM-trace file (records already read by archiver above)
+            from models.llm_trace import llm_trace_manager
+            llm_trace_manager.get(agent_id, session_id).clear()
+            llm_trace_manager.evict(agent_id, session_id)
             self._remove_session_index(session_id)
 
     def get_last_message_timestamp(self, session_id: str, agent_id: str = None) -> Optional[float]:
@@ -269,6 +274,16 @@ class ChatDelegationMixin:
         agent = self.get_agent(session.get('agent_id') or agent_id)
         session['agent_name'] = (agent['name'] if agent
                                  else (session.get('agent_id') or 'Unknown'))
+        session['attachments_enabled'] = bool(agent.get('attachments_enabled', 1)) if agent else True
+        # Resolve the peer agent name for inter-agent sessions
+        # (external_user_id = '__agent__<peer_id>'), mirroring get_all_sessions so
+        # explorer/sub-agent captions can show the real parent name instead of 'Unknown'.
+        ext = session.get('external_user_id') or ''
+        if ext.startswith('__agent__'):
+            peer = self.get_agent(ext[len('__agent__'):])
+            session['peer_agent_name'] = peer['name'] if peer else None
+        else:
+            session['peer_agent_name'] = None
         if session.get('channel_id'):
             ch = self.get_channel(session['channel_id'])
             session['channel_type'] = ch.get('type') if ch else None
@@ -382,7 +397,8 @@ class ChatDelegationMixin:
                      si.message_count, si.last_message, si.last_message_role,
                      COALESCE(ag.name, si.agent_id) AS agent_name,
                      ch.type AS channel_type, ch.name AS channel_name,
-                     peer.name AS peer_agent_name"""
+                     peer.name AS peer_agent_name,
+                     ag.attachments_enabled"""
         data_sql = ("SELECT " + columns
                     + " FROM " + base_from
                     + " WHERE " + where_sql
@@ -410,7 +426,18 @@ class ChatDelegationMixin:
                 "SELECT agent_id FROM session_index WHERE session_id = ?",
                 (session_id,)
             ).fetchone()
-            return row['agent_id'] if row else None
+            agent_id = row['agent_id'] if row else None
+        if not agent_id:
+            return None
+        # Sub-agents and explorers persist their messages into the PARENT's
+        # per-agent chat DB (db_agent_id = parent_id), but session_index records
+        # the sub-agent id. Resolve to the parent so message/session lookups hit
+        # the DB that actually holds the rows — otherwise the chat panel loads
+        # from the sub-agent's empty DB and shows nothing.
+        m = re.match(r'^(.+)_(?:sub|explorer|organizer)_\d+$', agent_id)
+        if m and self._chat_db(m.group(1)).get_session(session_id):
+            return m.group(1)
+        return agent_id
 
     def clear_all_sessions(self):
         """Drop all chat sessions, messages, and summaries across all agents.

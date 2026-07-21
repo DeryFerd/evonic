@@ -5,7 +5,7 @@ Pure data preparation — no LLM calls, no threading.
 """
 from __future__ import annotations
 
-import base64
+import copy
 import hashlib
 import json
 import logging
@@ -29,9 +29,9 @@ def _token_count(text: str) -> int:
 
 from models.db import db
 from backend.tools import tool_registry
+from backend.tools.registry import BUILTIN_TOOL_IDS
 from backend.skills_manager import SkillsManager, skills_manager
 from backend.agent_runtime.evomem_client import (
-    get_kb_graph_metadata,
     get_evomem_db_mtime,
 )
 from config import AGENT_MAX_TOOL_RESULT_CHARS as MAX_TOOL_RESULT_CHARS
@@ -149,319 +149,86 @@ def _build_portal_info(agent_id: str) -> list:
     return lines
 
 
-def _extract_kb_frontmatter(filepath: str) -> dict:
-    """Parse YAML front matter in a KB file and return description + tags.
+def _resolve_workspace(agent: Dict[str, Any]) -> str:
+    """Return the effective workspace directory for this agent.
 
-    Returns a dict: {description: str|None, tags: [str]}.
+    Resolution order:
+    1. Sandbox agents: always /workspace (the Docker container mount)
+    2. Agents with workplace: use workplace.config.workspace_path
+    3. Fallback: agent.workspace field from DB
     """
-    result = {"description": None, "tags": []}
+    if agent.get('sandbox_enabled'):
+        return '/workspace'
+    wp_id = agent.get('workplace_id')
+    if wp_id:
+        try:
+            wp = db.get_workplace(wp_id)
+            if wp:
+                cfg = wp.get('config', {})
+                if isinstance(cfg, str):
+                    cfg = json.loads(cfg)
+                ws = cfg.get('workspace_path')
+                if ws:
+                    return ws
+        except Exception:
+            pass
+    return agent.get('workspace') or '/workspace'
+
+
+# Allowed doc `type` frontmatter values (mirrors Rust validate::VALID_TYPES and
+# evomem_writer.DOC_TYPES). Used for write-time validation + KB-graph node colors.
+KB_VALID_TYPES = ("note", "session", "group", "person", "place", "venue", "event",
+                  "organization", "company", "product", "contact")
+
+
+def validate_kb_frontmatter(content: str) -> str | None:
+    """Validate a KB markdown file's frontmatter. Return an error message if
+    invalid, else None.
+
+    Requires a leading YAML frontmatter block (`---` … `---`) with non-empty
+    `title`, `description`, and `type`, where `type` ∈ KB_VALID_TYPES.
+    """
+    lines = content.split("\n")
+    if not lines or lines[0].strip() != "---":
+        return ("Missing YAML frontmatter. KB files must start with a `---` block "
+                "containing title, description, and type.")
+    fields = {}
+    closed = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            closed = True
+            break
+        key, sep, val = line.partition(":")
+        if sep:
+            fields[key.strip()] = val.strip().strip("\"'")
+    if not closed:
+        return "Unterminated frontmatter block (missing closing `---`)."
+
+    missing = [k for k in ("title", "description", "type") if not fields.get(k)]
+    if missing:
+        return f"Missing required frontmatter field(s): {', '.join(missing)}."
+    if fields["type"] not in KB_VALID_TYPES:
+        return (f"Invalid type '{fields['type']}'; must be one of: "
+                f"{', '.join(KB_VALID_TYPES)}.")
+    return None
+
+
+def kb_frontmatter_warning(filepath: str) -> str | None:
+    """Soft-warn helper for KB edits: validate a file's current content and
+    return a user-facing warning if its frontmatter is incomplete, else None.
+
+    Never raises — used to attach a non-blocking warning after an edit.
+    """
     try:
         with open(filepath, "r", encoding="utf-8") as f:
-            first_line = f.readline().strip()
-            if first_line != "---":
-                return result
-            for line in f:
-                line_stripped = line.strip()
-                if line_stripped == "---":
-                    break
-                if line_stripped.startswith("description:"):
-                    val = line_stripped[len("description:"):].strip().strip("\"'")
-                    result["description"] = val if val else None
-                elif line_stripped.startswith("tags:"):
-                    tag_val = line_stripped[len("tags:"):].strip()
-                    if tag_val.startswith("[") and tag_val.endswith("]"):
-                        inner = tag_val[1:-1].strip()
-                        if inner:
-                            result["tags"] = [t.strip().strip("\"'") for t in inner.split(",") if t.strip()]
+            err = validate_kb_frontmatter(f.read())
     except Exception:
-        pass
-    return result
+        return None
+    if err:
+        return (f"⚠ KB frontmatter incomplete: {err} "
+                f"Add title, description, and type (note|session|group).")
+    return None
 
-
-def _format_size(size_bytes: int) -> str:
-    """Format file size in human-readable KB or MB."""
-    if size_bytes >= 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    return f"{size_bytes / 1024:.1f} KB"
-
-
-def _compute_staleness_flag(
-    source_updated_at: str | None,
-    target_slug: str,
-    target_updated_at: dict,
-) -> str:
-    """Compute staleness flag for an outgoing link target.
-
-    Returns a string like " ⚠ (updated 3 days ago, target may have changed)"
-    or empty string if the target is not newer than the source.
-    """
-    if not source_updated_at:
-        return ""
-    target_ts = target_updated_at.get(target_slug)
-    if not target_ts:
-        return ""
-
-    try:
-        src_dt = datetime.fromisoformat(source_updated_at)
-        tgt_dt = datetime.fromisoformat(target_ts)
-    except (ValueError, TypeError):
-        return ""
-
-    if tgt_dt <= src_dt:
-        return ""
-
-    # Compute "N days ago" relative to target's update time
-    now = datetime.now(timezone.utc)
-    if tgt_dt.tzinfo is None:
-        tgt_dt = tgt_dt.replace(tzinfo=timezone.utc)
-    delta = now - tgt_dt
-    days = delta.days
-    if days == 0:
-        age = "today"
-    elif days == 1:
-        age = "1 day ago"
-    else:
-        age = f"{days} days ago"
-
-    return f" ⚠ (updated {age}, target may have changed)"
-
-
-def _build_kb_listing(effective_id: str) -> list:
-    """Build the KB listing.
-
-    When _kb_index.md exists, shows its content as the primary listing,
-    followed by auto-generated graph metadata. Otherwise falls back to
-    a flat graph-aware listing.
-
-    Returns a list of prompt lines, or empty list if no KB dir or no files.
-    """
-    kb_dir = os.path.join(_AGENTS_DIR, effective_id, 'kb')
-    if not os.path.isdir(kb_dir):
-        return []
-
-    files = sorted(
-        f for f in os.listdir(kb_dir)
-        if os.path.isfile(os.path.join(kb_dir, f))
-    )
-    if not files:
-        return []
-
-    lines = []
-    lines.append("\n## Available Knowledge Files")
-
-    # --- Try to use _kb_index.md as canonical index ---
-    index_path = os.path.join(kb_dir, '_kb_index.md')
-    if os.path.isfile(index_path):
-        # Read _kb_index.md content, strip YAML frontmatter
-        index_body = ""
-        try:
-            with open(index_path, 'r', encoding='utf-8') as f:
-                raw = f.read()
-            # Strip YAML frontmatter (--- ... ---)
-            if raw.startswith('---'):
-                second = raw.find('---', 3)
-                if second != -1:
-                    index_body = raw[second + 3:].strip()
-                else:
-                    index_body = raw
-            else:
-                index_body = raw
-        except Exception:
-            index_body = ""
-
-        if index_body:
-            lines.append(
-                "Your KB index (read with read(\"_kb_index.md\")):\n"
-            )
-            lines.append(index_body)
-            lines.append("")
-
-        # --- Auto-generated graph metadata (compact) ---
-        graph = get_kb_graph_metadata(effective_id)
-        graph_pages = graph["pages"] if graph else {}
-        target_updated_at = graph["target_updated_at"] if graph else {}
-
-        # Filter out _kb_index.md from graph metadata
-        regular_files = [f for f in files if f != '_kb_index.md']
-        if regular_files:
-            lines.append("### Graph metadata (auto-generated):")
-            if graph_pages:
-                for f in regular_files:
-                    gdata = graph_pages.get(f, {})
-                    incoming = gdata.get('incoming_slugs', [])
-                    outgoing = gdata.get('outgoing_slugs', [])
-                    tags = gdata.get('tags', [])
-                    tag_str = f" [tags: {', '.join(tags)}]" if tags else ""
-
-                    inc_str = f"↑{len(incoming)} incoming" if incoming else "↑0 incoming"
-                    out_str = f"→{len(outgoing)} outgoing" if outgoing else "→0 outgoing"
-
-                    source_ts = gdata.get('updated_at')
-                    if outgoing:
-                        out_parts = []
-                        for tgt in outgoing:
-                            flag = _compute_staleness_flag(source_ts, tgt, target_updated_at)
-                            out_parts.append(tgt + flag)
-                        out_str = f"→ {', '.join(out_parts)}"
-
-                    lines.append(f"- {f}: {inc_str}, {out_str}{tag_str}")
-            else:
-                for f in regular_files:
-                    lines.append(f"- {f}: no graph data available yet")
-            lines.append("")
-    else:
-        # --- Fallback: graph-aware listing (no _kb_index.md) ---
-        lines.append(
-            "You can read these files using the `read` tool. "
-            "Use [[kb/filename]] to link between KB docs."
-        )
-        lines.append("")
-
-        # Disk metadata
-        file_info: dict = {}
-        for f in files:
-            fp = os.path.join(kb_dir, f)
-            size = os.path.getsize(fp)
-            fm = _extract_kb_frontmatter(fp)
-            file_info[f] = {
-                "size": size,
-                "description": fm["description"],
-                "tags": fm["tags"],
-            }
-
-        # Graph metadata from evomem
-        graph = get_kb_graph_metadata(effective_id)
-        graph_pages = graph["pages"] if graph else {}
-        target_updated_at = graph["target_updated_at"] if graph else {}
-
-        for slug, gdata in graph_pages.items():
-            if slug in file_info:
-                if gdata.get("tags"):
-                    file_info[slug]["tags"] = gdata["tags"]
-
-        for f in files:
-            info = file_info[f]
-            gdata = graph_pages.get(f, {})
-
-            size_str = _format_size(info["size"])
-            tags = info.get("tags") or gdata.get("tags") or []
-            tag_str = f" [tags: {', '.join(tags)}]" if tags else ""
-            desc = info["description"]
-            if desc and len(desc) > 120:
-                desc = desc[:117] + "..."
-            desc_str = f" — {desc}" if desc else ""
-
-            lines.append(f"- {f} ({size_str}){tag_str}{desc_str}")
-
-            incoming = gdata.get("incoming_slugs", [])
-            if incoming:
-                lines.append(f"    ↑ referenced by: {', '.join(incoming)}")
-            else:
-                lines.append("    ↑ referenced by: <none>")
-
-            outgoing = gdata.get("outgoing_slugs", [])
-            if outgoing:
-                source_ts = gdata.get("updated_at")
-                out_parts = []
-                for tgt in outgoing:
-                    flag = _compute_staleness_flag(source_ts, tgt, target_updated_at)
-                    out_parts.append(tgt + flag)
-                lines.append(f"    → references: {', '.join(out_parts)}")
-            else:
-                lines.append("    → references: <none>")
-
-            lines.append("")
-
-    # --- KB Usage section (common to both paths) ---
-    lines.append("### KB Usage")
-    lines.append(
-        "- **Save**: Use `write_file` with path `/_self/kb/filename` to "
-        "store a new KB file."
-    )
-    lines.append(
-        "- **Read**: Use the `read` tool with the bare filename (no path) "
-        "to read a KB file."
-    )
-    lines.append(
-        "- **KB vs Remember**: Use `read` for reference documents, guides, "
-        "and long-form content. Use `remember` for short, searchable facts "
-        "you want to recall across conversations."
-    )
-    lines.append(
-        "- **Frontmatter**: KB files MUST include YAML frontmatter "
-        "(delimited by `---` lines) with a `description` field. This "
-        "description appears as a snippet in the \"Available Knowledge Files\" "
-        "listing, helping agents decide whether to read the full file."
-    )
-    lines.append(
-        "- **Best practices**: Store structured reference material in KB "
-        "(specs, API docs, conventions). Keep each file focused on one topic. "
-        "Update KB files when information changes. Always include frontmatter "
-        "with a `description` when creating a new KB file."
-    )
-    lines.append(
-        "- **Wiki-links**: Use `[[kb/filename]]` (without `.md` extension) "
-        "to link between KB documents. "
-        "Update `_kb_index.md` when adding new KB files."
-    )
-
-    # --- KB Coaching ---
-    lines.append("")
-    lines.append("### KB Coaching")
-    lines.append(
-        "When creating new KB files, add `[[kb/...]]` wiki-links to related "
-        "documents so the knowledge graph stays connected. Use the `kb_graph` "
-        "tool to explore existing link neighborhoods. Keep `_kb_index.md` "
-        "updated when you add or remove KB documents."
-    )
-
-    # Inject notes.md instructions only if notes.md exists in KB
-    if 'notes.md' in files:
-        lines.append("")
-        lines.append("### Notes.md - User Preferences & Instructions")
-        lines.append(
-            "You have a `notes.md` file in your KB. This file is your primary "
-            "location for storing your user's personal preferences, tastes, "
-            "language preferences, and communication style instructions."
-        )
-        lines.append("")
-        lines.append("**Use notes.md for:**")
-        lines.append(
-            "- User's preferred language (e.g., 'User prefers Bahasa Indonesia')"
-        )
-        lines.append(
-            "- Communication style preferences (e.g., 'User likes concise "
-            "answers', 'User dislikes emoji')"
-        )
-        lines.append("- Personal instructions (e.g., 'Call the user Pak')")
-        lines.append(
-            "- Tastes and preferences (e.g., 'User prefers bullet points "
-            "over paragraphs')"
-        )
-        lines.append("")
-        lines.append("**Do NOT put in notes.md -- use `remember` instead:**")
-        lines.append(
-            "- Factual/memorization data: addresses, phone numbers, email, birthday"
-        )
-        lines.append(
-            "- Secret/sensitive data: passwords, tokens, PINs, secret codes, "
-            "bank accounts"
-        )
-        lines.append("")
-        lines.append("**Usage rules:**")
-        lines.append('- Read this file: `read(\"notes.md\")`')
-        lines.append(
-            "- Update via `write_file` with path `/_self/kb/notes.md`"
-        )
-        lines.append(
-            "- Update immediately when the user communicates a new preference"
-        )
-        lines.append(
-            "- Prioritize notes.md over `remember` for non-factual preference "
-            "information"
-        )
-
-    return lines
 
 
 def _build_static_prompt(agent: Dict[str, Any]) -> str:
@@ -518,13 +285,27 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
                 if tool_prompt:
                     if not agent.get('sandbox_enabled'):
                         tool_prompt = tool_prompt.replace('/workspace/shared/agents/', '')
-                        tool_prompt = tool_prompt.replace('/workspace', 'the agents working directory')
+                        tool_prompt = tool_prompt.replace('/workspace', _resolve_workspace(agent))
                     parts.append(tool_prompt)
 
-    # List available KB files with graph-aware metadata (links, tags, staleness)
-    _kb_listing_lines = _build_kb_listing(eid)
-    if _kb_listing_lines:
-        parts.extend(_kb_listing_lines)
+    # Scratchpad policy — only injected for agents that can create/run scripts
+    # (bash / runpy / write_file). Keeps throwaway operational scripts and temp
+    # files out of the project root and workspace by pointing them at a dedicated
+    # per-agent scratchpad directory.
+    _script_tools = {'bash', 'runpy', 'write_file'}
+    if assigned_ids & _script_tools:
+        from backend.tools._workspace import scratch_dir
+        scratch = scratch_dir(agent.get('agent_id') or aid)
+        parts.append(
+            "\n## Script & Scratch File Policy (MANDATORY)\n"
+            "You have tools that create and run scripts. Write EVERY throwaway "
+            "script, temporary file, and intermediate operational output to your "
+            f"dedicated scratchpad directory:\n\n    {scratch}/\n\n"
+            f"- Create it first if missing: `mkdir -p {scratch}`\n"
+            "- Never scatter one-off scripts or temp files in the project root, the "
+            "workspace, or arbitrary /tmp paths.\n"
+            "- Only durable, intentional deliverables belong outside the scratchpad."
+        )
 
     # Message Wrapper Protocol
     parts.append("")
@@ -537,40 +318,49 @@ def _build_static_prompt(agent: Dict[str, Any]) -> str:
     )
     parts.append(
         "2. If found: store it immediately via remember() (factual data), "
-        "update notes.md (tastes/preferences/style), or update SYSTEM.md (critical rules)."
+        "store it as a preference via remember() for non-factual style notes, or update SYSTEM.md (critical rules)."
     )
     parts.append(
         "3. This applies to BOTH explicit and implicit cues. Even casual mentions count."
     )
 
     # Memory Retrieval Protocol — coach the agent on the retrieval side of
-    # long-term memory (the capture side is covered above). Relevant facts are
-    # auto-injected each turn, but the agent should reach for these tools when it
-    # needs more than what was injected.
+    # long-term memory (the capture side is covered above). Memories are NOT
+    # auto-injected; the agent must use recall() to explicitly fetch them.
     parts.append("")
     parts.append("## Memory Retrieval Protocol")
     parts.append(
-        "You have long-term memory that persists across conversations. Relevant facts "
-        "are injected automatically each turn under a \"## Memory\" heading, so you "
-        "usually do not need to fetch them. When you need MORE than what was injected:"
+        "You have long-term memory that persists across conversations. You MUST use "
+        "the `recall` tool to look up past facts — nothing is injected automatically."
     )
     parts.append(
         "- `recall(query=\"...\")` — fast keyword lookup of a specific stored fact "
-        "(e.g. a phone number, an address, a name)."
+        "(e.g. a phone number, an address, a name). This is the default (mode='fts')."
     )
     parts.append(
-        "- `think(query=\"...\")` — reason over EVERYTHING you know about a topic; "
-        "returns a synthesis plus what is still missing. Prefer this over `recall` for "
+        "- `recall(query=\"...\", mode=\"think\")` — reason over EVERYTHING you know "
+        "about a topic; returns a synthesis plus what is still missing. Prefer this for "
         "open questions like \"what do I know about the user's project?\"."
     )
     parts.append(
-        "- `graph_query(entity=\"...\")` — follow relationships between people, "
+        "- `recall(query=\"...\", mode=\"graph\")` — follow relationships between people, "
         "organizations, and projects (e.g. where someone works, what they founded, "
-        "who they advise)."
+        "who they advise); `query` is the entity name."
     )
     parts.append(
         "Look facts up instead of guessing or asking the user for something you may "
         "already know."
+    )
+    parts.append(
+        "- If you are not sure about a thing or what the user wants, check first "
+        "using the `recall` tool \u2014 the information might already be there."
+    )
+    parts.append(
+        "- **Recall before filesystem search**: When you need to locate a project "
+        "directory, binary, configuration file, or any file path, you MUST use "
+        "`recall` first to check if the location is already stored in long-term "
+        "memory. Only after confirming the information is not in memory should you "
+        "resort to filesystem exploration."
     )
 
     # List available skills with SYSTEM.md so the agent knows what it can load
@@ -745,6 +535,14 @@ def _cache_key_valid(agent: Dict[str, Any], cache_entry: Dict[str, Any]) -> bool
     if get_evomem_db_mtime(eid) != cache_entry.get('evomem_mtime', 0.0):
         return False
 
+    # Check run_as_user — changing the execution user must invalidate the cache
+    if agent.get('run_as_user') != cache_entry.get('run_as_user'):
+        return False
+
+    # Check workspace — changing via /cd must invalidate the cache
+    if _resolve_workspace(agent) != cache_entry.get('workspace'):
+        return False
+
     return True
 
 
@@ -788,6 +586,8 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
             'ctx_mtime': _get_mtime(__file__),
             'sandbox_enabled': agent.get('sandbox_enabled', 0),
             'vars_hash': vars_hash,
+            'run_as_user': agent.get('run_as_user'),
+            'workspace': _resolve_workspace(agent),
         }
 
     prompt = static_prompt
@@ -832,6 +632,41 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
             prompt += (f"\n\nCurrent date/time: {now.strftime('%A')}, "
                        f"{now.strftime('%Y-%m-%d')}, {now.strftime('%H:%M:%S')} (WIB/UTC+7)")
 
+    # Run-as-user awareness: tell agent which user they execute as (no sudo needed).
+    run_as_user = agent.get('run_as_user')
+    if run_as_user and not agent.get('sandbox_enabled'):
+        prompt += f"\n\nYou are run as the **{run_as_user}** user."
+
+    # Bwrap sandbox awareness: agents executing inside a bubblewrap sandbox
+    # (bwrap workplace, or global SANDBOX_BACKEND=bwrap) need to know its rules.
+    _bwrap_active = False
+    _wp_id = agent.get('workplace_id')
+    if _wp_id:
+        try:
+            _wp = db.get_workplace(_wp_id)
+            _bwrap_active = bool(_wp and _wp.get('type') == 'bwrap')
+        except Exception:
+            pass
+    elif agent.get('sandbox_enabled'):
+        try:
+            from config import SANDBOX_BACKEND
+            _bwrap_active = SANDBOX_BACKEND == 'bwrap'
+        except ImportError:
+            pass
+    if _bwrap_active:
+        prompt += (
+            "\n\n## Sandbox Environment\n"
+            "You run inside a lightweight Linux sandbox (bubblewrap):\n"
+            "- No root/sudo — the OS filesystem is read-only. Install tools into your "
+            "home instead (`pip install --user`, `npm --prefix ~/…`, or binaries in `~/bin`); "
+            "your home persists.\n"
+            "- Work in `/workspace` (visible to file tools) or `~` (`/home/agent`). "
+            "Files under `/tmp` are invisible to file tools.\n"
+            "- Background processes (servers, tunnels, tmux) keep running between "
+            "commands, but die when the platform restarts.\n"
+            "- `ping` may be unavailable (no raw sockets) — use `curl` to test connectivity."
+        )
+
     # Dynamic enabled-agent roster for super agents.
     # Injects a lightweight list of enabled agents (id, name, description) so the
     # super agent can quickly identify targets for delegation via send_agent_message.
@@ -870,6 +705,15 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
         except Exception:
             _logger.warning("Failed to lookup workplace for agent %s", aid, exc_info=True)
 
+    # CWD awareness: tell non-sandbox agents their actual working directory.
+    # Sandbox agents already know they run at /workspace from the Sandbox
+    # Environment section. Tunnel/remote agents need this since their tool
+    # descriptions no longer show a generic placeholder.
+    if not agent.get('sandbox_enabled'):
+        workspace = _resolve_workspace(agent)
+        if workspace:
+            prompt += f"\n\nYour current working directory is `{workspace}`.\n"
+
     # Always append the empty-response recovery instruction
     prompt += (
         "\n\n## Response Recovery Rule\n"
@@ -888,6 +732,7 @@ def build_system_prompt(agent: Dict[str, Any], injected_system_vars: Dict[str, s
         ("/stop", "Stop the agent's current processing loop"),
         ("/detach", "Move the running long-running process (build/download) to the background so we can keep chatting — tracking is persistent (survives restarts) and you'll be notified to report the result when it finishes; the watcher is removed automatically, no cleanup needed"),
         ("/jobs", "List background jobs for this session"),
+        ("/dump", "Dump current session as JSONL file for download"),
     ]
     slash_commands.append(("/plan", "Switch to plan mode"))
     slash_commands.append(("/unfocus", "Force-clear focus mode — use when agent is stuck in focus after a failed task"))
@@ -954,17 +799,52 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Build the OpenAI function tool list for this agent."""
     tools = []
 
-    # Built-in tools (read, use_skill, set_mode, remember, recall, etc.)
+    # Explorer sub-agents (the Explore tool's explorers AND the KB organizer) are
+    # isolated workers: they get ONLY their configured tools — the direxplorer
+    # read-only set (Grep/Read/Glob) plus any EXTRAS the user added in the explorer
+    # skill settings. They must NOT receive built-ins (remember/recall/...),
+    # universal, messaging, or parent tools. Resolve FIRST and return; their tools
+    # may come from a LAZY skill, hence resolving directly via _explorer.tool_defs.
+    if agent.get('is_explorer'):
+        from backend.agent_runtime import explorer as _explorer
+        seen_fn_names = set()
+        for tool_def in _explorer.tool_defs(agent):
+            fn_name = tool_def.get('function', {}).get('name', '')
+            if fn_name and fn_name not in seen_fn_names:
+                seen_fn_names.add(fn_name)
+                tools.append(tool_def)
+        return tools
+
+    # Built-in tools (use_skill, set_mode, remember, recall, etc.)
     # Can be disabled per-agent via builtin_tools_enabled advanced setting.
-    # Pass workplace_id so built-in factories can tailor descriptions for remote agents
-    # (e.g. read() tool mentions /_self/kb/ when workplace_id is set).
     agent_context = {
         'id': agent['id'],
         'is_super': bool(agent.get('is_super')),
         'workplace_id': agent.get('workplace_id'),
+        'enable_atg': bool(agent.get('enable_atg')) and bool(agent.get('enable_agent_state')),
+        'enable_cmp': bool(agent.get('enable_cmp')) and bool(agent.get('enable_agent_state')),
     }
     if agent.get('builtin_tools_enabled', True):
         tools.extend(tool_registry.get_builtin_tools(agent_context))
+
+    # Universal tools — always available to all agents without explicit assignment.
+    # These are regular backend/tools/.py implementations (save_artifact, send_file)
+    # that should behave like built-in tools but don't use the built-in factory pattern.
+    seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
+    for tool_def in tool_registry.get_all_tool_defs():
+        fn_name = tool_def.get('function', {}).get('name', '')
+        tool_id = tool_def.get('id', '')
+        if not fn_name or tool_id.startswith('skill:'):
+            continue
+        if fn_name not in BUILTIN_TOOL_IDS:
+            continue
+        if fn_name in seen_fn_names:
+            continue
+        seen_fn_names.add(fn_name)
+        tools.append({
+            "type": "function",
+            "function": tool_def['function']
+        })
 
     # Super agent gets its own administrative built-in tools
     if agent.get('is_super'):
@@ -1010,6 +890,17 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     # Sub-agents inherit parent's tool assignments.
     eid = _effective_id(agent)
     assigned_ids = set(db.get_agent_tools(eid))
+
+    # Auto-assign describe_image for vision-enabled agents.
+    # Mirrors the auto-assignment in runtime.py and prefetch.py so that
+    # build_tools includes the tool definition (not just the hint).
+    if agent.get('vision_enabled', 1):
+        assigned_ids.add('describe_image')
+
+    # Auto-assign transcribe_audio for audio-enabled agents.
+    if agent.get('audio_enabled'):
+        assigned_ids.add('transcribe_audio')
+
     if assigned_ids:
         seen_fn_names = {t['function']['name'] for t in tools if t.get('function', {}).get('name')}
         for tool_def in tool_registry.get_all_tool_defs():
@@ -1062,6 +953,7 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
     # (workplace/remote) aren't running in Docker, so sanitize these.
     if not agent.get('sandbox_enabled'):
         # Ordered replacements — most specific first to avoid partial matches
+        workspace = _resolve_workspace(agent)
         replacements = [
             ('in an isolated Docker container', 'in an isolated execution environment'),
             ('in a sandboxed Docker container', 'in a sandboxed execution environment'),
@@ -1071,10 +963,11 @@ def build_tools(agent: Dict[str, Any]) -> List[Dict[str, Any]]:
             ('tear down the container', 'tear down the environment'),
             ('destroys the shared runpy container', 'destroys the shared runpy environment'),
             ('local/Docker execution', 'local execution'),
-            ('/workspace', 'the agents working directory'),
+            ('/workspace', workspace),
         ]
         for tool in tools:
-            func = tool.get('function', {})
+            func = copy.deepcopy(tool.get('function', {}))
+            tool['function'] = func
             # Patch function-level description
             if 'description' in func:
                 desc = func['description']
@@ -1127,17 +1020,9 @@ def get_compiled_context(agent_id: str, user_id: str = None) -> dict:
         }
     }
 
-    # If user_id provided, also return memories and summary (actual LLM context extras)
+    # If user_id provided, also return summary (actual LLM context extra)
     if user_id:
-        from backend.agent_runtime.memory_manager import get_memories_for_context
         session_id = db.get_or_create_session(agent_id, user_id)
-        fake_messages = [{"role": "system", "content": system_prompt}]
-        memory_text = get_memories_for_context(agent_id, fake_messages)
-        mem_tokens = 0
-        if memory_text:
-            result["memories"] = memory_text
-            mem_tokens = _token_count(memory_text)
-            result["tokens"]["memories"] = mem_tokens
 
         summary_record = db.get_summary(session_id, agent_id=agent_id)
         sum_tokens = 0
@@ -1147,8 +1032,8 @@ def get_compiled_context(agent_id: str, user_id: str = None) -> dict:
             sum_tokens = _token_count(summary_text)
             result["tokens"]["summary"] = sum_tokens
 
-        # Recalculate total to include memories and summary
-        result["tokens"]["total"] = sp_tokens + tool_tokens + mem_tokens + sum_tokens
+        # Recalculate total to include summary
+        result["tokens"]["total"] = sp_tokens + tool_tokens + sum_tokens
 
     return result
 
@@ -1179,85 +1064,131 @@ def command_hint_from_content(content: str) -> str:
     return "unknown"
 
 
-def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True) -> dict:
-    """Convert a DB message row into an LLM message dict."""
-    entry = {"role": msg['role']}
-    _msg_meta = msg.get('metadata') if isinstance(msg.get('metadata'), dict) else {}
-    msg_image = _msg_meta.get('image_url') if _msg_meta else None
-    msg_audio = _msg_meta.get('audio_url') if _msg_meta else None
-    msg_video = _msg_meta.get('video_url') if _msg_meta else None
-    # Images are NEVER auto-fed to the main LLM — always use the describe_image tool instead.
-    has_audio = msg_audio and agent.get('audio_enabled')
-    has_video = msg_video and agent.get('video_enabled')
-    has_image_attachment = msg_image is not None  # track for attachment note enhancement
+def build_attachment_note(attachment_info: dict,
+                          has_describe_image: bool = True,
+                          audio_enabled: bool = False) -> str:
+    """Render authoritative attachment metadata for model-visible context.
 
-    # Build attachment context note if attachment_info is present in metadata
-    attachment_info = _msg_meta.get('attachment_info') if _msg_meta else None
-    attachment_note = None
-    if attachment_info and isinstance(attachment_info, dict):
-        file_path = attachment_info.get('file_path', '')
-        filename = attachment_info.get('filename', '')
-        mime_type = attachment_info.get('mime_type', 'application/octet-stream')
-        size_bytes = int(attachment_info.get('size_bytes', 0) or 0)
+    The database attachment ID is intentionally explicit so the model can call
+    ``read_attachment(attachment_id=N)`` without inferring an ID from a session
+    name or storage path.
+    """
+    file_path = attachment_info.get('file_path', '')
+    if file_path and not os.path.isabs(file_path):
+        file_path = os.path.abspath(os.path.join(_BASE_DIR, file_path))
+
+    filename = attachment_info.get('filename', '')
+    mime_type = attachment_info.get('mime_type') or 'application/octet-stream'
+    size_bytes = int(attachment_info.get('size_bytes', 0) or 0)
+    attachment_id = attachment_info.get('attachment_id')
+    if size_bytes >= 1048576:
+        size_str = f"{size_bytes / 1048576:.1f} MB"
+    elif size_bytes >= 1024:
+        size_str = f"{size_bytes / 1024:.1f} KB"
+    else:
+        size_str = f"{size_bytes} B"
+
+    note = f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
+    if attachment_id is not None:
+        note += f"\nAttachment ID: {attachment_id}"
+    note += f"\nFile path: {file_path}"
+
+    if mime_type.startswith('image/') and has_describe_image:
+        note += "\nUse the `describe_image` tool to view and analyze this image."
+    if mime_type.startswith('audio/') and audio_enabled:
+        note += "\nUse the `transcribe_audio` tool to listen to this audio."
+    return note
+
+
+def build_attachment_notes(attachment_infos: list,
+                           has_describe_image: bool = True,
+                           audio_enabled: bool = False) -> str:
+    """Render notes for multiple attachments, numbered when more than one.
+
+    Mirrors ``runtime._append_attachment_context`` so a DB-reconstructed message
+    and a freshly-handled one produce identical model-visible context.  Each note
+    starts with ``\\n\\n`` so callers can append with ``content.rstrip() + notes``.
+    """
+    notes = []
+    count = len(attachment_infos)
+    for index, info in enumerate(attachment_infos, 1):
+        file_path = info.get('file_path', '')
+        if file_path and not os.path.isabs(file_path):
+            file_path = os.path.abspath(os.path.join(_BASE_DIR, file_path))
+        filename = info.get('filename', '')
+        mime_type = info.get('mime_type', '')
+        size_bytes = int(info.get('size_bytes', 0) or 0)
         if size_bytes >= 1048576:
             size_str = f"{size_bytes / 1048576:.1f} MB"
         elif size_bytes >= 1024:
             size_str = f"{size_bytes / 1024:.1f} KB"
         else:
             size_str = f"{size_bytes} B"
-        is_image = mime_type and mime_type.startswith("image/")
-        if is_image and has_image_attachment:
-            attachment_note = (
-                f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
-                f"\nFile path: {file_path}"
-            )
-            if has_describe_image:
-                attachment_note += "\nUse the `describe_image` tool to view and analyze this image."
-        else:
-            attachment_note = (
-                f"\n\n[Attachment: {filename} ({mime_type}, {size_str})]"
-                f"\nFile path: {file_path}"
-            )
+        label = f"Attachment #{index}" if count > 1 else "Attachment"
+        note = f"\n\n[{label}: {filename} ({mime_type}, {size_str})]\nFile path: {file_path}"
+        if mime_type.startswith('image/') and has_describe_image:
+            note += "\nUse the `describe_image` tool to view and analyze this image."
+        if mime_type.startswith('audio/') and audio_enabled:
+            note += "\nUse the `transcribe_audio` tool to listen to this audio."
+        notes.append(note)
+    return ''.join(notes)
 
-    if has_audio or has_video:
+
+def append_attachment_note(msg: dict,
+                           attachment_info: dict,
+                           has_describe_image: bool = True,
+                           audio_enabled: bool = False) -> dict:
+    """Append structured attachment metadata to a model message in-place."""
+    note = build_attachment_note(
+        attachment_info,
+        has_describe_image=has_describe_image,
+        audio_enabled=audio_enabled,
+    )
+    content = msg.get('content', '') or ''
+    msg['content'] = content.rstrip() + note
+    return msg
+
+
+def build_message_entry(msg: dict, agent: dict, has_describe_image: bool = True) -> dict:
+    """Convert a DB message row into an LLM message dict."""
+    entry = {"role": msg['role']}
+    _msg_meta = msg.get('metadata') if isinstance(msg.get('metadata'), dict) else {}
+    msg_image = _msg_meta.get('image_url') if _msg_meta else None
+    msg_video = _msg_meta.get('video_url') if _msg_meta else None
+    # Images are NEVER auto-fed to the main LLM — always use the describe_image tool instead.
+    # Audio is likewise never auto-fed — agents listen via the transcribe_audio tool.
+    has_video = msg_video and agent.get('video_enabled')
+
+    # Build attachment context note from authoritative structured metadata.
+    # Prefer the plural attachment_infos list; fall back to the legacy singular
+    # attachment_info when no valid plural entries are present.
+    attachment_infos = _msg_meta.get('attachment_infos') if _msg_meta else None
+    attachment_info = _msg_meta.get('attachment_info') if _msg_meta else None
+    if not isinstance(attachment_infos, list):
+        attachment_infos = []
+    attachment_infos = [info for info in attachment_infos if isinstance(info, dict)]
+    attachment_note = None
+    if attachment_infos:
+        attachment_note = build_attachment_notes(
+            attachment_infos,
+            has_describe_image=has_describe_image,
+            audio_enabled=bool(agent.get('audio_enabled')),
+        )
+    elif attachment_info and isinstance(attachment_info, dict):
+        attachment_note = build_attachment_note(
+            attachment_info,
+            has_describe_image=has_describe_image,
+            audio_enabled=bool(agent.get('audio_enabled')),
+        )
+
+    if has_video:
         parts = []
         text_content = msg.get('content', '')
         if attachment_note:
             text_content = text_content.rstrip() + attachment_note
         if text_content and text_content not in ('[Image]', '[Audio]', '[Video]'):
             parts.append({"type": "text", "text": text_content})
-        # NOTE: Images are never auto-fed — use describe_image tool instead.
-        if has_audio:
-            if msg_audio.startswith("data:"):
-                try:
-                    header, b64data = msg_audio.split(",", 1)
-                    fmt = header.split(":")[1].split(";")[0].split("/")[1]
-                except (ValueError, IndexError):
-                    fmt, b64data = "wav", msg_audio
-
-                # Catch any OGG audio not converted at the channel level.
-                # Some code paths or legacy data may still reach here with
-                # format=ogg, which multimodal LLM APIs reject.
-                if fmt == "ogg":
-                    try:
-                        from backend.audio_utils import convert_ogg_to_wav
-                        raw = convert_ogg_to_wav(base64.b64decode(b64data))
-                        b64data = base64.b64encode(raw).decode('utf-8')
-                        fmt = "wav"
-                    except Exception as conv_err:
-                        _logger.error(
-                            "OGG->WAV conversion fallback failed: %s -- "
-                            "audio skipped for multimodal",
-                            conv_err,
-                        )
-                        fmt, b64data = "wav", ""  # empty data = skip audio
-
-                if b64data:
-                    parts.append({"type": "input_audio", "input_audio": {"data": b64data, "format": fmt}})
-            else:
-                parts.append({"type": "input_audio", "input_audio": {"data": msg_audio, "format": "wav"}})
-        if has_video:
-            parts.append({"type": "video_url", "video_url": {"url": msg_video}})
+        parts.append({"type": "video_url", "video_url": {"url": msg_video}})
         if not parts or parts[0].get('type') != 'text':
             parts.insert(0, {"type": "text", "text": "What is in this media?"})
         entry['content'] = parts

@@ -26,7 +26,7 @@ Go to **Admin → Settings → LLM Models** in the Evonic web UI. Each model has
 
 ### MODEL_MODEL_MAP
 
-A JSON object mapping public model aliases (keys) to internal `model_name` values (values). These aliases are exposed through the `/v1/models` endpoint and accepted by the `model` field in `/v1/chat/completions`. This lets you present user-friendly model names to API consumers.
+A JSON object mapping public model aliases (keys) to internal `model_name` values (values). These aliases are exposed through the `/plugin/model-router/v1/models` endpoint and accepted by the `model` field in `/plugin/model-router/v1/chat/completions`. This lets you present user-friendly model names to API consumers.
 
 **Example:**
 ```json

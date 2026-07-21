@@ -3,11 +3,12 @@ WorkplaceManager — manages execution backends for Workplace objects.
 
 Multiple agent sessions can share the same Workplace (same workplace_id).
 For local workplaces, separate backends are maintained for sandboxed
-vs. non-sandboxed execution. For tunnel and remote workplaces,
+vs. non-sandboxed execution. For tunnel, remote and bwrap workplaces,
 one backend instance per workplace_id is shared across sessions.
 
 Tunnel workplaces are 1:1 with an agent; their backend is created when Evonet connects.
-Local and Remote workplaces' backends are created on first access and cached.
+Local, Remote and Bwrap workplaces' backends are created on first access and cached.
+Bwrap workplaces run all commands inside a bubblewrap sandbox (Linux-only).
 """
 
 import json
@@ -51,6 +52,17 @@ class WorkplaceManager:
             self._set_status(workplace_id, 'connected')
             return backend
 
+        if workplace_type == 'bwrap':
+            bwrap_key = (workplace_id, False)   # sandbox flag is irrelevant for bwrap
+            with self._lock:
+                if bwrap_key in self._backends:
+                    return self._backends[bwrap_key]
+            backend = self._create_bwrap(workplace_id, workplace, config)
+            with self._lock:
+                self._backends[bwrap_key] = backend
+            self._set_status(workplace_id, 'connected')
+            return backend
+
         if workplace_type == 'remote':
             return self._connect_remote(workplace_id, config)
 
@@ -82,6 +94,20 @@ class WorkplaceManager:
                     self._backends[local_key] = self._create_local(config)
             self._set_status(workplace_id, 'connected')
             return {'ok': True, 'status': 'connected'}
+
+        if workplace_type == 'bwrap':
+            try:
+                bwrap_key = (workplace_id, False)
+                with self._lock:
+                    exists = bwrap_key in self._backends
+                if not exists:
+                    backend = self._create_bwrap(workplace_id, workplace, config)
+                    with self._lock:
+                        self._backends[bwrap_key] = backend
+                self._set_status(workplace_id, 'connected')
+                return {'ok': True, 'status': 'connected'}
+            except Exception as e:
+                return {'ok': False, 'error': str(e)}  # _create_bwrap already set status='error'
 
         if workplace_type == 'remote':
             try:
@@ -249,6 +275,21 @@ class WorkplaceManager:
     def _create_local(self, config: dict, sandbox_enabled: bool = False) -> ExecutionBackend:
         from backend.workplaces.backends.local_workplace import LocalWorkplaceBackend
         return LocalWorkplaceBackend(config=config, sandbox_enabled=sandbox_enabled)
+
+    def _create_bwrap(self, workplace_id: str, workplace: dict, config: dict) -> ExecutionBackend:
+        from backend.tools.lib.backends.bwrap_backend import BwrapBackend
+        backend = BwrapBackend(
+            session_id=f'workplace-bwrap-{workplace_id}',
+            workspace=config.get('workspace_path'),
+            agent_id=f'workplace-{workplace_id}',
+            agent_name=workplace.get('name') or workplace_id,   # sandbox hostname = workplace name
+        )
+        st = backend.status()
+        if not st.get('available'):
+            msg = st.get('error') or 'bubblewrap is not available on this host.'
+            self._set_status(workplace_id, 'error', msg)
+            raise RuntimeError(msg)
+        return backend
 
     def _connect_remote(self, workplace_id: str, config: dict) -> ExecutionBackend:
         self._set_status(workplace_id, 'connecting')

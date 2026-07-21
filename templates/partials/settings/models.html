@@ -1,0 +1,589 @@
+{# Models pane — provider-grouped model cards + provider/model modals.
+   Logic in static/js/settings-models.js #}
+
+<div class="settings-pane-head">
+    <div class="flex items-start justify-between gap-4">
+        <div>
+            <h2 class="settings-pane-title">Models</h2>
+            <p class="settings-pane-desc">
+                Manage providers and their LLM models.
+            </p>
+        </div>
+        <div class="flex gap-2 flex-shrink-0">
+            <button onclick="settingsModels.showAddProviderModal()" class="btn-primary" style="background:var(--st-bg-2);color:var(--text-primary);border:1px solid var(--st-border);">
+                <i data-lucide="server"></i>Add Provider
+            </button>
+            <button onclick="settingsModels.showAddModelModal()" class="btn-primary">
+                <i data-lucide="plus"></i>Add Model
+            </button>
+        </div>
+    </div>
+</div>
+
+<div class="space-y-4">
+    <!-- Search Bar -->
+    <div class="relative">
+        <input
+            type="text"
+            id="model-search-input"
+            placeholder="Search models or providers…"
+            oninput="settingsModels.filter()"
+            class="w-full border border-gray-200 dark:border-gray-600 rounded-lg pl-10 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+        />
+        <svg
+            class="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+        >
+            <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+            />
+        </svg>
+    </div>
+
+    <!-- Provider-grouped models -->
+    <div id="models-list" class="space-y-6">
+        <p class="text-gray-500 text-center py-4">Loading models…</p>
+    </div>
+</div>
+
+<!-- Provider Modal -->
+<div id="provider-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[90vh]"
+    >
+        <div
+            class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="provider-modal-title"
+                class="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
+                Add Provider
+            </h3>
+            <button
+                onclick="closeModal('provider-modal')"
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            >
+                &times;
+            </button>
+        </div>
+        <form
+            id="provider-form"
+            onsubmit="settingsModels.saveProvider(event)"
+            class="overflow-y-auto p-6 flex-1"
+        >
+            <input type="hidden" id="provider-edit-id" />
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-id">
+                    Provider ID *
+                </label>
+                <input
+                    type="text"
+                    id="provider-id"
+                    required
+                    placeholder="e.g., openrouter"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Lowercase identifier, no spaces. Used in model IDs.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-name">
+                    Display Name *
+                </label>
+                <input
+                    type="text"
+                    id="provider-name"
+                    required
+                    placeholder="e.g., OpenRouter"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-type">
+                    Type
+                </label>
+                <select
+                    id="provider-type"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <option value="remote">Remote</option>
+                    <option value="local">Local</option>
+                </select>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-base-url">
+                    Base URL
+                </label>
+                <input
+                    type="url"
+                    id="provider-base-url"
+                    placeholder="https://openrouter.ai/api/v1"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-api-key">
+                    API Key
+                </label>
+                <input
+                    type="password"
+                    id="provider-api-key"
+                    placeholder="sk-or-..."
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Shared across models under this provider. Models can override.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1" for="provider-api-format">
+                    API Format
+                </label>
+                <select
+                    id="provider-api-format"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <option value="openai">OpenAI</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="codex">Codex (OAuth)</option>
+                </select>
+            </div>
+        </form>
+        <div
+            class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                type="button"
+                onclick="closeModal('provider-modal')"
+                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition"
+            >
+                Cancel
+            </button>
+            <button
+                type="submit"
+                form="provider-form"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
+            >
+                Save Provider
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Model Modal -->
+<div id="model-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mx-4 flex flex-col max-h-[90vh]"
+    >
+        <div
+            class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="modal-title"
+                class="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
+                Add Model
+            </h3>
+            <button
+                onclick="closeModal('model-modal')"
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            >
+                &times;
+            </button>
+        </div>
+        <form
+            id="model-form"
+            onsubmit="settingsModels.save(event)"
+            class="overflow-y-auto p-6 flex-1"
+        >
+            <input type="hidden" id="model-id" />
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-name"
+                    >Model Name *</label
+                >
+                <input
+                    type="text"
+                    id="model-name"
+                    required
+                    placeholder="e.g., Claude Sonnet"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-type"
+                    >Type *</label
+                >
+                <select
+                    id="model-type"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    onchange="settingsModels.toggleFields()"
+                >
+                    <option value="remote">Remote</option>
+                    <option value="local">Local</option>
+                </select>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-provider"
+                    >Provider *</label
+                >
+                <select
+                    id="model-provider"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <!-- Populated dynamically from providers API -->
+                </select>
+            </div>
+
+            <div class="mb-4" id="base-url-group">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-base-url"
+                    >Base URL (override)</label
+                >
+                <input
+                    type="url"
+                    id="model-base-url"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    placeholder="Leave empty to use provider's URL"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-api-format"
+                    >API Format</label
+                >
+                <select
+                    id="model-api-format"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                >
+                    <option value="openai">OpenAI</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="anthropic">Anthropic</option>
+                    <option value="codex">Codex (OAuth)</option>
+                </select>
+            </div>
+
+            <div class="mb-4" id="api-key-group">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-api-key"
+                    >API Key (override)</label
+                >
+                <input
+                    type="password"
+                    id="model-api-key"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    placeholder="Leave empty to use provider's key"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-name-param"
+                    >Model ID *</label
+                >
+                <input
+                    type="text"
+                    id="model-name-param"
+                    required
+                    placeholder="anthropic/claude-3.5-sonnet"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                />
+                <p
+                    id="model-id-hint"
+                    class="text-xs text-gray-400 dark:text-gray-500 mt-1"
+                >
+                    The exact ID format depends on the provider. Browse the
+                    catalog at
+                    <a
+                        href="https://models.dev/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300 underline"
+                        >models.dev</a
+                    >.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-max-tokens"
+                    >Max Tokens</label
+                >
+                <input
+                    type="number"
+                    id="model-max-tokens"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="32768"
+                    min="1"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-context-window"
+                    >Context Window (tokens)</label
+                >
+                <input
+                    type="number"
+                    id="model-context-window"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="0"
+                    min="0"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Total context length of the model. 0 = unknown (falls back
+                    to the global context length setting).
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-timeout"
+                    >Timeout (seconds)</label
+                >
+                <input
+                    type="number"
+                    id="model-timeout"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="60"
+                    min="1"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-max-concurrent"
+                    >Max Concurrent Turns</label
+                >
+                <input
+                    type="number"
+                    id="model-max-concurrent"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="1"
+                    min="0"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Limit parallel agent turns using this model. 0 = use the
+                    global per-model setting from General Settings.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-temperature"
+                    >Temperature</label
+                >
+                <input
+                    type="number"
+                    id="model-temperature"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    placeholder="e.g. 0.7"
+                    step="0.1"
+                    min="0"
+                    max="2"
+                />
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                    Leave empty for server default.
+                </p>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                    <input
+                        type="checkbox"
+                        id="model-thinking"
+                        checked
+                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    Enable Thinking Mode
+                </label>
+            </div>
+
+            <div class="mb-4" id="thinking-budget-group">
+                <label
+                    class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    for="model-thinking-budget"
+                    >Thinking Budget (tokens, 0 = default)</label
+                >
+                <input
+                    type="number"
+                    id="model-thinking-budget"
+                    class="w-full border border-gray-200 dark:border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300 focus:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
+                    value="0"
+                    min="0"
+                />
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                    <input
+                        type="checkbox"
+                        id="model-enabled"
+                        checked
+                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    Enabled
+                </label>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                    <input
+                        type="checkbox"
+                        id="model-is-default"
+                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    Set as Global Default
+                </label>
+            </div>
+
+            <div class="mb-4">
+                <label
+                    class="inline-flex items-center gap-2 text-sm font-medium text-gray-700 dark:text-gray-300"
+                >
+                    <input
+                        type="checkbox"
+                        id="model-vision-supported"
+                        class="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    Vision Supported (model can process images)
+                </label>
+            </div>
+
+        </form>
+        <div
+            class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                type="button"
+                onclick="closeModal('model-modal')"
+                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition"
+            >
+                Cancel
+            </button>
+            <button
+                type="submit"
+                form="model-form"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
+            >
+                Save Model
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Fetch Models Modal -->
+<div id="fetch-models-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-2xl mx-4 flex flex-col max-h-[90vh]"
+    >
+        <div
+            class="flex items-center justify-between px-6 pt-5 pb-4 border-b border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <h3
+                id="fetch-models-title"
+                class="text-lg font-semibold text-gray-900 dark:text-gray-100"
+            >
+                Available Models
+            </h3>
+            <button
+                onclick="closeModal('fetch-models-modal')"
+                class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 text-xl leading-none"
+            >
+                &times;
+            </button>
+        </div>
+        <div id="fetch-models-content" class="overflow-y-auto p-6 flex-1">
+            <p class="text-gray-500 text-center py-4">Loading…</p>
+        </div>
+        <div
+            class="flex justify-end gap-2 px-6 pb-5 pt-4 border-t border-gray-100 dark:border-gray-700 flex-shrink-0"
+        >
+            <button
+                type="button"
+                onclick="closeModal('fetch-models-modal')"
+                class="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-600 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-500 transition"
+            >
+                Close
+            </button>
+            <button
+                type="button"
+                onclick="settingsModels.addSelectedModels()"
+                id="fetch-models-add-btn"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition"
+            >
+                Add Selected
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Test Connection Modal (model endpoint test) -->
+<div id="connection-test-modal" class="modal">
+    <div
+        class="bg-white dark:bg-gray-800 rounded-xl w-[90%] max-w-[500px] max-h-[90vh] overflow-y-auto shadow-xl"
+    >
+        <div id="connection-test-header"
+            class="flex justify-between items-center p-5 border-b border-gray-200 dark:border-gray-600"
+        >
+            <h3 id="connection-test-title" class="m-0 text-gray-800 dark:text-gray-100">
+                Test Connection
+            </h3>
+            <button
+                onclick="settingsModels.closeTestModal()"
+                class="bg-transparent border-none text-gray-500 text-2xl cursor-pointer hover:text-gray-800 dark:hover:text-gray-300"
+            >
+                &times;
+            </button>
+        </div>
+        <div id="connection-test-status" class="p-5">
+            <!-- Dynamically populated: loading / success / error -->
+        </div>
+        <div id="connection-test-footer" class="hidden px-5 pb-5 flex justify-end">
+            <button
+                onclick="settingsModels.closeTestModal()"
+                class="px-4 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition-colors"
+            >
+                Close
+            </button>
+        </div>
+    </div>
+</div>

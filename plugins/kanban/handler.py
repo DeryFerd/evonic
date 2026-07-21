@@ -289,7 +289,7 @@ def dashboard_todo_tasks_card(sdk):
 
 _scanner_schedule_id: str | None = None
 _stale_scanner_schedule_id: str | None = None
-_lock = threading.Lock()
+_state_lock = threading.RLock()
 _pending_scan_timer: threading.Timer | None = None
 _classified_comments: set = set()  # comment IDs already classified (avoids re-LLM per scan)
 
@@ -423,14 +423,15 @@ def _notify_agent(agent_id: str, task: dict, channel_type: str, sdk=None, force:
             )
             return {'success': False, 'reason': 'delayed'}
 
-    if not force and (agent_id in _pending_tasks or agent_id in _active_tasks or agent_id in _paused_tasks):
-        busy_task_id = _pending_tasks.get(agent_id) or _active_tasks.get(agent_id) or _paused_tasks.get(agent_id)
-        _log(
-            f'Agent {agent_id} is busy with task {busy_task_id}, '
-            f'deferring task "{task["title"]}" until current task is done',
-            'info', sdk,
-        )
-        return {'success': False, 'reason': 'busy'}
+    with _state_lock:
+        if not force and (agent_id in _pending_tasks or agent_id in _active_tasks or agent_id in _paused_tasks):
+            busy_task_id = _pending_tasks.get(agent_id) or _active_tasks.get(agent_id) or _paused_tasks.get(agent_id)
+            _log(
+                f'Agent {agent_id} is busy with task {busy_task_id}, '
+                f'deferring task "{task["title"]}" until current task is done',
+                'info', sdk,
+            )
+            return {'success': False, 'reason': 'busy'}
 
     # DB-level guard: block if the agent has any in-progress task in the database.
     # Catches cases where _active_tasks is stale (e.g. after a process restart or
@@ -441,8 +442,9 @@ def _notify_agent(agent_id: str, task: dict, channel_type: str, sdk=None, force:
             active = kanban_db.get_active_task_for_agent(agent_id)
             if active:
                 # Self-heal: restore _active_tasks so subsequent checks are fast
-                _active_tasks[agent_id] = str(active["id"])
-                _task_state_since.setdefault(agent_id, time.time())
+                with _state_lock:
+                    _active_tasks[agent_id] = str(active["id"])
+                    _task_state_since.setdefault(agent_id, time.time())
                 _log(
                     f'Agent {agent_id} has in-progress task {active["id"]} in DB, '
                     f'deferring task "{task["title"]}"',
@@ -453,7 +455,8 @@ def _notify_agent(agent_id: str, task: dict, channel_type: str, sdk=None, force:
             pass
 
     if force:
-        _pending_tasks.pop(agent_id, None)
+        with _state_lock:
+            _pending_tasks.pop(agent_id, None)
 
     if not _agent_has_kanban_skill(agent_id):
         _log(f'Agent {agent_id} does not have kanban skill assigned, skipping', 'warn', sdk)
@@ -532,8 +535,9 @@ def _notify_agent(agent_id: str, task: dict, channel_type: str, sdk=None, force:
         dedup=True,
     )
     if result['success']:
-        _pending_tasks[agent_id] = str(task_id)
-        _task_state_since[agent_id] = time.time()
+        with _state_lock:
+            _pending_tasks[agent_id] = str(task_id)
+            _task_state_since[agent_id] = time.time()
         _log(f'Notified agent {agent_id} about task "{task["title"]}"', 'info', sdk)
         return {'success': True}
     elif result.get('reason') == 'deduplicated':
@@ -598,8 +602,10 @@ def _notify_agent_followup(agent_id: str, task: dict, merged_content: str,
     Respects the busy guard — if the agent is already working on another task,
     the notification is skipped and the follow-up will be picked up next scan.
     """
-    if agent_id in _pending_tasks or agent_id in _active_tasks or agent_id in _paused_tasks:
+    with _state_lock:
+        is_busy = agent_id in _pending_tasks or agent_id in _active_tasks or agent_id in _paused_tasks
         busy_task_id = _pending_tasks.get(agent_id) or _active_tasks.get(agent_id) or _paused_tasks.get(agent_id)
+    if is_busy:
         _log(
             f'Agent {agent_id} is busy with task {busy_task_id}, '
             f'deferring follow-up for task "{task["title"]}" until current task is done',
@@ -654,8 +660,9 @@ def _notify_agent_followup(agent_id: str, task: dict, merged_content: str,
         dedup=True,
     )
     if result['success']:
-        _pending_tasks[agent_id] = str(task_id)
-        _task_state_since[agent_id] = time.time()
+        with _state_lock:
+            _pending_tasks[agent_id] = str(task_id)
+            _task_state_since[agent_id] = time.time()
         _log(f'Notified agent {agent_id} about follow-up on task "{task["title"]}"', 'info', sdk)
         return True
     elif result.get('reason') == 'deduplicated':
@@ -734,10 +741,11 @@ def _notify_stale_task(agent_id: str, task: dict, channel_type: str, sdk=None):
         pass
 
     # Mark as active directly — task is already in-progress, skip pick/approve
-    _active_tasks[agent_id] = str(task_id)
-    _task_state_since[agent_id] = time.time()
-    _pending_tasks.pop(agent_id, None)
-    _paused_tasks.pop(agent_id, None)
+    with _state_lock:
+        _active_tasks[agent_id] = str(task_id)
+        _task_state_since[agent_id] = time.time()
+        _pending_tasks.pop(agent_id, None)
+        _paused_tasks.pop(agent_id, None)
 
     # Pre-set agent to execute mode when autopilot is ON
     _pre_set_execute_mode(agent_id, task, sdk)
@@ -776,7 +784,9 @@ def _scan_stale_tasks(sdk=None):
 
         # ── Check 1: agents NOT in any dict but with in-progress task in DB ─────
         for agent_id in eligible:
-            if agent_id in _active_tasks or agent_id in _pending_tasks or agent_id in _paused_tasks:
+            with _state_lock:
+                is_in_dict = agent_id in _active_tasks or agent_id in _pending_tasks or agent_id in _paused_tasks
+            if is_in_dict:
                 continue
             if _ar is not None and _ar.is_agent_busy(agent_id):
                 _log(f'Agent {agent_id} is busy (LLM turn in progress), skipping stale scan', 'info', sdk)
@@ -792,12 +802,13 @@ def _scan_stale_tasks(sdk=None):
         # stale entries in _pending_tasks / _active_tasks.
         now = time.time()
         for agent_id in list(eligible):
-            stuck_task_id = _pending_tasks.get(agent_id) or _active_tasks.get(agent_id)
+            with _state_lock:
+                stuck_task_id = _pending_tasks.get(agent_id) or _active_tasks.get(agent_id)
+                since = _task_state_since.get(agent_id)
             if not stuck_task_id:
                 continue  # paused is intentional, skip
             if _ar is not None and _ar.is_agent_busy(agent_id):
                 continue  # actively running an LLM turn — not stuck
-            since = _task_state_since.get(agent_id)
             if since is None or (now - since) < stale_timeout:
                 continue  # within grace period
             _log(
@@ -805,12 +816,13 @@ def _scan_stale_tasks(sdk=None):
                 f'{stuck_task_id} but no active LLM turn — clearing stale state',
                 'warn', sdk,
             )
-            _pending_tasks.pop(agent_id, None)
-            _active_tasks.pop(agent_id, None)
-            _task_state_since.pop(agent_id, None)
-            _progress_reminder_armed.pop(agent_id, None)
-            _approval_granted.pop(agent_id, None)
-            _awaiting_approval.discard(agent_id)
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
+                _active_tasks.pop(agent_id, None)
+                _task_state_since.pop(agent_id, None)
+                _progress_reminder_armed.pop(agent_id, None)
+                _approval_granted.pop(agent_id, None)
+                _awaiting_approval.discard(agent_id)
             # Clear persisted focus mode so the agent can accept new messages/tasks
             try:
                 from models.db import db as _mdb
@@ -905,8 +917,16 @@ def _scan_and_notify(sdk=None) -> dict:
                     'reason': 'blocked_by_dependency',
                 })
                 continue
-        except Exception:
-            pass
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id}: {dep_exc} — treating as blocked', 'error', sdk)
+            results['details'].append({
+                'task_id': task_id,
+                'title': title,
+                'agent_id': assignee,
+                'success': False,
+                'reason': 'blocked_by_dependency',
+            })
+            continue
 
         notify_result = _notify_agent(assignee, task, channel_type, sdk)
         if notify_result.get('success'):
@@ -1153,7 +1173,8 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                 'result': 'error',
                 'message': "Missing task_id. Call state('kanban:pick', {'task_id': '<id>'}).",
             }
-        existing_active = _active_tasks.get(agent_id)
+        with _state_lock:
+            existing_active = _active_tasks.get(agent_id)
         if existing_active and existing_active != task_id:
             return {
                 'result': 'error',
@@ -1177,11 +1198,20 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                         f"Please work on those tasks first."
                     ),
                 }
-        except Exception:
-            pass
-        _pending_tasks[agent_id] = str(task_id)
-        _task_state_since[agent_id] = time.time()
-        _awaiting_approval.discard(agent_id)
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id} during pick: {dep_exc}', 'error')
+            return {
+                'result': 'error',
+                'message': (
+                    f"Cannot pick task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later or contact an administrator if the issue persists."
+                ),
+            }
+        with _state_lock:
+            _pending_tasks[agent_id] = str(task_id)
+            _task_state_since[agent_id] = time.time()
+            _awaiting_approval.discard(agent_id)
         autopilot = _is_autopilot(agent_id)
         if autopilot:
             return {
@@ -1234,11 +1264,21 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                         f"Please work on those tasks first."
                     ),
                 }
-        except Exception:
-            pass
+        except Exception as dep_exc:
+            _log(f'Dependency check failed for task {task_id} during activate: {dep_exc}', 'error')
+            return {
+                'result': 'error',
+                'message': (
+                    f"Cannot activate task #{task_id} — dependency check failed. "
+                    f"The system could not verify whether dependencies are met. "
+                    f"Please try again later or contact an administrator if the issue persists."
+                ),
+            }
         # Gate: autopilot=OFF requires explicit user approval before activation
         autopilot = _is_autopilot(agent_id)
-        if not autopilot and str(_approval_granted.get(agent_id)) != task_id:
+        with _state_lock:
+            granted_task = _approval_granted.get(agent_id)
+        if not autopilot and str(granted_task) != task_id:
             # Inline fallback: if approval wasn't pre-set (e.g. model called activate
             # without waiting for the SYSTEM REMINDER), check the DB conversation now.
             try:
@@ -1260,10 +1300,13 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                         break
                 if last_user_msg and last_agent_msg:
                     if _classify_approval(last_agent_msg, last_user_msg):
-                        _approval_granted[agent_id] = task_id  # task_id is already string
+                        with _state_lock:
+                            _approval_granted[agent_id] = task_id  # task_id is already string
             except Exception:
                 pass
-        if not autopilot and str(_approval_granted.get(agent_id)) != task_id:
+        with _state_lock:
+            granted_task = _approval_granted.get(agent_id)
+        if not autopilot and str(granted_task) != task_id:
             return {
                 'result': 'error',
                 'message': (
@@ -1272,8 +1315,9 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                 ),
             }
         # Clear approval flag and waiting state now that activation is proceeding
-        _approval_granted.pop(agent_id, None)
-        _awaiting_approval.discard(agent_id)
+        with _state_lock:
+            _approval_granted.pop(agent_id, None)
+            _awaiting_approval.discard(agent_id)
         # Validate task existence and archive status before activation
         try:
             from plugins.kanban.db import kanban_db
@@ -1301,10 +1345,11 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                     pass
         except Exception:
             pass  # DB unavailable — allow activation
-        _pending_tasks.pop(agent_id, None)
-        _active_tasks[agent_id] = str(task_id)
-        _task_state_since[agent_id] = time.time()
-        _progress_reminder_armed[agent_id] = False
+        with _state_lock:
+            _pending_tasks.pop(agent_id, None)
+            _active_tasks[agent_id] = str(task_id)
+            _task_state_since[agent_id] = time.time()
+            _progress_reminder_armed[agent_id] = False
         # Set focus mode so other sessions are rejected while this task is active
         _title = task_id
         if agent_state is not None:
@@ -1394,13 +1439,32 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
         except Exception:
             pass  # Never block task completion on recorder failure
 
-        _active_tasks.pop(agent_id, None)
-        _pending_tasks.pop(agent_id, None)
-        _paused_tasks.pop(agent_id, None)
-        _task_state_since.pop(agent_id, None)
-        _progress_reminder_armed.pop(agent_id, None)
-        _approval_granted.pop(agent_id, None)
-        _awaiting_approval.discard(agent_id)
+        # --- Session Archiver: save byte-exact LLM trace on task completion ---
+        # Must happen BEFORE state is cleared so we capture the full task
+        # execution. Clears the LLM trace afterward so the next clear_session()
+        # (e.g. when next kanban task triggers) finds zero records and skips
+        # gracefully instead of double-archiving.
+        try:
+            import config as _cfg
+            if bool(_cfg.SESSION_ARCHIVE):
+                _sid = agent_state.session_id if agent_state else None
+                if _sid:
+                    from models.session_archive import SessionArchiver
+                    SessionArchiver.archive_session(agent_id, _sid)
+                    from models.llm_trace import llm_trace_manager
+                    llm_trace_manager.get(agent_id, _sid).clear()
+                    llm_trace_manager.evict(agent_id, _sid)
+        except Exception:
+            pass  # Never block task completion on archive failure
+
+        with _state_lock:
+            _active_tasks.pop(agent_id, None)
+            _pending_tasks.pop(agent_id, None)
+            _paused_tasks.pop(agent_id, None)
+            _task_state_since.pop(agent_id, None)
+            _progress_reminder_armed.pop(agent_id, None)
+            _approval_granted.pop(agent_id, None)
+            _awaiting_approval.discard(agent_id)
         # Clear focus mode — agent is now free to accept all sessions
         if agent_state is not None:
             agent_state.focus = False
@@ -1431,9 +1495,10 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                 ),
             }
         # Pause the task: move from active to paused, set status to 'paused'
-        _active_tasks.pop(agent_id, None)
-        _paused_tasks[agent_id] = task_id
-        _task_state_since[agent_id] = time.time()
+        with _state_lock:
+            _active_tasks.pop(agent_id, None)
+            _paused_tasks[agent_id] = task_id
+            _task_state_since[agent_id] = time.time()
         try:
             from plugins.kanban.db import kanban_db
             task = kanban_db.get(task_id)
@@ -1481,10 +1546,11 @@ def _state_handler(agent_id: str, session_id: str, agent_state, label: str, data
                 ),
             }
         # Resume the task: move from paused to active, set status back to 'in-progress'
-        _paused_tasks.pop(agent_id, None)
-        _active_tasks[agent_id] = str(task_id)
-        _task_state_since[agent_id] = time.time()
-        _progress_reminder_armed[agent_id] = False
+        with _state_lock:
+            _paused_tasks.pop(agent_id, None)
+            _active_tasks[agent_id] = str(task_id)
+            _task_state_since[agent_id] = time.time()
+            _progress_reminder_armed[agent_id] = False
         try:
             from plugins.kanban.db import kanban_db
             task = kanban_db.get(task_id)
@@ -1566,7 +1632,8 @@ def _tool_guard(agent_id: str, tool_name: str, args: dict) -> Optional[dict]:
     Paused:  Only allow state(kanban:resume) and minimal kanban read tools.
     """
     # \u2500\u2500 Paused guard \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
-    paused_task_id = _paused_tasks.get(agent_id)
+    with _state_lock:
+        paused_task_id = _paused_tasks.get(agent_id)
     if paused_task_id:
         # Allow only state (to resume) and kanban read tools
         if tool_name in ('state', 'kanban_search_tasks', 'kanban_get_task', 'kanban_add_comment'):
@@ -1577,7 +1644,8 @@ def _tool_guard(agent_id: str, tool_name: str, args: dict) -> Optional[dict]:
         )
         return {'block': True, 'error': msg}
 
-    task_id = _pending_tasks.get(agent_id)
+    with _state_lock:
+        task_id = _pending_tasks.get(agent_id)
     if not task_id:
         return None
 
@@ -1593,11 +1661,13 @@ def _tool_guard(agent_id: str, tool_name: str, args: dict) -> Optional[dict]:
         from plugins.kanban.db import kanban_db
         task = kanban_db.get(task_id)
         if task is None or task.get('status') in ('done', 'in-progress'):
-            _pending_tasks.pop(agent_id, None)
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
             return None
         # Clear if task is no longer assigned to this agent
         if task.get('assignee') and task.get('assignee') != agent_id:
-            _pending_tasks.pop(agent_id, None)
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
             return None
     except Exception as e:
         import logging
@@ -1658,15 +1728,19 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             break   # only inspect the most recent assistant turn
 
     # ── sync _progress_reminder_armed from just_called (compensate for async) ──
-    if agent_id in _active_tasks:
-        for fn in just_called:
-            if fn not in KANBAN_ALLOWED_TOOLS:
-                _progress_reminder_armed[agent_id] = True
-                break
+    with _state_lock:
+        if agent_id in _active_tasks:
+            if just_called:
+                if any(fn not in KANBAN_ALLOWED_TOOLS for fn in just_called):
+                    _progress_reminder_armed[agent_id] = True
+                else:
+                    _progress_reminder_armed[agent_id] = False
 
     # ── pending: agent picked task but hasn't started it yet ────────────────────
-    if agent_id in _pending_tasks:
-        task_id = _pending_tasks[agent_id]
+    with _state_lock:
+        pending_task_id = _pending_tasks.get(agent_id)
+    if pending_task_id:
+        task_id = pending_task_id
 
         # Skip if kanban:activate or kanban_update_status(in-progress) was just called this turn
         # (on_tool_executed hasn't cleared _pending_tasks yet — it's async)
@@ -1686,7 +1760,9 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
         print(f'[kanban/interceptor] pending agent={agent_id} task={task_id} '
               f'autopilot={autopilot} granted={_approval_granted.get(agent_id)!r} '
               f'awaiting={agent_id in _awaiting_approval}')
-        if not autopilot and str(_approval_granted.get(agent_id)) != task_id:
+        with _state_lock:
+            granted_task = _approval_granted.get(agent_id)
+        if not autopilot and str(granted_task) != task_id:
             # Find last real user message and last agent text (for classifier context)
             last_user_msg = None
             last_agent_msg = None
@@ -1708,14 +1784,19 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             if last_user_msg and last_agent_msg:
                 approved = _classify_approval(last_agent_msg, last_user_msg)
                 if approved:
-                    _approval_granted[agent_id] = task_id
+                    with _state_lock:
+                        _approval_granted[agent_id] = task_id
                     _log(f'Approval granted for agent {agent_id} on task {task_id} '
                          f'(user: {last_user_msg!r:.60})')
 
-        if not autopilot and str(_approval_granted.get(agent_id)) != task_id:
-            if agent_id not in _awaiting_approval:
+        with _state_lock:
+            granted_task = _approval_granted.get(agent_id)
+            is_awaiting = agent_id in _awaiting_approval
+        if not autopilot and str(granted_task) != task_id:
+            if not is_awaiting:
                 # First time in this pending state — tell agent to present the task
-                _awaiting_approval.add(agent_id)
+                with _state_lock:
+                    _awaiting_approval.add(agent_id)
                 _present_reminder = (
                     f"[SYSTEM REMINDER] You have acknowledged task '{task_id}'. "
                     f"Present the task to the user and ask for their confirmation. "
@@ -1755,10 +1836,12 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             return None
         return {'inject': _approved_reminder}
 
-    if agent_id not in _active_tasks:
+    with _state_lock:
+        active_task_id = _active_tasks.get(agent_id)
+    if not active_task_id:
         return None
 
-    task_id = _active_tasks[agent_id]
+    task_id = active_task_id
 
     # ── active: skip if kanban_update_status(done) was just called this turn ───
     ku = just_called.get('kanban_update_status', {})
@@ -1789,8 +1872,11 @@ def _message_interceptor(agent_id: str, content: str, messages: list):
             return {'inject': _active_plan_nudge}
 
     # ── progress reminder: agent used a real tool, time to log progress ─────
-    if _progress_reminder_armed.get(agent_id, False):
-        _progress_reminder_armed[agent_id] = False
+    with _state_lock:
+        is_armed = _progress_reminder_armed.get(agent_id, False)
+        if is_armed:
+            _progress_reminder_armed[agent_id] = False
+    if is_armed:
         return {
             'inject': (
                 f"[SYSTEM REMINDER] If You just made progress on task '{task_id}'. "
@@ -1835,7 +1921,7 @@ def on_kanban_task_updated(event, sdk):
     if status in ('todo', 'done', 'paused'):
         # Clear agent's pending/active state for this task so the next scan
         # can re-notify them (handles agent stopped mid-workflow, task reset, etc.)
-        with _lock:
+        with _state_lock:
             if assignee:
                 if _pending_tasks.get(assignee) == task_id:
                     _pending_tasks.pop(assignee, None)
@@ -1878,7 +1964,8 @@ def on_tool_executed(event, sdk):
             except Exception:
                 pass
         if isinstance(result, dict) and result.get('status') == 'success':
-            _progress_reminder_armed[agent_id] = True
+            with _state_lock:
+                _progress_reminder_armed[agent_id] = True
         return
 
     # ── kanban_update_status: update workflow state ───────────────────────────
@@ -1894,36 +1981,39 @@ def on_tool_executed(event, sdk):
 
         if task_status == 'in-progress':
             task_id = task.get('id', '')
-            _pending_tasks.pop(agent_id, None)
-            if task_id:
-                _active_tasks[agent_id] = str(task_id)
-                _task_state_since[agent_id] = time.time()
-            _progress_reminder_armed[agent_id] = False
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
+                if task_id:
+                    _active_tasks[agent_id] = str(task_id)
+                    _task_state_since[agent_id] = time.time()
+                _progress_reminder_armed[agent_id] = False
             _log(f'Guard cleared for agent {agent_id} — task activated', 'info', sdk)
 
         elif task_status == 'paused':
             task_id = task.get('id', '')
-            _pending_tasks.pop(agent_id, None)
-            if task_id:
-                _active_tasks.pop(agent_id, None)
-                _paused_tasks[agent_id] = task_id
-                _task_state_since[agent_id] = time.time()
-            _progress_reminder_armed.pop(agent_id, None)
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
+                if task_id:
+                    _active_tasks.pop(agent_id, None)
+                    _paused_tasks[agent_id] = task_id
+                    _task_state_since[agent_id] = time.time()
+                _progress_reminder_armed.pop(agent_id, None)
             _log(f'Task paused for agent {agent_id} — task {task_id}', 'info', sdk)
 
         elif task_status == 'done':
-            _pending_tasks.pop(agent_id, None)
-            _active_tasks.pop(agent_id, None)
-            _paused_tasks.pop(agent_id, None)
-            _task_state_since.pop(agent_id, None)
-            _progress_reminder_armed.pop(agent_id, None)
-            task_id = task.get('id', '')
-            if task_id:
-                _recently_completed[agent_id] = str(task_id)
-                _log(f'Agent {agent_id} marked task {task_id} done -- will auto-comment on final answer', 'info', sdk)
+            with _state_lock:
+                _pending_tasks.pop(agent_id, None)
+                _active_tasks.pop(agent_id, None)
+                _paused_tasks.pop(agent_id, None)
+                _task_state_since.pop(agent_id, None)
+                _progress_reminder_armed.pop(agent_id, None)
+                task_id = task.get('id', '')
+                if task_id:
+                    _recently_completed[agent_id] = str(task_id)
+            _log(f'Agent {agent_id} marked task done -- will auto-comment on final answer', 'info', sdk)
             _log(f'Guard cleared for agent {agent_id} — task done, triggering scan in 10s', 'info', sdk)
             global _pending_scan_timer
-            with _lock:
+            with _state_lock:
                 if _pending_scan_timer is not None:
                     _pending_scan_timer.cancel()
                 def _scan_all(sdk=sdk):
@@ -1936,9 +2026,12 @@ def on_tool_executed(event, sdk):
 
     # ── Any other non-kanban tool: arm the progress reminder ──────────────────
     # Only arm if tool succeeded — don't trigger reminder for blocked/errored calls
-    if tool_name not in KANBAN_ALLOWED_TOOLS and agent_id in _active_tasks:
+    with _state_lock:
+        is_active = agent_id in _active_tasks
+    if tool_name not in KANBAN_ALLOWED_TOOLS and is_active:
         if not event.get('has_error', False):
-            _progress_reminder_armed[agent_id] = True
+            with _state_lock:
+                _progress_reminder_armed[agent_id] = True
 
 
 
@@ -1951,7 +2044,8 @@ def _on_final_answer(data: dict):
     agent_id = data.get('agent_id', '')
     if not agent_id:
         return
-    task_id = _recently_completed.pop(agent_id, None)
+    with _state_lock:
+        task_id = _recently_completed.pop(agent_id, None)
     if not task_id:
         return
     answer = data.get('answer', '') or ''
@@ -1974,7 +2068,8 @@ def _on_final_answer(data: dict):
 
 def _busy_message_provider(agent_id: str, agent_state) -> Optional[str]:
     """Return a contextual message when the agent is busy with a kanban task."""
-    task_id = _active_tasks.get(agent_id) or _pending_tasks.get(agent_id) or _paused_tasks.get(agent_id)
+    with _state_lock:
+        task_id = _active_tasks.get(agent_id) or _pending_tasks.get(agent_id) or _paused_tasks.get(agent_id)
     if not task_id:
         return None
     try:

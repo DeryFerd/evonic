@@ -107,7 +107,13 @@
   const charts = {};
 
   const PALETTE = ['#4f46e5', '#06b6d4', '#f59e0b', '#ef4444', '#10b981', '#8b5cf6', '#ec4899', '#64748b'];
-  const fmt = n => (n || 0).toLocaleString();
+  const fmt = n => {
+    if (n == null) return '0';
+    if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return n.toLocaleString();
+  };
   const isDark = () => document.documentElement.classList.contains('dark');
   const gridColor = () => isDark() ? 'rgba(148,163,184,0.15)' : 'rgba(0,0,0,0.06)';
   const tickColor = () => isDark() ? '#94a3b8' : '#6b7280';
@@ -155,7 +161,7 @@
   function loadBySource() {
     getJSON(`${API}/by-source?range=${range}`).then(d => {
       const rows = d.sources || [];
-      const colors = rows.map(r => r.key === 'explorer' ? EXPLORER_COLOR : null);
+      const colors = rows.map(r => r.key === 'explorer' ? EXPLORER_COLOR : r.key === 'kb_organizer' ? ORGANIZER_COLOR : null);
       const used = new Set();
       let pi = 0;
       colors.forEach((c, i) => {
@@ -183,18 +189,21 @@
     });
   }
 
-  const EXPLORER_COLOR = '#ec4899';  // distinct color for explorer sub-agents
+  const EXPLORER_COLOR = '#ec4899';
+  const ORGANIZER_COLOR = '#f59e0b';
+  const TEST_COLOR = '#10b981';
   function loadByAgent() {
     getJSON(`${API}/by-agent?range=${range}&rollup=${rollup ? 1 : 0}`).then(d => {
       const rows = d.agents || [];
-      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : '#4f46e5');
+      const colors = rows.map(r => r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : r.is_test ? TEST_COLOR : '#4f46e5');
       renderBar('tm-agent-chart', rows.map(r => r.agent_id || '(none)'), rows.map(r => r.total_tokens), colors);
       const body = document.getElementById('tm-agent-body');
       if (!rows.length) { body.innerHTML = '<tr><td colspan="5">No data</td></tr>'; return; }
       body.innerHTML = rows.map(r => {
         const name = r.agent_id || '(none)';
-        const agentCell = r.is_explorer
-          ? `<span style="color:${EXPLORER_COLOR};font-weight:600;">${name}</span>`
+        const color = r.is_explorer ? EXPLORER_COLOR : r.is_organizer ? ORGANIZER_COLOR : r.is_test ? TEST_COLOR : null;
+        const agentCell = color
+          ? `<span style="color:${color};font-weight:600;">${name}</span>`
           : name;
         return `<tr>
         <td>${agentCell}</td>

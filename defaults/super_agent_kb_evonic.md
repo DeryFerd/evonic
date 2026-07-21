@@ -14,7 +14,7 @@ All agent data lives under the `agents/` directory at the project root. Each age
 agents/
   <agent_id>/
     SYSTEM.md    — the agent's system prompt (rules, persona, workflow)
-    kb/          — knowledge base files the agent can read with the `read` tool
+    kb/          — knowledge base files the agent can read with `read_file` via `/_self/kb/`
     chat.db      — per-agent SQLite database (chat history, memory, summaries)
     sessions/    — JSONL chat logs for streaming/SSE
 ```
@@ -59,25 +59,25 @@ State handlers (kanban, etc.) are registered via `backend/plugin_manager.py` and
 
 ### What It Is
 
-Each agent has a `kb/` directory under `agents/<agent_id>/kb/`. This directory holds markdown or text files that the agent can read at any time using the built-in `read` tool.
+Each agent has a `kb/` directory under `agents/<agent_id>/kb/`. This directory holds markdown or text files that the agent can read at any time using `read_file` with `/_self/kb/` paths.
 
-### How to Use the `read` Tool
+### How to Read KB Files
 
-The `read` tool is specifically for KB files. You call it with a bare filename only:
+Use `read_file` with the `/_self/kb/` path prefix:
 
 ```
-read(filename="architecture.md")
+read_file(file_path="/_self/kb/architecture.md")
 ```
 
 Rules:
-- Only bare filenames — no slashes, no paths (e.g. use "notes.md", NOT "/kb/notes.md")
-- The tool is sandboxed to only read from your own `kb/` directory
-- To read source code, logs, or workspace files, use the `read_file` tool instead
+- Always use the `/_self/kb/` prefix for KB files (e.g. `/_self/kb/notes.md`)
+- The `/_self/` prefix resolves to the agent's own directory
+- `read_file` supports pagination for large files via the `offset` parameter
 
 ### Managing KB Files
 
 The super agent can create and update KB files using `write_file` and `read_file`:
-- `write_file` — create or overwrite files in `agents/<agent_id>/kb/`
+- `write_file` — create or overwrite files via `/_self/kb/` paths
 - `read_file` — read any file including KB files (supports pagination for large files)
 
 ### When to Use KB
@@ -114,18 +114,15 @@ It follows an Extract → Deduplicate → Store → Retrieve pipeline:
 ### Tools
 
 **Capture:**
-- **`remember`** — explicitly store a fact. Use when the user shares important info.
+- **`remember`** — pin an important fact for the current session. It is noted instantly (no delay) and stays available to you for the rest of the conversation; the summarizer then persists it to long-term memory and the knowledge graph in the background. You do NOT need to `remember()` routine details — the summarizer captures the conversation on its own.
   - `content`: the fact as a single clear sentence
   - `category`: one of `user_info`, `preference`, `decision`, `context`, `instruction`, `general`
 - **`forget_memory`** — delete a stored fact by id (removed from both FTS5 and evomem).
 
-**Retrieve:**
-- **`recall`** — fast keyword lookup of stored facts.
-  - `query`: keywords to search for
-- **`think`** — brain-layer synthesis: reason over everything known about a topic and surface knowledge gaps. Heavier than `recall`; prefer it for open questions ("what do I know about the user's project?").
-  - `query`: the topic/question to synthesize
-- **`graph_query`** — traverse the knowledge graph from an entity to its relationships (employer, companies founded, people advised, etc.).
-  - `entity`: a person/organization/project name (or slug)
+**Retrieve:** one tool, `recall`, with three modes:
+- **`recall(query="...")`** — fast keyword lookup of stored facts (default, `mode="fts"`).
+- **`recall(query="...", mode="think")`** — brain-layer synthesis: reason over everything known about a topic and surface knowledge gaps. Prefer it for open questions ("what do I know about the user's project?").
+- **`recall(query="...", mode="graph")`** — traverse the knowledge graph from an entity to its relationships (employer, companies founded, people advised, etc.); `query` is the entity name. Optional `edge_type` and `hops` steer the traversal.
 
 ### Memory Categories
 
@@ -146,9 +143,9 @@ Facts in user-scoped categories (`user_info`, `preference`, `instruction`, `deci
 - User states a durable preference or interest → `remember(category="preference")` (this feeds the graph; reserve `notes.md` for always-apply communication/style rules)
 - User gives persistent instructions ("Always use English") → `remember(category="instruction")`
 - User mentions project context → `remember(category="context")`
-- Need to reason about a topic across many facts → `think(query="...")`
-- Need to follow relationships between entities → `graph_query(entity="...")`
-- Memories are auto-injected each turn, so use `recall`/`think` only when you need MORE than what was already provided.
+- Need to reason about a topic across many facts → `recall(query="...", mode="think")`
+- Need to follow relationships between entities → `recall(query="...", mode="graph")`
+- Memories are auto-injected each turn, so use `recall` (any mode) only when you need MORE than what was already provided.
 
 ---
 

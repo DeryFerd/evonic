@@ -36,13 +36,15 @@ def history():
     offset = (page - 1) * per_page
     runs = db.get_all_runs(limit=per_page, offset=offset)
     total_count = db.get_runs_count()
+    incomplete_count = db.get_incomplete_count()
     total_pages = (total_count + per_page - 1) // per_page  # Ceiling division
 
     return render_template('history.html',
                            runs=runs,
                            page=page,
                            total_pages=total_pages,
-                           total_count=total_count)
+                           total_count=total_count,
+                           incomplete_count=incomplete_count)
 
 
 @history_bp.route('/api/history/<int:run_id>', methods=['DELETE'])
@@ -69,6 +71,28 @@ def api_clear_history():
         if os.path.isdir(log_dir):
             shutil.rmtree(log_dir)
             os.makedirs(log_dir, exist_ok=True)
+        return jsonify({'success': True, 'deleted': count})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@history_bp.route('/api/history/clear-incomplete', methods=['POST'])
+def api_clear_incomplete():
+    """Delete all incomplete evaluation runs (completed_at IS NULL) and related data"""
+    try:
+        count = db.clear_incomplete_runs()
+        # Clean up orphan log directories (runs no longer in DB)
+        log_dir = os.path.join(config.BASE_DIR, 'logs')
+        if os.path.isdir(log_dir):
+            for entry in os.listdir(log_dir):
+                entry_path = os.path.join(log_dir, entry)
+                if os.path.isdir(entry_path):
+                    try:
+                        run_id = int(entry)
+                        if not db.get_evaluation_run(run_id):
+                            shutil.rmtree(entry_path)
+                    except (ValueError, OSError):
+                        pass
         return jsonify({'success': True, 'deleted': count})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

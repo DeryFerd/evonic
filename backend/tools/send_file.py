@@ -12,11 +12,32 @@ Usage:
 """
 
 import os
+import tempfile
 
 try:
     from config import SANDBOX_WORKSPACE as _WORKSPACE_ROOT
 except ImportError:
     _WORKSPACE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+
+
+def _get_workplace_backend(agent: dict, session_id: str):
+    """Return the execution backend for an agent with workplace/sandbox, or None."""
+    workplace_id = agent.get('workplace_id')
+    sandbox_enabled = agent.get('sandbox_enabled', False)
+    run_as_user = bool(((agent or {}).get('run_as_user') or '').strip())
+
+    if not workplace_id and not sandbox_enabled and not run_as_user:
+        return None
+
+    if workplace_id:
+        from backend.workplaces.manager import workplace_manager
+        return workplace_manager.get_backend(workplace_id, sandbox_enabled=sandbox_enabled)
+    elif sandbox_enabled:
+        from backend.tools.lib.exec_backend import registry as exec_registry
+        return exec_registry.get_backend(session_id, agent)
+    else:
+        from backend.tools.lib.backends.local_backend import LocalBackend
+        return LocalBackend(session_id=session_id)
 
 
 def execute(agent: dict, args: dict) -> dict:
@@ -35,20 +56,72 @@ def execute(agent: dict, args: dict) -> dict:
                      'e.g. file_path="output/report.pdf"'
         }
 
-    # Resolve relative paths against the workspace root
-    if not os.path.isabs(file_path):
-        file_path = os.path.join(_WORKSPACE_ROOT, file_path)
+    # /_self/ path: resolve to agent's local directory on the evonic server.
+    # /_self/ paths are always local — they don't go through a workplace backend.
+    agent_id = (agent or {}).get('id', '')
+    is_self = False
+    if agent_id:
+        from backend.tools._workspace import is_self_path, resolve_self_path
+        if is_self_path(file_path):
+            is_self = True
+            resolved = resolve_self_path(agent_id, file_path)
+            if not resolved:
+                return {"error": f"File not found: \"{file_path}\" — path outside agent directory"}
+            if not os.path.exists(resolved):
+                return {"error": f'File not found: "{file_path}"'}
+            if not os.path.isfile(resolved):
+                return {"error": f'Path is not a file: "{file_path}"'}
+            try:
+                file_size = os.path.getsize(resolved)
+            except OSError as e:
+                return {"error": f'Cannot access file "{file_path}": {e}'}
+            file_path = resolved
 
-    # Validate file exists and is readable
-    if not os.path.exists(file_path):
-        return {"error": f'File not found: "{file_path}"'}
-    if not os.path.isfile(file_path):
-        return {"error": f'Path is not a file: "{file_path}"'}
+    if not is_self:
+        # Non-/self/ path: check for workplace/sandbox backend first
+        backend = _get_workplace_backend(agent, session_id)
 
-    try:
-        file_size = os.path.getsize(file_path)
-    except OSError as e:
-        return {"error": f'Cannot access file "{file_path}": {e}'}
+        if backend is not None:
+            # Resolve path through the workplace/sandbox backend
+            from backend.tools._workspace import resolve_workspace_path
+            target_path = resolve_workspace_path(agent, file_path, _WORKSPACE_ROOT)
+            target_path = backend.resolve_path(target_path) if hasattr(backend, 'resolve_path') else target_path
+
+            # Check file exists on the remote filesystem
+            st = backend.file_stat(target_path)
+            if not st.get('exists'):
+                return {"error": f'File not found: "{file_path}"'}
+            if st.get('is_dir'):
+                return {"error": f'Path is not a file: "{file_path}"'}
+
+            file_size = st.get('size', 0)
+
+            # Fetch file bytes from remote and stage locally for channel delivery
+            result = backend.cat_file_bytes(target_path)
+            if 'error' in result:
+                return {"error": f'Failed to read file from workplace: {result["error"]}'}
+
+            ext = os.path.splitext(file_path)[1]
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+            try:
+                tmp.write(result['bytes'])
+            finally:
+                tmp.close()
+            file_path = tmp.name
+        else:
+            # No workplace/sandbox: direct local filesystem access
+            if not os.path.isabs(file_path):
+                file_path = os.path.join(_WORKSPACE_ROOT, file_path)
+
+            if not os.path.exists(file_path):
+                return {"error": f'File not found: "{file_path}"'}
+            if not os.path.isfile(file_path):
+                return {"error": f'Path is not a file: "{file_path}"'}
+
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError as e:
+                return {"error": f'Cannot access file "{file_path}": {e}'}
 
     # Send via channel — lazy import to avoid circular deps
     try:

@@ -85,6 +85,33 @@ Messages to summarize:
 Write the updated factual summary. Remember: the current date is {current_datetime}. Use this date — do NOT use dates from the messages or existing summary."""
 
 
+# Appended to every summarizer prompt (custom or default). The knowledge/graph
+# extractor only ever sees the summary, so anything dropped here is lost
+# downstream. This mandates a dedicated, always-regenerated entities section so
+# named entities survive compaction even under a strong domain-specific prompt.
+_ENTITY_PRESERVATION_CLAUSE = """
+
+============================================================
+MANDATORY — this overrides any conflicting instruction above.
+You MUST end the summary with a section titled exactly:
+
+## Entities & Relationships
+
+In it, list EVERY specific named person, place, organization, venue, product, or brand the user mentioned — even casually, in passing, or as a personal anecdote (a café, a city, a district, a company, a tool). For each, give concrete details AND how it relates to other named entities (located in / works at / visited / owns / part of / uses …). Never drop a named entity as "small talk", and always carry this section forward when updating an existing summary.
+
+IMAGES: if any message contains an image — Markdown `![name](url)` or HTML `<img src="url">` — you MUST carry the image markdown VERBATIM (exact URL, unmodified) onto the line of the entity it depicts. Never summarize an image away as "photos were sent"; downstream systems extract these URLs from the summary to set document thumbnails.
+
+Format example:
+## Entities & Relationships
+- Djournal Coffee — café in Grand Indonesia, Thamrin, Jakarta; User visited (has an outdoor smoking area); photo: ![djournal.jpg](/api/attachments/12/view)
+- Thamrin — district in Jakarta; located_in Jakarta
+- Jakarta — city in Indonesia; User's current location
+
+If the user mentioned no named entities at all, write:
+## Entities & Relationships
+- (none)"""
+
+
 def maybe_summarize(agent: dict, session_id: str,
                     summarize_guard: threading.Lock,
                     summarize_active: set,
@@ -167,29 +194,80 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
     last_summarized_entry = all_entries[cut_index - 1]
     new_last_ts = last_summarized_entry['ts']
 
-    # Skip if summary already covers this point
-    if summary_record and (summary_record.get('last_message_ts') or 0) >= new_last_ts:
-        print(f"[AgentRuntime] Summarize skipped: summary already up to date (last_message_ts={summary_record.get('last_message_ts')} >= new_last_ts={new_last_ts})")
-        return False
+    entries_from_tail = False
 
-    # Get entries to fold into summary
-    if summary_record and summary_record.get('last_message_ts'):
-        entries_to_summarize = chatlog.get_entries_between_ts(
-            summary_record['last_message_ts'],
-            new_last_ts,
-        )
-        entries_to_summarize = [e for e in entries_to_summarize
-                                 if e.get('type') in summary_count_types]
-        existing_summary = summary_record['summary']
-    else:
-        entries_to_summarize = all_entries[:cut_index]
-        existing_summary = None
+    # When an existing summary covers up to last_message_ts and the cut-point
+    # falls on or before that boundary (because cut_index counted already-summarized
+    # entries), walk forward past the already-summarized region to find new entries
+    # that lie before the tail.  Without this the summarizer deadlocks: it keeps
+    # hitting new_last_ts <= last_message_ts and never advances.
+    if summary_record:
+        last_ts = summary_record.get('last_message_ts') or 0
+        if new_last_ts <= last_ts:
+            # Find entries with ts > last_message_ts that are still before the tail
+            fresh_entries = [
+                e for e in all_entries[:cut_index]
+                if e['ts'] > last_ts
+            ]
+            if fresh_entries:
+                new_last_ts = fresh_entries[-1]['ts']
+                entries_from_tail = False
+            else:
+                # Pre-tail had no fresh entries, but the tail may have entries
+                # beyond the summary boundary.  Scan the tail region for entries
+                # with ts > last_ts so we can advance past the deadlock.
+                tail_fresh = [
+                    e for e in all_entries[cut_index:]
+                    if e['ts'] > last_ts
+                ]
+                if tail_fresh:
+                    new_last_ts = tail_fresh[-1]['ts']
+                    # Build entries_to_summarize from tail_fresh now so the
+                    # summarizer has something to fold in; flag to skip the
+                    # normal entries-building block below.
+                    entries_to_summarize = [
+                        e for e in tail_fresh
+                        if e.get('type') in summary_count_types
+                    ]
+                    existing_summary = summary_record['summary']
+                    entries_from_tail = True
+                else:
+                    print(f"[AgentRuntime] Summarize skipped: no new entries past last_message_ts={last_ts} (new_last_ts={new_last_ts})")
+                    return False
+
+    # Get entries to fold into summary (skip if already built from tail)
+    if not entries_from_tail:
+        if summary_record and summary_record.get('last_message_ts'):
+            entries_to_summarize = chatlog.get_entries_between_ts(
+                summary_record['last_message_ts'],
+                new_last_ts,
+            )
+            entries_to_summarize = [e for e in entries_to_summarize
+                                     if e.get('type') in summary_count_types]
+            existing_summary = summary_record['summary']
+        else:
+            entries_to_summarize = all_entries[:cut_index]
+            existing_summary = None
 
     if not entries_to_summarize:
-        print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
-        return False
+        # get_entries_between_ts may return empty when both bounds are equal
+        # (e.g. after advancing new_last_ts past last_message_ts, the window
+        #  collapses).  Fall back to collecting entries explicitly from the
+        #  region between last_message_ts and the tail start.
+        if summary_record:
+            last_ts = summary_record.get('last_message_ts') or 0
+            tail_start_entry = all_entries[cut_index] if cut_index < len(all_entries) else None
+            entries_to_summarize = [
+                e for e in all_entries[:cut_index]
+                if e['ts'] > last_ts
+                and (tail_start_entry is None or e['ts'] <= tail_start_entry['ts'])
+                and e.get('type') in summary_count_types
+            ]
+        if not entries_to_summarize:
+            print(f"[AgentRuntime] Summarize skipped: no new entries to summarize between existing summary and new cut point")
+            return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [entries_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(entries_to_summarize), MAX_SUMMARIZE_BATCH)]
@@ -258,10 +336,9 @@ def _do_summarize_jsonl(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] sessrecap log write failed (non-fatal): {e}")
 
         from backend.event_stream import event_stream
-        tail_entries = all_entries[cut_index:]
-        tail_messages = [{'role': 'user' if e['type'] == 'user' else 'assistant',
-                          'content': e.get('content', '')}
-                         for e in tail_entries]
+        # REAL message turns only (user + assistant), so the organizer's recent
+        # conversation isn't crowded out by tool/thinking entries.
+        tail_messages = _tail_messages_from_entries(all_entries[cut_index:])
         event_stream.emit('summary_updated', {
             'agent_id': agent_id,
             'agent_name': agent.get('name', ''),
@@ -323,7 +400,7 @@ def _do_summarize_sqlite(agent: dict, session_id: str, llm_lock: threading.Lock,
         print(f"[AgentRuntime] Summarize skipped (sqlite): no new messages to summarize")
         return False
 
-    prompt_template = agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT
+    prompt_template = (agent.get('summarize_prompt') or DEFAULT_SUMMARIZE_PROMPT) + _ENTITY_PRESERVATION_CLAUSE
 
     chunks = [msgs_to_summarize[i:i + MAX_SUMMARIZE_BATCH]
               for i in range(0, len(msgs_to_summarize), MAX_SUMMARIZE_BATCH)]
@@ -391,8 +468,10 @@ def _do_summarize_sqlite(agent: dict, session_id: str, llm_lock: threading.Lock,
             print(f"[AgentRuntime] sessrecap log write failed (non-fatal): {e}")
 
         from backend.event_stream import event_stream
-        tail_messages = [{'role': m['role'], 'content': m.get('content', '')}
-                         for m in all_messages[cut_index:]]
+        tail_messages = [{'role': m['role'], 'content': (m.get('content') or '').strip()}
+                         for m in all_messages[cut_index:]
+                         if m.get('role') in ('user', 'assistant')
+                         and (m.get('content') or '').strip()]
         event_stream.emit('summary_updated', {
             'agent_id': agent_id,
             'agent_name': agent.get('name', ''),
@@ -449,6 +528,36 @@ def _format_messages_for_summary(messages: list) -> str:
             continue
         lines.append(f"{role}: {content}")
     return "\n".join(lines)
+
+
+def _tail_messages_from_entries(entries: list) -> list:
+    """Build tail messages (for the KB organizer's recent-conversation context) from
+    JSONL entries — REAL message turns ONLY, preserving role:
+
+    - ``type == 'user'`` -> role 'user'
+    - ``type in ('final','intermediate')`` -> role 'assistant'
+    - everything else (thinking/tool_call/tool_output/system/error) -> skipped
+
+    Skips bash_exec/slash_command entries and empty content. Mirrors
+    ``_format_entries_for_summary`` so non-message entries don't masquerade as
+    'assistant' and crowd the real user turn out of the last-N window downstream.
+    """
+    out = []
+    for entry in entries:
+        etype = entry.get('type', '')
+        meta = entry.get('metadata') or {}
+        if meta.get('bash_exec') or meta.get('slash_command'):
+            continue
+        if etype == 'user':
+            role = 'user'
+        elif etype in ('final', 'intermediate'):
+            role = 'assistant'
+        else:
+            continue
+        content = (entry.get('content') or '').strip()
+        if content:
+            out.append({'role': role, 'content': content, 'ts': entry.get('ts') or 0})
+    return out
 
 
 def _format_entries_for_summary(entries: list) -> str:

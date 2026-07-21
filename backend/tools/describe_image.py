@@ -18,6 +18,7 @@ when `vision_enabled = 0`, the tool returns an error.
 from __future__ import annotations
 
 import base64
+import difflib
 import mimetypes
 import os
 from typing import Any, Dict, Optional
@@ -96,6 +97,33 @@ def _resolve_vision_models(agent: dict) -> tuple[list, Optional[str]]:
     )
 
 
+def _find_closest_attachment(agent_id: str, orig_path: str) -> Optional[str]:
+    """Search the agent's data/attachments directory for a close filename match.
+
+    Uses difflib.SequenceMatcher on the basenames.  Returns the first file
+    whose similarity ratio exceeds 0.7, or None if no good match is found.
+    """
+    if not agent_id:
+        return None
+    orig_basename = os.path.basename(orig_path)
+    if not orig_basename:
+        return None
+    attachment_dir = os.path.join("data", "attachments", agent_id)
+    if not os.path.isdir(attachment_dir):
+        return None
+    best_ratio = 0.0
+    best_path: Optional[str] = None
+    for dirpath, _dirnames, filenames in os.walk(attachment_dir):
+        for fname in filenames:
+            ratio = difflib.SequenceMatcher(None, orig_basename.lower(), fname.lower()).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_path = os.path.abspath(os.path.join(dirpath, fname))
+    if best_ratio > 0.7 and best_path:
+        return best_path
+    return None
+
+
 def execute(agent: dict, args: dict) -> Any:
     """Analyze an image file and return a text description.
 
@@ -131,8 +159,29 @@ def execute(agent: dict, args: dict) -> Any:
     if not path:
         return "Error: 'path' parameter is required. Provide the file path to the image."
 
+    # Resolve /_self/ virtual paths (e.g. /_self/artifacts/foo.webp)
+    agent_id = (agent or {}).get("id", "")
+    if agent_id:
+        from backend.tools._workspace import is_self_path, resolve_self_path, effective_agent_id
+        if is_self_path(path):
+            resolved = resolve_self_path(effective_agent_id(agent), path)
+            if resolved:
+                path = resolved
+
     if not os.path.isfile(path):
+        suggestion = _find_closest_attachment(agent_id, path)
+        if suggestion:
+            return f"Error: File not found: {path}. Did you mean: {suggestion}?"
         return f"Error: File not found: {path}"
+
+    # If the agent operates in a remote workplace (SSH/tunnel/etc.), ensure the
+    # image file is also available on the remote filesystem so the agent can
+    # reference it via bash, runpy, or other backend-routed tools.
+    try:
+        from backend.tools._ensure_workplace_file import ensure_workplace_file
+        ensure_workplace_file(path, agent)
+    except (ImportError, RuntimeError):
+        pass  # Non-critical: file is already accessible from the host side
 
     file_size = os.path.getsize(path)
     if file_size > 10 * 1024 * 1024:  # 10 MB
@@ -140,6 +189,17 @@ def execute(agent: dict, args: dict) -> Any:
 
     # --- Detect MIME type ---
     mime_type, _ = mimetypes.guess_type(path)
+    # mimetypes may not know .webp or other newer formats on some systems.
+    # Fall back to extension-based detection when mimetypes returns unknown.
+    if not mime_type:
+        _ext_map = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.bmp': 'image/bmp',
+        }
+        mime_type = _ext_map.get(os.path.splitext(path)[1].lower())
     if not mime_type or mime_type not in _SUPPORTED_IMAGE_TYPES:
         detected = mime_type or "unknown"
         return (
@@ -201,6 +261,10 @@ def execute(agent: dict, args: dict) -> Any:
         model_name = vision_model.get("name", vision_model.get("id", "unknown"))
         try:
             client = LLMClient(model_config=vision_model)
+            # Enforce a 2-minute (120s) maximum timeout for vision model calls,
+            # regardless of the model's configured timeout.
+            if client.timeout is None or client.timeout > 120:
+                client.timeout = 120
             result = client.chat_completion(
                 messages=messages,
                 enable_thinking=False,  # No need for reasoning on vision task
